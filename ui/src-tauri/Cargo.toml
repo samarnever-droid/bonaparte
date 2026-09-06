@@ -1,0 +1,16 @@
+[package]
+name = "bonaparte-app"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bonaparte-model = { path = "../../crates/model" }
+bonaparte-engine = { path = "../../crates/engine" }
+bonaparte-effects = { path = "../../crates/effects" }
+bonaparte-media = { path = "../../crates/media" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = [] }

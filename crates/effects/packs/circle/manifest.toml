@@ -1,0 +1,30 @@
+api_version = "1.0"
+id = "builtin.circle"
+name = "Circle Shape"
+cost = "light"
+shader = "circle.wgsl"
+inputs = []
+
+[[params]]
+id = "color"
+name = "Fill Color"
+doc = "RGBA fill color of the vector circle."
+kind = { Color = { default = [1.0, 1.0, 1.0, 1.0] } }
+
+[[params]]
+id = "radius"
+name = "Radius"
+doc = "Relative radius fraction of the circle (1.0 = fills layer bounds)."
+kind = { Slider = { min = 0.0, max = 1.0, default = 1.0 } }
+
+[[params]]
+id = "stroke_color"
+name = "Stroke Color"
+doc = "RGBA color of the vector stroke outline."
+kind = { Color = { default = [0.42, 0.54, 1.0, 1.0] } }
+
+[[params]]
+id = "stroke_width"
+name = "Stroke Width"
+doc = "Width of the vector outline stroke in pixels."
+kind = { Slider = { min = 0.0, max = 100.0, default = 0.0 } }

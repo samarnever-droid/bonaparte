@@ -1,0 +1,18 @@
+api_version = "1.0"
+id = "builtin.directional_blur"
+name = "Directional Blur"
+cost = "medium"
+shader = "directional_blur.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "length"
+name = "Length"
+doc = "Streak length of the motion blur in pixels."
+kind = { Slider = { min = 0.0, max = 200.0, default = 20.0 } }
+
+[[params]]
+id = "angle"
+name = "Angle"
+doc = "Direction angle of the motion blur streak in degrees."
+kind = { Slider = { min = -180.0, max = 180.0, default = 0.0 } }

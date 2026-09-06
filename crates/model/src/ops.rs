@@ -1,0 +1,1098 @@
+//! The `Op` enum: the ONLY way project state changes (RULES §1.3).
+//!
+//! Everything derives from this one decision:
+//! - Undo/redo = applying stored inverses (`History`).
+//! - The MCP server and the AI command palette = sending `Op`s.
+//! - The AI-diff preview = showing the `Op`s before applying them.
+//! - The history list = the sequence of `Op`s, rendered with their docs.
+//!
+//! Every `Op` implements `apply` (mutate) and `invert` (compute the inverse
+//! from the pre-state). Round-trip property: for any document D and op O,
+//! `O.apply(D); O.invert(D').apply(D') == D`. The History tests below gate
+//! every new `Op` variant.
+
+use serde::{Deserialize, Serialize};
+
+use crate::document::{BlendMode, Comp, Layer, MediaAsset, Project, Property};
+use crate::ids::{CompId, LayerId, MediaId};
+use crate::keyframe::{Easing, Keyframe, PropValue};
+use crate::time::{FrameRate, Time};
+
+/// A single, undoable mutation of the project document.
+///
+/// Tagged JSON (`{"type": "addLayer", ...}`) so the TS UI, the MCP tools,
+/// and the AI-diff all speak one readable wire format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Op {
+    /// Create a composition (ID allocated on apply; see `History::commit`).
+    CreateComp {
+        name: String,
+        width: u32,
+        height: u32,
+        fps: FrameRate,
+        duration: Time,
+    },
+    /// Restore an exact composition (used for undoing `RemoveComp`).
+    RestoreComp {
+        comp: Box<Comp>,
+    },
+    /// Delete a composition and everything in it.
+    RemoveComp {
+        comp: CompId,
+    },
+    /// Update composition properties.
+    SetCompProps {
+        comp: CompId,
+        name: String,
+        width: u32,
+        height: u32,
+        fps: FrameRate,
+        duration: Time,
+        background: [f32; 4],
+    },
+    /// Insert a new layer on top of the comp's stack (ID allocated on apply).
+    AddLayer {
+        comp: CompId,
+        layer: Layer,
+    },
+    /// Restore an exact layer and its position in layer_order (used for undoing `RemoveLayer`).
+    RestoreLayer {
+        comp: CompId,
+        layer: Box<Layer>,
+        index: usize,
+    },
+    /// Remove a layer and its tracks.
+    RemoveLayer {
+        comp: CompId,
+        layer: LayerId,
+    },
+    /// Change a layer's display name.
+    RenameLayer {
+        comp: CompId,
+        layer: LayerId,
+        name: String,
+    },
+    /// Set a layer's timeline start time and duration.
+    SetLayerTime {
+        comp: CompId,
+        layer: LayerId,
+        start: Time,
+        duration: Time,
+    },
+    /// Set a layer's parent for transform inheritance.
+    SetLayerParent {
+        comp: CompId,
+        layer: LayerId,
+        parent: Option<LayerId>,
+    },
+    /// Set a layer's alpha blend mode.
+    SetLayerBlendMode {
+        comp: CompId,
+        layer: LayerId,
+        blend_mode: BlendMode,
+    },
+    /// Set a layer's visibility.
+    SetLayerVisible {
+        comp: CompId,
+        layer: LayerId,
+        visible: bool,
+    },
+    /// Set a layer's locked status.
+    SetLayerLocked {
+        comp: CompId,
+        layer: LayerId,
+        locked: bool,
+    },
+    /// Set the static value of a property. Fails on type mismatch. This does
+    /// NOT touch tracks; while a track exists, it wins at evaluation time.
+    SetValue {
+        comp: CompId,
+        layer: LayerId,
+        property: Property,
+        value: PropValue,
+    },
+    /// Insert or replace the keyframe at `key.time` on the property's track
+    /// (creating the track if absent).
+    AddKeyframe {
+        comp: CompId,
+        layer: LayerId,
+        property: Property,
+        key: Keyframe,
+    },
+    /// Remove the keyframe at `time` from the property's track.
+    RemoveKeyframe {
+        comp: CompId,
+        layer: LayerId,
+        property: Property,
+        time: Time,
+    },
+    /// Move a keyframe in time (a drag in the timeline).
+    MoveKeyframe {
+        comp: CompId,
+        layer: LayerId,
+        property: Property,
+        from: Time,
+        to: Time,
+    },
+    /// Change the easing out of the keyframe at `time` (a graph-editor edit).
+    SetEasing {
+        comp: CompId,
+        layer: LayerId,
+        property: Property,
+        time: Time,
+        easing: Easing,
+    },
+    /// Move a layer to a new index in the stack (a timeline drag).
+    ReorderLayer {
+        comp: CompId,
+        layer: LayerId,
+        new_index: usize,
+    },
+    /// Register a media asset (ID allocated on apply). Perception cards and
+    /// aliases ride on the asset.
+    AddMedia {
+        asset: MediaAsset,
+    },
+    /// Restore an exact media asset (used for undoing `RemoveMedia`).
+    RestoreMedia {
+        asset: MediaAsset,
+    },
+    /// Unregister a media asset.
+    RemoveMedia {
+        media: MediaId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ModelError {
+    #[error("composition {0} not found")]
+    CompNotFound(CompId),
+    #[error("layer {0} not found")]
+    LayerNotFound(LayerId),
+    #[error("media asset {0} not found")]
+    MediaNotFound(MediaId),
+    #[error("property {0:?} does not accept this value type")]
+    TypeMismatch(Property),
+    #[error("no keyframe at {1} on layer {0}")]
+    KeyframeNotFound(LayerId, Time),
+    #[error("no keyframe track on property {0:?}")]
+    TrackMissing(Property),
+    #[error("cannot move keyframe {1} to occupied time {2}")]
+    KeyframeOccupied(LayerId, Time, Time),
+    #[error("parenting layer {0} to {1} creates a circular dependency")]
+    ParentCycle(LayerId, LayerId),
+}
+
+impl Op {
+    /// Mutate the document. Validation happens here, never at the call site.
+    ///
+    /// Note: `CreateComp`/`AddLayer`/`AddMedia` allocate IDs during apply;
+    /// use `History::commit` to record inverses with the assigned IDs.
+    pub fn apply(self, project: &mut Project) -> Result<(), ModelError> {
+        match self {
+            Op::CreateComp {
+                name,
+                width,
+                height,
+                fps,
+                duration,
+            } => {
+                project.create_comp(name, width, height, fps, duration);
+                Ok(())
+            }
+            Op::RestoreComp { comp } => {
+                project.comps.insert(comp.id, *comp);
+                Ok(())
+            }
+            Op::RemoveComp { comp } => {
+                if project.comps.remove(&comp).is_none() {
+                    return Err(ModelError::CompNotFound(comp));
+                }
+                Ok(())
+            }
+            Op::SetCompProps {
+                comp,
+                name,
+                width,
+                height,
+                fps,
+                duration,
+                background,
+            } => {
+                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                c.name = name;
+                c.width = width;
+                c.height = height;
+                c.fps = fps;
+                c.duration = duration;
+                c.background = background;
+                Ok(())
+            }
+            Op::AddLayer { comp, layer } => {
+                if !project.comps.contains_key(&comp) {
+                    return Err(ModelError::CompNotFound(comp));
+                }
+                project.insert_layer(comp, layer);
+                Ok(())
+            }
+            Op::RestoreLayer { comp, layer, index } => {
+                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let layer_id = layer.id;
+                c.layers.insert(layer_id, *layer);
+                let insert_idx = index.min(c.layer_order.len());
+                c.layer_order.insert(insert_idx, layer_id);
+                Ok(())
+            }
+            Op::RemoveLayer { comp, layer } => {
+                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                c.layers.remove(&layer).ok_or(ModelError::LayerNotFound(layer))?;
+                c.layer_order.retain(|&l| l != layer);
+                Ok(())
+            }
+            Op::RenameLayer { comp, layer, name } => {
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .name = name;
+                Ok(())
+            }
+            Op::SetLayerTime {
+                comp,
+                layer,
+                start,
+                duration,
+            } => {
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                l.start = start;
+                l.duration = duration;
+                Ok(())
+            }
+            Op::SetLayerParent {
+                comp,
+                layer,
+                parent,
+            } => {
+                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                if !c.layers.contains_key(&layer) {
+                    return Err(ModelError::LayerNotFound(layer));
+                }
+                if let Some(pid) = parent {
+                    if !c.layers.contains_key(&pid) {
+                        return Err(ModelError::LayerNotFound(pid));
+                    }
+                    if c.has_parent_cycle(layer, parent) {
+                        return Err(ModelError::ParentCycle(layer, pid));
+                    }
+                }
+                c.layers.get_mut(&layer).unwrap().parent = parent;
+                Ok(())
+            }
+            Op::SetLayerBlendMode {
+                comp,
+                layer,
+                blend_mode,
+            } => {
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .blend_mode = blend_mode;
+                Ok(())
+            }
+            Op::SetLayerVisible {
+                comp,
+                layer,
+                visible,
+            } => {
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .visible = visible;
+                Ok(())
+            }
+            Op::SetLayerLocked {
+                comp,
+                layer,
+                locked,
+            } => {
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .locked = locked;
+                Ok(())
+            }
+            Op::SetValue {
+                comp,
+                layer,
+                property,
+                value,
+            } => {
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                l.transform
+                    .set(property, value)
+                    .map_err(ModelError::TypeMismatch)?;
+                Ok(())
+            }
+            Op::AddKeyframe {
+                comp,
+                layer,
+                property,
+                key,
+            } => {
+                if property.value_kind() != key.value.kind() {
+                    return Err(ModelError::TypeMismatch(property));
+                }
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                l.tracks.entry(property).or_default().set_key(key);
+                Ok(())
+            }
+            Op::RemoveKeyframe {
+                comp,
+                layer,
+                property,
+                time,
+            } => {
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
+                track.remove_key(time).ok_or(ModelError::KeyframeNotFound(layer, time))?;
+                Ok(())
+            }
+            Op::MoveKeyframe {
+                comp,
+                layer,
+                property,
+                from,
+                to,
+            } => {
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
+                if track.keys.iter().any(|k| k.time == to && k.time != from) {
+                    return Err(ModelError::KeyframeOccupied(layer, from, to));
+                }
+                track
+                    .move_key(from, to)
+                    .ok_or(ModelError::KeyframeNotFound(layer, from))?;
+                Ok(())
+            }
+            Op::SetEasing {
+                comp,
+                layer,
+                property,
+                time,
+                easing,
+            } => {
+                let l = project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
+                let key = track
+                    .keys
+                    .iter_mut()
+                    .find(|k| k.time == time)
+                    .ok_or(ModelError::KeyframeNotFound(layer, time))?;
+                key.easing = easing;
+                Ok(())
+            }
+            Op::ReorderLayer {
+                comp,
+                layer,
+                new_index,
+            } => {
+                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let from = c
+                    .layer_order
+                    .iter()
+                    .position(|&l| l == layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                let item = c.layer_order.remove(from);
+                c.layer_order.insert(new_index.min(c.layer_order.len()), item);
+                Ok(())
+            }
+            Op::AddMedia { asset } => {
+                project.insert_media(asset);
+                Ok(())
+            }
+            Op::RestoreMedia { asset } => {
+                project.media.insert(asset.id, asset);
+                Ok(())
+            }
+            Op::RemoveMedia { media } => {
+                if project.media.remove(&media).is_none() {
+                    return Err(ModelError::MediaNotFound(media));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Compute the inverse of this op from the document's CURRENT state.
+    /// Must be called BEFORE `apply`. Round-trip property:
+    /// `inv = o.invert(d); o.apply(d); inv.apply(d)` restores `d`.
+    /// For ID-allocating ops (`CreateComp`/`AddLayer`/`AddMedia`) the inverse
+    /// is patched with the assigned ID by `History::commit`.
+    pub fn invert(&self, project: &Project) -> Result<Op, ModelError> {
+        match self {
+            Op::CreateComp { .. } => Ok(Op::RemoveComp { comp: CompId(0) }), // patched post-apply
+            Op::RestoreComp { comp } => Ok(Op::RemoveComp { comp: comp.id }),
+            Op::RemoveComp { comp } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?.clone();
+                Ok(Op::RestoreComp { comp: Box::new(c) })
+            }
+            Op::SetCompProps { comp, .. } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
+                Ok(Op::SetCompProps {
+                    comp: *comp,
+                    name: c.name.clone(),
+                    width: c.width,
+                    height: c.height,
+                    fps: c.fps,
+                    duration: c.duration,
+                    background: c.background,
+                })
+            }
+            Op::AddLayer { comp, .. } => Ok(Op::RemoveLayer {
+                comp: *comp,
+                layer: LayerId(0), // patched post-apply by History::commit
+            }),
+            Op::RestoreLayer { comp, layer, .. } => Ok(Op::RemoveLayer {
+                comp: *comp,
+                layer: layer.id,
+            }),
+            Op::RemoveLayer { comp, layer } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
+                let l = c.layers.get(layer).ok_or(ModelError::LayerNotFound(*layer))?.clone();
+                let idx = c.layer_order.iter().position(|&x| x == *layer).unwrap_or(c.layer_order.len());
+                Ok(Op::RestoreLayer {
+                    comp: *comp,
+                    layer: Box::new(l),
+                    index: idx,
+                })
+            }
+            Op::RenameLayer { comp, layer, .. } => {
+                let old = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?
+                    .name
+                    .clone();
+                Ok(Op::RenameLayer {
+                    comp: *comp,
+                    layer: *layer,
+                    name: old,
+                })
+            }
+            Op::SetLayerTime { comp, layer, .. } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetLayerTime {
+                    comp: *comp,
+                    layer: *layer,
+                    start: l.start,
+                    duration: l.duration,
+                })
+            }
+            Op::SetLayerParent { comp, layer, .. } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetLayerParent {
+                    comp: *comp,
+                    layer: *layer,
+                    parent: l.parent,
+                })
+            }
+            Op::SetLayerBlendMode { comp, layer, .. } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetLayerBlendMode {
+                    comp: *comp,
+                    layer: *layer,
+                    blend_mode: l.blend_mode,
+                })
+            }
+            Op::SetLayerVisible { comp, layer, .. } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetLayerVisible {
+                    comp: *comp,
+                    layer: *layer,
+                    visible: l.visible,
+                })
+            }
+            Op::SetLayerLocked { comp, layer, .. } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetLayerLocked {
+                    comp: *comp,
+                    layer: *layer,
+                    locked: l.locked,
+                })
+            }
+            Op::SetValue {
+                comp,
+                layer,
+                property,
+                ..
+            } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::SetValue {
+                    comp: *comp,
+                    layer: *layer,
+                    property: *property,
+                    value: property.static_value(&l.transform),
+                })
+            }
+            Op::AddKeyframe {
+                comp,
+                layer,
+                property,
+                key,
+            } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                let old_key = l
+                    .tracks
+                    .get(property)
+                    .and_then(|t| t.keys.iter().find(|k| k.time == key.time).cloned());
+                if let Some(prev) = old_key {
+                    Ok(Op::AddKeyframe {
+                        comp: *comp,
+                        layer: *layer,
+                        property: *property,
+                        key: prev,
+                    })
+                } else {
+                    Ok(Op::RemoveKeyframe {
+                        comp: *comp,
+                        layer: *layer,
+                        property: *property,
+                        time: key.time,
+                    })
+                }
+            }
+            Op::RemoveKeyframe {
+                comp,
+                layer,
+                property,
+                time,
+            } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                let track = l.tracks.get(property).ok_or(ModelError::TrackMissing(*property))?;
+                let key = track
+                    .keys
+                    .iter()
+                    .find(|k| k.time == *time)
+                    .ok_or(ModelError::KeyframeNotFound(*layer, *time))?
+                    .clone();
+                Ok(Op::AddKeyframe {
+                    comp: *comp,
+                    layer: *layer,
+                    property: *property,
+                    key,
+                })
+            }
+            Op::MoveKeyframe {
+                comp,
+                layer,
+                property,
+                from,
+                to,
+            } => Ok(Op::MoveKeyframe {
+                comp: *comp,
+                layer: *layer,
+                property: *property,
+                from: *to,
+                to: *from,
+            }),
+            Op::SetEasing {
+                comp,
+                layer,
+                property,
+                time,
+                ..
+            } => {
+                let l = project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                let track = l.tracks.get(property).ok_or(ModelError::TrackMissing(*property))?;
+                let key = track
+                    .keys
+                    .iter()
+                    .find(|k| k.time == *time)
+                    .ok_or(ModelError::KeyframeNotFound(*layer, *time))?;
+                Ok(Op::SetEasing {
+                    comp: *comp,
+                    layer: *layer,
+                    property: *property,
+                    time: *time,
+                    easing: key.easing,
+                })
+            }
+            Op::ReorderLayer { comp, layer, .. } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
+                let old_index = c
+                    .layer_order
+                    .iter()
+                    .position(|&l| l == *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?;
+                Ok(Op::ReorderLayer {
+                    comp: *comp,
+                    layer: *layer,
+                    new_index: old_index,
+                })
+            }
+            Op::AddMedia { .. } => Ok(Op::RemoveMedia { media: MediaId(0) }), // patched post-apply
+            Op::RestoreMedia { asset } => Ok(Op::RemoveMedia { media: asset.id }),
+            Op::RemoveMedia { media } => {
+                let a = project.media.get(media).ok_or(ModelError::MediaNotFound(*media))?.clone();
+                Ok(Op::RestoreMedia { asset: a })
+            }
+        }
+    }
+
+    /// Human-readable summary for the history list and AI proposals —
+    /// the UI and MCP render from this (RULES §7).
+    pub fn describe(&self) -> String {
+        match self {
+            Op::CreateComp { name, .. } => format!("Created comp “{name}”"),
+            Op::RestoreComp { comp } => format!("Restored comp “{}” ({})", comp.name, comp.id),
+            Op::RemoveComp { comp } => format!("Deleted comp {comp}"),
+            Op::SetCompProps { comp, name, .. } => format!("Updated comp {comp} properties ({name})"),
+            Op::AddLayer { layer, .. } => format!("Added layer “{}”", layer.name),
+            Op::RestoreLayer { layer, .. } => format!("Restored layer “{}” ({})", layer.name, layer.id),
+            Op::RemoveLayer { layer, .. } => format!("Removed layer {layer}"),
+            Op::RenameLayer { name, .. } => format!("Renamed layer to “{name}”"),
+            Op::SetLayerTime { layer, start, duration, .. } => {
+                format!("Set layer {layer} timing: start={start}, duration={duration}")
+            }
+            Op::SetLayerParent { layer, parent, .. } => match parent {
+                Some(p) => format!("Parented layer {layer} to {p}"),
+                None => format!("Unparented layer {layer}"),
+            },
+            Op::SetLayerBlendMode { layer, blend_mode, .. } => {
+                format!("Set layer {layer} blend mode to {blend_mode}")
+            }
+            Op::SetLayerVisible { layer, visible, .. } => {
+                format!("Set layer {layer} visibility to {visible}")
+            }
+            Op::SetLayerLocked { layer, locked, .. } => {
+                format!("Set layer {layer} locked to {locked}")
+            }
+            Op::SetValue { property, value, .. } => format!("Set {property:?} to {value:?}"),
+            Op::AddKeyframe { property, key, .. } => {
+                format!("Added {property:?} keyframe at t={:.2}s", key.time.as_secs_f64())
+            }
+            Op::RemoveKeyframe { property, time, .. } => {
+                format!("Removed {property:?} keyframe at t={:.2}s", time.as_secs_f64())
+            }
+            Op::MoveKeyframe { property, from, to, .. } => format!(
+                "Moved {property:?} keyframe {:.2}s → {:.2}s",
+                from.as_secs_f64(),
+                to.as_secs_f64()
+            ),
+            Op::SetEasing { property, time, .. } => {
+                format!("Changed {property:?} easing at t={:.2}s", time.as_secs_f64())
+            }
+            Op::ReorderLayer { layer, new_index, .. } => {
+                format!("Reordered layer {layer} to position {new_index}")
+            }
+            Op::AddMedia { asset } => format!("Imported media “{}”", asset.name),
+            Op::RestoreMedia { asset } => format!("Restored media “{}” ({})", asset.name, asset.id),
+            Op::RemoveMedia { media } => format!("Removed media {media}"),
+        }
+    }
+}
+
+/// Undo/redo stack. Stores *inverses*, not ops: undoing pops an inverse and
+/// applies it; redoing re-applies the inverse of the inverse.
+#[derive(Debug, Default, Clone)]
+pub struct History {
+    undo_stack: Vec<Op>,
+    redo_stack: Vec<Op>,
+}
+
+impl History {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply `op` and record it. ID-allocating ops (`CreateComp`, `AddLayer`,
+    /// `AddMedia`) get their inverses patched with the assigned IDs; failed
+    /// allocations are rolled back so counters never skip on failure.
+    pub fn commit(&mut self, project: &mut Project, op: Op) -> Result<(), ModelError> {
+        let allocates = matches!(
+            op,
+            Op::CreateComp { .. } | Op::AddLayer { .. } | Op::AddMedia { .. }
+        );
+        if !allocates {
+            let inverse = op.invert(project)?;
+            op.apply(project)?;
+            self.undo_stack.push(inverse);
+            self.redo_stack.clear();
+            return Ok(());
+        }
+
+        // Snapshot ALL allocators; roll back on failure.
+        let (before_comp, before_layer, before_media) =
+            (project.next_comp, project.next_layer, project.next_media);
+        let op_clone = op.clone();
+        match op.apply(project) {
+            Ok(()) => {}
+            Err(e) => {
+                project.next_comp = before_comp;
+                project.next_layer = before_layer;
+                project.next_media = before_media;
+                return Err(e);
+            }
+        }
+
+        let inverse = match op_clone {
+            Op::CreateComp { .. } => Op::RemoveComp {
+                comp: CompId(before_comp.0),
+            },
+            Op::AddLayer { comp, .. } => Op::RemoveLayer {
+                comp,
+                layer: LayerId(before_layer.0),
+            },
+            Op::AddMedia { .. } => Op::RemoveMedia {
+                media: MediaId(before_media.0),
+            },
+            _ => unreachable!("allocates gate guarantees an allocating op"),
+        };
+        self.undo_stack.push(inverse);
+        self.redo_stack.clear();
+        Ok(())
+    }
+
+    /// Undo the last committed op. Returns false when nothing to undo.
+    pub fn undo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
+        let Some(inverse) = self.undo_stack.pop() else {
+            return Ok(false);
+        };
+        let redo = inverse.invert(project)?;
+        inverse.apply(project)?;
+        self.redo_stack.push(redo);
+        Ok(true)
+    }
+
+    /// Redo the last undone op. Returns false when nothing to redo.
+    pub fn redo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
+        let Some(redo) = self.redo_stack.pop() else {
+            return Ok(false);
+        };
+        let inverse = redo.invert(project)?;
+        redo.apply(project)?;
+        self.undo_stack.push(inverse);
+        Ok(true)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// The committed history, for the legible-undo UI.
+    pub fn undo_descriptions(&self) -> Vec<String> {
+        self.undo_stack.iter().map(|op| op.describe()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{LayerKind, MediaKind};
+
+    fn make_test_project() -> (Project, CompId, LayerId) {
+        let mut p = Project::new("Test Project");
+        let comp = p.create_comp("Comp 1", 1920, 1080, FrameRate::FPS_30, Time(120_000 * 5));
+        let layer = p.insert_layer(
+            comp,
+            Layer::new(
+                "Layer 1",
+                LayerKind::Solid {
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+                Time::ZERO,
+                Time(120_000 * 5),
+            ),
+        );
+        (p, comp, layer)
+    }
+
+    #[test]
+    fn roundtrip_set_value() {
+        let (mut p, comp, layer) = make_test_project();
+        let mut history = History::new();
+
+        let initial_pos = p.layer(comp, layer).unwrap().transform.position;
+        assert_eq!(initial_pos, [0.0, 0.0]);
+
+        let op = Op::SetValue {
+            comp,
+            layer,
+            property: Property::Position,
+            value: PropValue::Vec2([150.0, -75.0]),
+        };
+
+        history.commit(&mut p, op).unwrap();
+        assert_eq!(p.layer(comp, layer).unwrap().transform.position, [150.0, -75.0]);
+
+        assert!(history.undo(&mut p).unwrap());
+        assert_eq!(p.layer(comp, layer).unwrap().transform.position, [0.0, 0.0]);
+
+        assert!(history.redo(&mut p).unwrap());
+        assert_eq!(p.layer(comp, layer).unwrap().transform.position, [150.0, -75.0]);
+    }
+
+    #[test]
+    fn roundtrip_layer_parenting_and_cycle_guard() {
+        let (mut p, comp, layer1) = make_test_project();
+        let layer2 = p.insert_layer(
+            comp,
+            Layer::new(
+                "Layer 2",
+                LayerKind::Solid {
+                    color: [0.0, 1.0, 0.0, 1.0],
+                },
+                Time::ZERO,
+                Time(120_000 * 5),
+            ),
+        );
+        let layer3 = p.insert_layer(
+            comp,
+            Layer::new(
+                "Layer 3",
+                LayerKind::Solid {
+                    color: [0.0, 0.0, 1.0, 1.0],
+                },
+                Time::ZERO,
+                Time(120_000 * 5),
+            ),
+        );
+
+        let mut history = History::new();
+
+        // 2 -> 1
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerParent {
+                    comp,
+                    layer: layer2,
+                    parent: Some(layer1),
+                },
+            )
+            .unwrap();
+        assert_eq!(p.layer(comp, layer2).unwrap().parent, Some(layer1));
+
+        // 3 -> 2
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerParent {
+                    comp,
+                    layer: layer3,
+                    parent: Some(layer2),
+                },
+            )
+            .unwrap();
+        assert_eq!(p.layer(comp, layer3).unwrap().parent, Some(layer2));
+
+        // Attempt cycle: 1 -> 3
+        let cycle_op = Op::SetLayerParent {
+            comp,
+            layer: layer1,
+            parent: Some(layer3),
+        };
+        let err = history.commit(&mut p, cycle_op);
+        assert!(matches!(err, Err(ModelError::ParentCycle(l1, l3)) if l1 == layer1 && l3 == layer3));
+
+        // Undo 3 -> 2
+        assert!(history.undo(&mut p).unwrap());
+        assert_eq!(p.layer(comp, layer3).unwrap().parent, None);
+
+        // Redo 3 -> 2
+        assert!(history.redo(&mut p).unwrap());
+        assert_eq!(p.layer(comp, layer3).unwrap().parent, Some(layer2));
+    }
+
+    #[test]
+    fn roundtrip_remove_comp_exact_restoration() {
+        let (mut p, comp, layer) = make_test_project();
+        let mut history = History::new();
+
+        // Set something unique on the layer
+        history
+            .commit(
+                &mut p,
+                Op::RenameLayer {
+                    comp,
+                    layer,
+                    name: "Special Layer".into(),
+                },
+            )
+            .unwrap();
+
+        // Remove comp
+        history.commit(&mut p, Op::RemoveComp { comp }).unwrap();
+        assert!(p.comp(comp).is_none());
+
+        // Undo RemoveComp -> comp and all layers restored exactly with identical IDs
+        assert!(history.undo(&mut p).unwrap());
+        assert!(p.comp(comp).is_some());
+        assert_eq!(p.layer(comp, layer).unwrap().name, "Special Layer");
+
+        // Redo RemoveComp
+        assert!(history.redo(&mut p).unwrap());
+        assert!(p.comp(comp).is_none());
+    }
+
+    #[test]
+    fn roundtrip_remove_layer_exact_restoration() {
+        let (mut p, comp, layer1) = make_test_project();
+        let layer2 = p.insert_layer(
+            comp,
+            Layer::new(
+                "Layer 2",
+                LayerKind::Solid {
+                    color: [0.0, 1.0, 0.0, 1.0],
+                },
+                Time::ZERO,
+                Time(120_000 * 5),
+            ),
+        );
+
+        let mut history = History::new();
+
+        // Remove layer1
+        history.commit(&mut p, Op::RemoveLayer { comp, layer: layer1 }).unwrap();
+        assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer2]);
+
+        // Undo -> layer1 restored at its original index (index 0)
+        assert!(history.undo(&mut p).unwrap());
+        assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer1, layer2]);
+        assert_eq!(p.layer(comp, layer1).unwrap().name, "Layer 1");
+    }
+
+    #[test]
+    fn roundtrip_all_layer_property_ops() {
+        let (mut p, comp, layer) = make_test_project();
+        let mut history = History::new();
+
+        // SetLayerTime
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerTime {
+                    comp,
+                    layer,
+                    start: Time(10_000),
+                    duration: Time(50_000),
+                },
+            )
+            .unwrap();
+        assert_eq!(p.layer(comp, layer).unwrap().start, Time(10_000));
+        assert_eq!(p.layer(comp, layer).unwrap().duration, Time(50_000));
+
+        // SetLayerBlendMode
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerBlendMode {
+                    comp,
+                    layer,
+                    blend_mode: BlendMode::Multiply,
+                },
+            )
+            .unwrap();
+        assert_eq!(p.layer(comp, layer).unwrap().blend_mode, BlendMode::Multiply);
+
+        // SetLayerVisible
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerVisible {
+                    comp,
+                    layer,
+                    visible: false,
+                },
+            )
+            .unwrap();
+        assert!(!p.layer(comp, layer).unwrap().visible);
+
+        // SetLayerLocked
+        history
+            .commit(
+                &mut p,
+                Op::SetLayerLocked {
+                    comp,
+                    layer,
+                    locked: true,
+                },
+            )
+            .unwrap();
+        assert!(p.layer(comp, layer).unwrap().locked);
+
+        // Undo all 4 ops
+        assert!(history.undo(&mut p).unwrap()); // locked
+        assert!(!p.layer(comp, layer).unwrap().locked);
+
+        assert!(history.undo(&mut p).unwrap()); // visible
+        assert!(p.layer(comp, layer).unwrap().visible);
+
+        assert!(history.undo(&mut p).unwrap()); // blend_mode
+        assert_eq!(p.layer(comp, layer).unwrap().blend_mode, BlendMode::Normal);
+
+        assert!(history.undo(&mut p).unwrap()); // time
+        assert_eq!(p.layer(comp, layer).unwrap().start, Time::ZERO);
+        assert_eq!(p.layer(comp, layer).unwrap().duration, Time(120_000 * 5));
+    }
+
+    #[test]
+    fn roundtrip_media_ops() {
+        let mut p = Project::new("Media Project");
+        let mut history = History::new();
+
+        let asset = MediaAsset {
+            id: MediaId(0),
+            name: "test.png".into(),
+            path: Some("/path/to/test.png".into()),
+            kind: MediaKind::Image,
+            slot: None,
+            alias: Some("logo".into()),
+            perception: None,
+        };
+
+        history.commit(&mut p, Op::AddMedia { asset }).unwrap();
+        assert_eq!(p.media.len(), 1);
+        let media_id = *p.media.keys().next().unwrap();
+
+        history.commit(&mut p, Op::RemoveMedia { media: media_id }).unwrap();
+        assert!(p.media.is_empty());
+
+        assert!(history.undo(&mut p).unwrap());
+        assert_eq!(p.media.len(), 1);
+        assert_eq!(p.media.get(&media_id).unwrap().name, "test.png");
+    }
+}

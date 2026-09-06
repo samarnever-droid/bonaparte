@@ -1,0 +1,11 @@
+[package]
+name = "bonaparte-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" }
+bonaparte-engine = { path = "../engine" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,18 @@
+api_version = "1.0"
+id = "builtin.blur"
+name = "Gaussian Blur"
+cost = "medium"
+shader = "blur.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "radius"
+name = "Radius"
+doc = "Blur radius in pixels."
+kind = { Slider = { min = 0.0, max = 100.0, default = 10.0 } }
+
+[[params]]
+id = "repeat_edge"
+name = "Repeat Edge"
+doc = "Repeat edge pixels to prevent dark borders."
+kind = { Checkbox = { default = true } }

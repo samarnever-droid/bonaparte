@@ -1,0 +1,36 @@
+api_version = "1.0"
+id = "builtin.drop_shadow"
+name = "Drop Shadow"
+cost = "medium"
+shader = "drop_shadow.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "offset_x"
+name = "Offset X"
+doc = "Horizontal shadow offset in pixels."
+kind = { Slider = { min = -200.0, max = 200.0, default = 10.0 } }
+
+[[params]]
+id = "offset_y"
+name = "Offset Y"
+doc = "Vertical shadow offset in pixels."
+kind = { Slider = { min = -200.0, max = 200.0, default = 10.0 } }
+
+[[params]]
+id = "radius"
+name = "Radius"
+doc = "Blur radius of the shadow in pixels."
+kind = { Slider = { min = 0.0, max = 100.0, default = 15.0 } }
+
+[[params]]
+id = "color"
+name = "Color"
+doc = "Base color of the cast shadow."
+kind = { Color = { default = [0.0, 0.0, 0.0, 0.75] } }
+
+[[params]]
+id = "opacity"
+name = "Opacity"
+doc = "Overall opacity multiplier for the shadow."
+kind = { Slider = { min = 0.0, max = 1.0, default = 0.75 } }

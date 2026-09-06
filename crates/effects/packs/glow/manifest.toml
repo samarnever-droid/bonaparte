@@ -1,0 +1,24 @@
+api_version = "1.0"
+id = "builtin.glow"
+name = "Glow"
+cost = "medium"
+shader = "glow.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "radius"
+name = "Radius"
+doc = "Blur radius of the glow halo, in pixels."
+kind = { Slider = { min = 0.0, max = 100.0, default = 12.0 } }
+
+[[params]]
+id = "intensity"
+name = "Intensity"
+doc = "How bright the halo is relative to the source."
+kind = { Slider = { min = 0.0, max = 4.0, default = 1.0 } }
+
+[[params]]
+id = "tint"
+name = "Tint"
+doc = "Color multiplier applied to the halo. White keeps the source colors."
+kind = { Color = { default = [1.0, 1.0, 1.0, 1.0] } }

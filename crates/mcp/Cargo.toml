@@ -1,0 +1,13 @@
+[package]
+name = "bonaparte-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" }
+bonaparte-engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+miniz_oxide = "0.8"
+crc32fast = "1.4"

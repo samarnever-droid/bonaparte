@@ -1,0 +1,11 @@
+import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
+
+// clearScreen false + fixed port: Tauri's devUrl points here.
+export default defineConfig({
+  plugins: [svelte(), tailwindcss()],
+  clearScreen: false,
+  server: { port: 5173, strictPort: true },
+  build: { target: "es2022" },
+});

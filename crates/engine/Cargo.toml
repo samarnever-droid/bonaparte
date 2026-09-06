@@ -1,0 +1,20 @@
+[package]
+name = "bonaparte-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" }
+glam = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true } # graph + tiles serialize into preview state
+
+# GPU backend is behind a feature so the pure core builds fast everywhere and
+# CI can enforce wasm32 purity without pulling wgpu into the check.
+# wgpu = { version = "24", optional = true }
+# bytemuck = { version = "1", features = ["derive"], optional = true }
+# encase = { version = "0.10", optional = true }
+
+[features]
+default = []
+gpu = []

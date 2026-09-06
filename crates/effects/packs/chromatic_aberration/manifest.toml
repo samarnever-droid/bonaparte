@@ -1,0 +1,18 @@
+api_version = "1.0"
+id = "builtin.chromatic_aberration"
+name = "Chromatic Aberration"
+cost = "light"
+shader = "chromatic_aberration.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "amount"
+name = "Amount"
+doc = "Color fringe separation offset in pixels."
+kind = { Slider = { min = 0.0, max = 50.0, default = 5.0 } }
+
+[[params]]
+id = "angle"
+name = "Angle"
+doc = "Direction angle of the color fringe split in degrees."
+kind = { Slider = { min = -180.0, max = 180.0, default = 0.0 } }

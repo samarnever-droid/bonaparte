@@ -1,0 +1,30 @@
+api_version = "1.0"
+id = "builtin.vignette"
+name = "Vignette"
+cost = "light"
+shader = "vignette.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "radius"
+name = "Radius"
+doc = "Inner radius of the clear center area (0.0 to 1.5)."
+kind = { Slider = { min = 0.0, max = 1.5, default = 0.75 } }
+
+[[params]]
+id = "softness"
+name = "Softness"
+doc = "Softness transition range of the falloff."
+kind = { Slider = { min = 0.01, max = 1.0, default = 0.45 } }
+
+[[params]]
+id = "intensity"
+name = "Intensity"
+doc = "Darkening amount at the outer corners."
+kind = { Slider = { min = 0.0, max = 2.0, default = 0.8 } }
+
+[[params]]
+id = "color"
+name = "Color"
+doc = "Border tint color for the vignette."
+kind = { Color = { default = [0.0, 0.0, 0.0, 1.0] } }

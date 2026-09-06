@@ -1,0 +1,11 @@
+[package]
+name = "bonaparte-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+kurbo = { version = "0.11", features = ["serde"] } # bezier math for easing curves + graph editor

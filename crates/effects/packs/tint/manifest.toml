@@ -1,0 +1,24 @@
+api_version = "1.0"
+id = "builtin.tint"
+name = "Tint"
+cost = "light"
+shader = "tint.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "black_color"
+name = "Map Black To"
+doc = "Target tint color mapped to shadow/dark luminance levels."
+kind = { Color = { default = [0.0, 0.0, 0.0, 1.0] } }
+
+[[params]]
+id = "white_color"
+name = "Map White To"
+doc = "Target tint color mapped to highlight/bright luminance levels."
+kind = { Color = { default = [1.0, 1.0, 1.0, 1.0] } }
+
+[[params]]
+id = "amount"
+name = "Amount"
+doc = "Tint blend amount from 0.0 (original) to 1.0 (fully tinted)."
+kind = { Slider = { min = 0.0, max = 1.0, default = 1.0 } }

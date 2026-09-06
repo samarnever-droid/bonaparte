@@ -1,0 +1,30 @@
+api_version = "1.0"
+id = "builtin.color_adjust"
+name = "Color Adjust"
+cost = "light"
+shader = "color_adjust.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "brightness"
+name = "Brightness"
+doc = "Additive brightness adjustment (-1.0 to 1.0)."
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "contrast"
+name = "Contrast"
+doc = "Contrast multiplier (0.0 = flat gray, 1.0 = normal, >1.0 = punchy)."
+kind = { Slider = { min = 0.0, max = 3.0, default = 1.0 } }
+
+[[params]]
+id = "saturation"
+name = "Saturation"
+doc = "Color saturation factor (0.0 = grayscale, 1.0 = normal, >1.0 = vivid)."
+kind = { Slider = { min = 0.0, max = 3.0, default = 1.0 } }
+
+[[params]]
+id = "hue_shift"
+name = "Hue Shift"
+doc = "Hue rotation in degrees (-180.0 to 180.0)."
+kind = { Slider = { min = -180.0, max = 180.0, default = 0.0 } }
