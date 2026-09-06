@@ -2,6 +2,7 @@ api_version = "1.0"
 id = "builtin.circle"
 name = "Circle Shape"
 category = "Generators"
+gpu_preview = true
 cost = "light"
 shader = "circle.wgsl"
 inputs = []
@@ -26,6 +27,7 @@ kind = { Color = { default = [0.42, 0.54, 1.0, 1.0] } }
 
 [[params]]
 id = "stroke_width"
+scale_with_resolution = true
 name = "Stroke Width"
 doc = "Width of the vector outline stroke in pixels."
 kind = { Slider = { min = 0.0, max = 100.0, default = 0.0 } }

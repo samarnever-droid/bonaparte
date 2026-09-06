@@ -48,6 +48,7 @@ fn test_serde_all_model_entities() {
         name: "test_image.png".into(),
         path: Some("assets/img.png".into()),
         kind: MediaKind::Image,
+        audio: None,
         slot: Some(SlotDef {
             label: "Logo Slot".into(),
         }),
@@ -139,6 +140,7 @@ fn test_serde_all_op_variants() {
         duration: Time(100),
         background: [0.0; 4],
         layer_order: vec![],
+        audio: Default::default(),
         layers: std::collections::BTreeMap::new(),
     };
     let dummy_media = MediaAsset {
@@ -147,6 +149,7 @@ fn test_serde_all_op_variants() {
         path: None,
         kind: MediaKind::Image,
         embedded: None,
+        audio: None,
         slot: None,
         alias: None,
         perception: None,

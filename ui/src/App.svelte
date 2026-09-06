@@ -4,6 +4,8 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import Viewport from "./lib/components/Viewport.svelte";
   import Properties from "./lib/components/Properties.svelte";
+  import AudioInspector from "./lib/components/AudioInspector.svelte";
+  import { importAudio, deleteAudio, duplicateAudio, splitAudio } from "./lib/audio/actions";
   import Timeline from "./lib/components/Timeline.svelte";
   import Dialogs from "./lib/components/Dialogs.svelte";
   import Icon from "./lib/components/Icon.svelte";
@@ -30,6 +32,14 @@
   import { ticksPerFrame } from "./lib/model";
   let timelineHeight = $state(252),
     draggingFiles = $state(false);
+  let previousTimelineMode = "layers";
+  $effect(() => {
+    const mode = editor.timelineMode;
+    if (mode !== previousTimelineMode) {
+      timelineHeight = mode === "audio" ? Math.min(window.innerHeight * 0.55, 470) : 252;
+      previousTimelineMode = mode;
+    }
+  });
   let dragDepth = 0,
     resizeOrigin = 0,
     resizeStart = 0;
@@ -86,15 +96,18 @@
     }
     if (mod && key === "d") {
       e.preventDefault();
-      void duplicateSelected();
+      if (editor.timelineMode === "audio") {
+        if (e.shiftKey) void splitAudio();
+        else void duplicateAudio();
+      } else void duplicateSelected();
       return;
     }
     if (mod) return;
     if (e.code === "Space") {
       e.preventDefault();
       if (!e.repeat) {
-        if (editor.playing) pause();
-        else play();
+        if (editor.playing || editor.audioStarting) pause();
+        else void play();
       }
       return;
     }
@@ -128,11 +141,13 @@
     }
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      void deleteSelected();
+      if (editor.timelineMode === "audio") void deleteAudio();
+      else void deleteSelected();
       return;
     }
     if (key === "v") editor.tool = "select";
     if (key === "h") editor.tool = "hand";
+    if (key === "r") editor.tool = "rotate";
     if (key === "g") editor.showGuides = !editor.showGuides;
     if (key === "1") setWorkspace("Design");
     if (key === "2") setWorkspace("Color");
@@ -163,8 +178,13 @@
       )
         return;
       await openProjectFile(file);
-    } else if (file.type.startsWith("image/")) await importImage(file);
-    else notify("This import supports PNG, JPEG, WebP, and .bonaparte project files.", true);
+    } else if (
+      file.type.startsWith("audio/") ||
+      /\.(wav|mp3|flac|ogg|oga|aif|aiff|m4a|aac)$/i.test(file.name)
+    )
+      await importAudio(file);
+    else if (file.type.startsWith("image/")) await importImage(file);
+    else notify("Import an image, audio file, or .bonaparte project.", true);
   }
   function beforeUnload(e: BeforeUnloadEvent) {
     if (editor.dirty) {
@@ -195,7 +215,11 @@
 
 <div class="shell" style={`--timeline-height:${timelineHeight}px`}>
   <TopBar />
-  <main class="workspace"><Sidebar /><Viewport /><Properties /></main>
+  <main class="workspace">
+    <Sidebar /><Viewport
+    />{#if editor.timelineMode === "audio" && editor.audioProtocol}<AudioInspector
+      />{:else}<Properties />{/if}
+  </main>
   <div class="timeline-region">
     <button
       type="button"
@@ -225,7 +249,9 @@
             ? "Rust engine connected"
             : "Connecting to engine…"}</span
     ><span class="status-separator">/</span><span class="mono"
-      >{editor.frameMs > 0 ? `${Math.round(editor.frameMs)} ms / frame` : "CPU reference"}</span
+      >{editor.frameMs > 0
+        ? `${Math.round(editor.frameMs)} ms${editor.previewMetadata?.cacheHit ? " · cached" : " / frame"}`
+        : "CPU reference"}</span
     ><span class="spacer"></span><span class="recovery-status"
       ><Icon name="check" size={9} />{editor.recovery}</span
     ><span class="status-separator">/</span><button

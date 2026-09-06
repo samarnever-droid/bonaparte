@@ -48,7 +48,13 @@
         y="72">0</text
       ><text x="234" y="72">255</text></svg
     >
-    <div class="scope-note"><span>8-bit sRGB</span><span>Display-referred output</span></div>
+    <div class="scope-note">
+      <span>8-bit sRGB</span><span
+        >{editor.previewMetadata?.divisor && editor.previewMetadata.divisor > 1
+          ? `1/${editor.previewMetadata.divisor} preview · sampled`
+          : "Display-referred output"}</span
+      >
+    </div>
   </section>
 {/if}
 <div class="effect-stack-toolbar">

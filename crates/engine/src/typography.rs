@@ -116,3 +116,62 @@ pub fn rasterize_text(
     }
     Ok(bitmap)
 }
+
+/// Rasterize at an output-aware density while retaining the original layout
+/// metrics. Scaling a text layer must not enlarge its old low-resolution mask.
+pub fn rasterize_text_scaled(
+    text: &str,
+    size: f32,
+    bold: bool,
+    tracking: f32,
+    density: f32,
+) -> Result<TextBitmap, String> {
+    if density == 1.0 {
+        return rasterize_text(text, size, bold, tracking);
+    }
+    if !density.is_finite() || density <= 0.0 || density > 8.0 {
+        return Err("Invalid typography raster density".into());
+    }
+    let f = font(bold);
+    let logical = measure_text(text, size, bold, tracking);
+    let width = (logical[0] * density).ceil() as u32;
+    let height = (logical[1] * density).ceil() as u32;
+    if u64::from(width) * u64::from(height) > 16_777_216 {
+        return Err("Text raster exceeds 16 megapixels at this scale".into());
+    }
+    let metrics = f
+        .horizontal_line_metrics(size)
+        .expect("bundled font metrics");
+    let mut bitmap = TextBitmap {
+        width,
+        height,
+        coverage: vec![0; width as usize * height as usize],
+    };
+    let mut baseline = metrics.ascent;
+    for line in text.split('\n') {
+        let mut advance = 1.0f32;
+        let mut previous = None;
+        for ch in line.chars() {
+            if let Some(prev) = previous {
+                advance += f.horizontal_kern(prev, ch, size).unwrap_or(0.0) + tracking;
+            }
+            let (m, mask) = f.rasterize(ch, size * density);
+            let x0 = (advance * density).round() as i32 + m.xmin;
+            let y0 = (baseline * density).round() as i32 - m.ymin - m.height as i32;
+            for y in 0..m.height {
+                for x in 0..m.width {
+                    let px = x0 + x as i32;
+                    let py = y0 + y as i32;
+                    if px >= 0 && py >= 0 && px < width as i32 && py < height as i32 {
+                        let i = py as usize * width as usize + px as usize;
+                        bitmap.coverage[i] = bitmap.coverage[i].max(mask[y * m.width + x]);
+                    }
+                }
+            }
+            advance += f.metrics(ch, size).advance_width;
+            previous = Some(ch);
+        }
+        baseline += metrics.new_line_size;
+    }
+    Ok(bitmap)
+}

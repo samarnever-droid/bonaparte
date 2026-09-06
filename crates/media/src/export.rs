@@ -41,6 +41,8 @@ pub struct ExportConfig {
     pub total_frames: usize,
     pub crf: u32,
     pub preset: String,
+    /// A shared-mixer float WAV, matched to the scheduled video duration.
+    pub audio_wav: Option<PathBuf>,
 }
 
 impl ExportConfig {
@@ -59,6 +61,7 @@ impl ExportConfig {
             total_frames,
             crf: 18, // High visual quality default
             preset: "medium".to_string(),
+            audio_wav: None,
         }
     }
 
@@ -85,7 +88,8 @@ pub struct ExportStats {
 /// Stream rendered frames one by one into FFmpeg stdin to produce an MP4 video file.
 ///
 /// render_frame is invoked synchronously for each frame index 0..config.total_frames.
-/// Only a single frame buffer exists in memory at any point in time.
+/// Frames are delivered sequentially; the render callback, audio mixer and
+/// encoder can allocate additional memory. This is not a process-RAM bound.
 pub fn export_mp4_stream<F>(
     config: &ExportConfig,
     mut render_frame: F,
@@ -116,7 +120,8 @@ where
     }
     let expected_frame_bytes = (config.width * config.height * 4) as usize;
 
-    let mut child = Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-y")
         .arg("-v")
         .arg("error")
@@ -129,7 +134,13 @@ where
         .arg("-r")
         .arg(format!("{}/{}", config.fps.num, config.fps.den))
         .arg("-i")
-        .arg("-")
+        .arg("-");
+    if let Some(audio) = &config.audio_wav {
+        command.arg("-i").arg(audio).args([
+            "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+        ]);
+    }
+    let mut child = command
         .arg("-c:v")
         .arg("libx264")
         .arg("-pix_fmt")

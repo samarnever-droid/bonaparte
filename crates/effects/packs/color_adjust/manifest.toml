@@ -2,6 +2,7 @@ api_version = "1.0"
 id = "builtin.color_adjust"
 name = "Color Adjust"
 category = "Color correction"
+gpu_preview = true
 cost = "light"
 shader = "color_adjust.wgsl"
 inputs = ["input"]

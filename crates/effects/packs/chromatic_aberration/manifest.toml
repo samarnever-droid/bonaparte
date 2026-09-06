@@ -2,12 +2,14 @@ api_version = "1.0"
 id = "builtin.chromatic_aberration"
 name = "Chromatic Aberration"
 category = "Distort"
+gpu_preview = true
 cost = "light"
 shader = "chromatic_aberration.wgsl"
 inputs = ["input"]
 
 [[params]]
 id = "amount"
+scale_with_resolution = true
 name = "Amount"
 doc = "Color fringe separation offset in pixels."
 kind = { Slider = { min = 0.0, max = 50.0, default = 5.0 } }

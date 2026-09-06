@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Color } from "../model";
   import { fromHex, toHex } from "../color";
+  import { inputGroup, releaseInputGroup, finiteInput } from "../live-input";
+  import { flushLiveEdits } from "../store.svelte";
   let {
     value,
     label,
@@ -12,9 +14,16 @@
     label: string;
     linear?: boolean;
     disabled?: boolean;
-    onchange: (color: Color) => unknown;
+    onchange: (color: Color, group?: string) => unknown;
   } = $props();
   const hex = $derived(toHex(value, linear));
+  let focused = $state(false),
+    draft = $state("");
+  function end(node: HTMLElement) {
+    releaseInputGroup(node);
+    focused = false;
+    void flushLiveEdits();
+  }
 </script>
 
 <div class="color-field">
@@ -23,21 +32,31 @@
     aria-label={`${label} color`}
     value={hex}
     {disabled}
-    onchange={(e) => onchange(fromHex(e.currentTarget.value, value[3], linear))}
+    oninput={(e) =>
+      onchange(fromHex(e.currentTarget.value, value[3], linear), inputGroup(e.currentTarget))}
+    onchange={() => void flushLiveEdits()}
+    onblur={(e) => end(e.currentTarget)}
   />
   <input
     class="hex mono"
     aria-label={`${label} hex`}
-    value={hex.toUpperCase()}
+    value={focused ? draft : hex.toUpperCase()}
     maxlength="7"
     {disabled}
-    onchange={(e) => {
-      const raw = e.currentTarget.value;
-      if (/^#[0-9a-f]{6}$/i.test(raw)) {
-        e.currentTarget.setCustomValidity("");
-        onchange(fromHex(raw, value[3], linear));
-      } else {
-        e.currentTarget.value = hex;
+    onfocus={(e) => {
+      focused = true;
+      draft = e.currentTarget.value;
+    }}
+    oninput={(e) => {
+      draft = e.currentTarget.value;
+      if (/^#[0-9a-f]{6}$/i.test(draft))
+        onchange(fromHex(draft, value[3], linear), inputGroup(e.currentTarget));
+    }}
+    onblur={(e) => end(e.currentTarget)}
+    onkeydown={(e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void flushLiveEdits();
       }
     }}
   />
@@ -49,13 +68,18 @@
       min="0"
       max="100"
       {disabled}
-      onchange={(e) =>
-        onchange([
-          value[0],
-          value[1],
-          value[2],
-          Math.max(0, Math.min(100, Number(e.currentTarget.value))) / 100,
-        ])}
+      oninput={(e) => {
+        const n = finiteInput(e.currentTarget.value);
+        if (n !== null && n >= 0 && n <= 100)
+          onchange([value[0], value[1], value[2], n / 100], inputGroup(e.currentTarget));
+      }}
+      onblur={(e) => end(e.currentTarget)}
+      onkeydown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void flushLiveEdits();
+        }
+      }}
     /><span>%</span></span
   >
 </div>

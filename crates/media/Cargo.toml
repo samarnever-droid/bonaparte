@@ -9,3 +9,8 @@ bonaparte-engine = { path = "../engine" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bonaparte-audio = { path = "../audio" } # shared deterministic float mixer/source interface
+base64 = "0.22" # original encoded audio in portable project files
+sha2 = "0.10" # content-addressed decoded audio, never filename-based identity
+memmap2 = "0.9" # disk-backed float PCM instead of whole-source heap allocations
+tempfile = "3" # bounded, atomic import and audio export intermediates

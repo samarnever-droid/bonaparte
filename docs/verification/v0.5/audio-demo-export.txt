@@ -1,0 +1,4 @@
+   Compiling bonaparte-runtime v0.5.0 (/home/user/bonaparte/crates/runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.37s
+     Running `target/debug/examples/render_audio examples/ignition-audio.bonaparte /home/user/bonaparte-v05/IGNITION-processed.wav`
+Native audio exported in 1.038s

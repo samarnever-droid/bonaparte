@@ -31,6 +31,9 @@ pub struct EffectManifest {
     pub inputs: Vec<String>,
     #[serde(default)]
     pub params: Vec<ParamDef>,
+    /// Opt-in for the native fragment-pass preview contract; false uses CPU fallback.
+    #[serde(default)]
+    pub gpu_preview: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +60,9 @@ pub struct ParamDef {
     pub step: Option<f32>,
     #[serde(default)]
     pub unit: String,
+    /// A length/offset in source pixels, scaled only for reduced preview grids.
+    #[serde(default)]
+    pub scale_with_resolution: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +145,14 @@ impl EffectManifest {
             if !p.kind.accepts(&p.kind.default_value()) {
                 return Err(ManifestError::Invalid(format!(
                     "param `{}` has an invalid default",
+                    p.id
+                )));
+            }
+            if p.scale_with_resolution
+                && !matches!(p.kind, ParamKind::Slider { .. } | ParamKind::Point { .. })
+            {
+                return Err(ManifestError::Invalid(format!(
+                    "param `{}`: pixel scaling requires a slider or point",
                     p.id
                 )));
             }

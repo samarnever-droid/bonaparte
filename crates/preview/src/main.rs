@@ -1,6 +1,6 @@
 //! Development-only bridge. Vite proxies /api so browser clients never use localhost.
 //! Intentionally no arbitrary filesystem read/write endpoints and no CORS bypass.
-use bonaparte_runtime::{EditorSession, RenderRequest, MAX_PROJECT_BYTES};
+use bonaparte_runtime::{EditorSession, PreviewRequest, RenderRequest, MAX_PROJECT_BYTES};
 use serde_json::{json, Value};
 use std::{
     io::Read,
@@ -21,7 +21,8 @@ fn handle(mut request: Request, session: &Mutex<EditorSession>) {
             request,
             200,
             "application/json",
-            b"{\"status\":\"ok\",\"renderer\":\"Rust CPU reference\"}".to_vec(),
+            b"{\"status\":\"ok\",\"renderer\":\"Rust preview runtime\",\"previewProtocol\":3}"
+                .to_vec(),
         );
         return;
     }
@@ -57,6 +58,63 @@ fn handle(mut request: Request, session: &Mutex<EditorSession>) {
             return Err("Request too large".into());
         }
         let args: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        if name == "import_audio" {
+            let prepared = bonaparte_runtime::audio::prepare_import(args)?;
+            let result = session
+                .lock()
+                .map_err(|_| "Editor session unavailable")?
+                .import_audio(prepared)?;
+            return Ok((
+                "application/json",
+                serde_json::to_vec(&result).map_err(|e| e.to_string())?,
+            ));
+        }
+        if name == "audio_chunk" {
+            let request: bonaparte_runtime::AudioChunkRequest =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let input = session
+                .lock()
+                .map_err(|_| "Editor session unavailable")?
+                .audio_input(request.comp_id)?;
+            return Ok(("application/octet-stream", input.packet(request)?));
+        }
+        if name == "export_wav" {
+            let comp = serde_json::from_value(args["compId"].clone()).map_err(|e| e.to_string())?;
+            let input = session
+                .lock()
+                .map_err(|_| "Editor session unavailable")?
+                .audio_input(comp)?;
+            let temp = tempfile::Builder::new()
+                .suffix(".wav")
+                .tempfile()
+                .map_err(|e| e.to_string())?
+                .into_temp_path();
+            input.wav(&temp)?;
+            if std::fs::metadata(&temp).map_err(|e| e.to_string())?.len() > 128 * 1024 * 1024 {
+                return Err("Browser WAV exceeds 128 MiB; use the native file export".into());
+            }
+            return Ok((
+                "audio/wav",
+                std::fs::read(&temp).map_err(|e| e.to_string())?,
+            ));
+        }
+        if name == "interaction_planes" {
+            let request = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let input = session
+                .lock()
+                .map_err(|_| "Editor session unavailable")?
+                .interaction_input(request)?;
+            return Ok(("application/octet-stream", input.packet()?));
+        }
+        if name == "preview_frame" {
+            let request: PreviewRequest =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let job = session
+                .lock()
+                .map_err(|_| "Editor session unavailable")?
+                .preview_input(request)?;
+            return Ok(("application/octet-stream", job.packet()?));
+        }
         if matches!(
             name.as_str(),
             "render_frame_raw" | "export_png" | "export_video"

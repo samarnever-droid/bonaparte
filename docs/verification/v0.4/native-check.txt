@@ -1,0 +1,5 @@
+    Checking bonaparte-audio v0.4.0 (/home/user/bonaparte/crates/audio)
+    Checking bonaparte-media v0.4.0 (/home/user/bonaparte/crates/media)
+    Checking bonaparte-runtime v0.4.0 (/home/user/bonaparte/crates/runtime)
+    Checking bonaparte-app v0.4.0 (/home/user/bonaparte/ui/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.84s

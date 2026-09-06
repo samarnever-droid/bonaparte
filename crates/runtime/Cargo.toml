@@ -3,7 +3,12 @@ name = "bonaparte-runtime"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["gpu"]
+gpu = ["dep:bonaparte-gpu"]
+
 [dependencies]
+bonaparte-gpu = { path = "../gpu", optional = true } # optional native GPU preview with explicit CPU fallback
 bonaparte-model = { path = "../model" }
 bonaparte-engine = { path = "../engine" }
 bonaparte-effects = { path = "../effects" }
@@ -13,3 +18,4 @@ serde_json = { workspace = true }
 base64 = "0.22" # portable embedded images and binary exports over native JSON IPC
 png = "0.18" # lossless still-frame export without FFmpeg
 tempfile = "3" # atomic media export preserves an existing file if rendering fails
+bonaparte-audio = { path = "../audio" } # one mixer for streamed playback, WAV and AAC export

@@ -1,0 +1,9 @@
+    Checking bonaparte-model v0.5.0 (/home/user/bonaparte/crates/model)
+    Checking bonaparte-effects v0.5.0 (/home/user/bonaparte/crates/effects)
+    Checking bonaparte-engine v0.5.0 (/home/user/bonaparte/crates/engine)
+    Checking bonaparte-audio v0.5.0 (/home/user/bonaparte/crates/audio)
+    Checking bonaparte-gpu v0.5.0 (/home/user/bonaparte/crates/gpu)
+    Checking bonaparte-media v0.5.0 (/home/user/bonaparte/crates/media)
+   Compiling bonaparte-app v0.5.0 (/home/user/bonaparte/ui/src-tauri)
+    Checking bonaparte-runtime v0.5.0 (/home/user/bonaparte/crates/runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.22s

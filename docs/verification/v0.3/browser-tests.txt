@@ -1,0 +1,27 @@
+
+> bonaparte-ui@0.3.0 test:e2e
+> playwright test
+
+[WebServer]     Blocking waiting for file lock on package cache
+[WebServer]     Blocking[WebServer]  waiting for file lock on package cache
+[WebServer]     Blocking waiting for file lock on build directory
+[WebServer]    Compiling bonaparte-preview v0.3.0 (/home/user/bonaparte/crates/preview)
+[WebServer]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.61s
+[WebServer] Bonaparte Rust render service on 0.0.0.0:[WebServer] 4318 (development only)
+
+Running 12 tests using 1 worker
+
+  ✓   1 tests/editor.spec.ts:108:1 › composition creation and background are one undoable transaction (2.0s)
+  ✓   2 tests/editor.spec.ts:138:1 › text, shape content, canvas gestures, lock and duplicate update Rust state (1.6s)
+  ✓   3 tests/editor.spec.ts:183:1 › color grading changes real pixels, supports bypass, order, and parameter keys (1.8s)
+  ✓   4 tests/editor.spec.ts:235:1 › image import, project file round trip, invalid open, PNG and MP4 downloads (1.6s)
+  ✓   5 tests/editor.spec.ts:304:1 › motion recipes, key seeking and dragging, easing editor and playback (1.6s)
+  ✓   6 tests/editor.spec.ts:356:1 › layer bars trim and retime transform keys in one undoable gesture (943ms)
+  ✓   7 tests/editor.spec.ts:400:1 › editable Orbit example uses the same renderer in all three workspaces (1.4s)
+  ✓   8 tests/performance.spec.ts:75:1 › resolution, frame reuse, and cache clearing are preview-only controls (842ms)
+  ✓   9 tests/performance.spec.ts:97:1 › half-resolution canvas gestures use original coordinates and Auto restores full quality (962ms)
+  ✓  10 tests/performance.spec.ts:128:1 › the engine badge reports real GPU execution and explicit whole-frame fallback (1.2s)
+  ✓  11 tests/performance.spec.ts:161:1 › quarter preview does not downsample downloaded PNG exports (825ms)
+  ✓  12 tests/performance.spec.ts:175:1 › late real renderer responses cannot overwrite a newer resolution choice (1.2s)
+
+  12 passed (27.2s)

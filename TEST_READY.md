@@ -1,44 +1,48 @@
-# Foundation verification — v0.2
+# Verification — v0.5.1 editing stability
 
-Verified locally on **2026-09-06**, based on upstream commit `b1278c8`. This supersedes the prototype's earlier completion/audit claims. Command output is included under [`docs/verification`](docs/verification).
+Verified locally on **2026-09-06**. This patch addresses reproduced editing failures, not an assertion that every UI bug is fixed. Previous aggregate test results missed several of these interaction sequences.
 
-## Results
+## Current results
 
 | Check | Result |
 |---|---|
-| `cargo test --locked --workspace --exclude bonaparte-app` | **157 passed, 0 failed** |
-| `cargo check --locked -p bonaparte-app` | Passed with the native Linux Tauri prerequisites installed |
-| `cargo check --locked -p bonaparte-engine --target wasm32-unknown-unknown` | Passed |
-| `cargo fmt --all --check` | Passed |
-| `npm run check` | **0 errors, 0 warnings** from Svelte check |
-| `npm run build` | Passed, production Vite bundle generated |
-| `npm run test:e2e` | **7 passed**, Chromium, real Rust service, isolated ports 4318/5183 |
-| Live preview smoke test | Real 960×540 canvas; no page/console errors; source served on port 5173 |
-| Bundled effect WGSL | All 13 packs parsed/type-validated with Naga; **not GPU-executed** |
-| MP4 verification | FFmpeg/ffprobe ran: native runtime NTSC test confirms 3 frames at 24000/1001; browser download test confirms 3 frames at 160×90 |
+| Locked Rust workspace tests (native app harness excluded) | **213 passed**, no warnings |
+| New history-group regressions | **3 passed**: original inverse/latest redo, separate targets, invalid edit safety |
+| New raster-quality regressions | **3 passed**: enlarged glyph/generator grids, nested render density, preview/output consistency |
+| Native Linux Tauri compile | Passed |
+| Pure engine/audio WASM check | Passed |
+| Svelte / TypeScript | **0 errors, 0 warnings** |
+| Production frontend | Built successfully |
+| Audio worklet tests | **6 passed** |
+| Real-browser workflow suite | **36 passed**, including **14 editing-stability workflows** |
+| Live smoke | Full-quality native frame loaded on port 5173; rotation-tool control accessible; no reported page/console errors |
 
-The Rust total includes **39 new regression tests** across model, effects, engine, runtime and MCP, plus the retained suites. Browser tests cover composition create/settings/undo, editable text and shapes, canvas transforms, locking/duplication, grade pixels/bypass/ordering/animation, imported images and project round trips, invalid files, PNG/MP4 downloads, motion recipes, key dragging, easing, playback, layer trimming/retiming and all three workspaces.
+The full Rust/browser results include the earlier audio, effects, persistence, history, GPU-API and export regressions. GPU execution was on software Vulkan/llvmpipe; physical GPU/native-device validation is not claimed.
 
-Regression coverage specifically includes failed operations preserving state/history, malformed base64 inside generic Batches, restoration ID collisions, unsafe ID allocator rejection, **all 256 operations surviving undo despite the 200-transaction history cap**, alpha-aware compositing, oversized text errors, exact video timing and preservation of existing files on failed exports.
+## Behavior specifically covered
 
-## Environment
+- Text, position, color, alpha, effect values and shape dimensions change while the input remains focused.
+- Native color-picker `input` events work without waiting for its final `change` event.
+- Incomplete numeric values are not treated as zero edits.
+- Delayed acknowledgements do not overwrite newer typed text.
+- Focused edits persist incrementally and still undo/redo as one compatible edit group.
+- Rapid visibility toggles do not reuse the same stale boolean.
+- Visibility changes during transform refinement do not leave an old proxy covering the canvas.
+- Rotation-handle placement follows the rotated edge; anchor pivots and nonuniform parent transforms are tested.
+- Scaling uses the anchor and respects an explicit Full-quality selection.
+- Enlarged text, generators and nested compositions get output-aware rasterization rather than fixed-size bitmap enlargement.
+- Timeline view resets on composition changes, 75-second navigation works, duration can grow, and blank projects begin with 30 seconds.
 
-- Linux x86_64, two-vCPU sandbox (Intel Xeon 2.60 GHz reported by `lscpu`).
-- Rust **1.98.1**, Node **20.20.2**.
-- FFmpeg/ffprobe **7.1.5**, with libx264 available.
-- Engine/effects/font rasterizer optimized in the development Cargo profile.
+These tests check rendered pixels and the real Rust document, not only field labels or mock state. The delayed-response tests delay genuine runtime responses.
 
-## Performance observation, not a product guarantee
+## Scope / remaining uncertainty
 
-Eight warm sequential raw-frame requests for the editable Orbit project at **960×540** had a median of **103.23 ms** in this sandbox. One warm-up was discarded; requests used successive 4000-tick steps. Timing includes local HTTP transfer of RGBA bytes, not browser painting. Raw samples and method are recorded in [`docs/performance-sample.json`](docs/performance-sample.json).
+The initial restoration attempt lacked Chromium system libraries and did not exercise the app; those dependencies were installed before behavior was tested. A later reproduction run exposed the focus, visibility, rotation and stale-proxy failures. One preliminary timeline test used an invalid external-state/disabled-Undo setup and was corrected to test real composition switching.
 
-This is well below 30-fps playback speed and does **not** prove a frame-rate or memory target on user hardware. Preview coalesces/skips frames under load; video export renders every scheduled frame. GPU execution, caching and ROI work are still needed.
+No claim is made that “hundreds of bugs” were exhaustively found or fixed. Additional input methods, platforms, complex hierarchies and large project combinations still need real-use coverage. The current bug ledger is [STABILITY-0.5.1.md](docs/STABILITY-0.5.1.md).
 
-## What these checks do not establish
+The 24-hour composition validation ceiling remains; “no five-second limit” does not mean literally infinite export duration. Imported raster images retain their native detail limits. Adaptive source rasterization is bounded to 8× density and the documented memory/pixel budgets. Auto movement proxies may still approximate expensive composites until native refinement; scaling/rotation use fresh frames, and explicit Full quality does not use a low-resolution transform proxy.
 
-- Native GUI/file-dialog E2E behavior, Windows/macOS behavior, signed installers or auto-updates.
-- GPU rendering, CPU/GPU pixel parity, sustained memory bounds, or an 8 GB performance guarantee.
-- Video/audio timeline editing, masks, complex typography, calibrated color management or AE parity.
-- Power-loss-safe directory syncing, export cancellation, or long-running stress reliability.
+The workspace has one current preview: **Bonaparte Studio · Stability fixes**, port **5173**, using Rust service **4317**. The saved Orbit project was restored from its retained project copy. Old in-memory undo history is not reconstructed after an environment restart.
 
-A GitHub Actions workflow is included in `.github/workflows/foundation.yml` to run the core/browser/native-compile checks. It was added locally; no successful remote CI run or upstream push is claimed. See [TEST_INFRA.md](TEST_INFRA.md) for reproducible commands and test files.
+Source edits remain local and uncommitted. No GitHub push, remote CI success or cross-platform native GUI E2E validation is claimed. Evidence is under `docs/verification/v0.5.1`.

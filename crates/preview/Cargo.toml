@@ -7,3 +7,5 @@ edition.workspace = true
 bonaparte-runtime = { path = "../runtime" }
 serde_json = { workspace = true }
 tiny_http = "0.12" # minimal development-only HTTP transport for the real Rust runtime
+
+tempfile = "3" # temporary audio-only download, removed on success/error

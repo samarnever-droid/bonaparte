@@ -380,6 +380,7 @@ pub fn probe_asset(
         path: Some(path.to_string_lossy().into_owned()),
         kind,
         embedded: None,
+        audio: None,
         slot: None,
         alias: None,
         perception,

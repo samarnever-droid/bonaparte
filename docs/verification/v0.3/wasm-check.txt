@@ -1,0 +1,2 @@
+    Checking bonaparte-engine v0.3.0 (/home/user/bonaparte/crates/engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.42s

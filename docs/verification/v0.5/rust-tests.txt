@@ -1,0 +1,523 @@
+   Compiling bonaparte-mcp v0.5.0 (/home/user/bonaparte/crates/mcp)
+   Compiling bonaparte-preview v0.5.0 (/home/user/bonaparte/crates/preview)
+   Compiling bonaparte-runtime v0.5.0 (/home/user/bonaparte/crates/runtime)
+   Compiling bonaparte-gpu v0.5.0 (/home/user/bonaparte/crates/gpu)
+   Compiling bonaparte-media v0.5.0 (/home/user/bonaparte/crates/media)
+   Compiling bonaparte-audio v0.5.0 (/home/user/bonaparte/crates/audio)
+   Compiling bonaparte-effects v0.5.0 (/home/user/bonaparte/crates/effects)
+   Compiling bonaparte-engine v0.5.0 (/home/user/bonaparte/crates/engine)
+   Compiling bonaparte-model v0.5.0 (/home/user/bonaparte/crates/model)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_audio-3917ce089e6869f4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mixing.rs (target/debug/deps/mixing-1c9cf5ec889d9056)
+
+running 11 tests
+test audio_time_is_not_quantized_to_video_frames ... ok
+test arrangement_edits_are_atomic_undoable_and_reject_bad_source_ranges ... ok
+test downsampling_suppresses_out_of_band_aliasing ... ok
+test chunks_and_arbitrary_seek_ranges_are_sample_identical ... ok
+test mono_uses_equal_power_pan_and_stereo_center_is_unchanged ... ok
+test nested_audio_obeys_comp_time_and_visibility_not_visual_opacity ... ok
+test repeated_precomp_graph_validation_does_not_expand_exponentially ... ok
+test reverse_and_mute_solo_are_real_mix_operations ... ok
+test source_offsets_gaps_and_overlapping_clips_mix_at_sample_boundaries ... ok
+test unclipped_float_mix_reports_overload_and_gain_reduces_it ... ok
+test moving_and_splitting_keep_varispeed_fades_and_automation_identical ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/processing.rs (target/debug/deps/processing-79c1ee92216ee835)
+
+running 8 tests
+test eq_bell_gain_and_highpass_are_measurable ... ok
+test compressor_reduces_steady_level_and_links_stereo ... ok
+test flat_enabled_eq_is_neutral ... ok
+test invalid_eq_and_feedback_routes_fail_atomically ... ok
+test nested_limiter_routes_are_latency_aligned ... ok
+test limiter_enforces_sample_ceiling_without_shifting_the_impulse ... ok
+test routing_and_post_strip_sends_sum_without_duplicate_dry_paths ... ok
+test processed_seek_and_chunk_boundaries_match_contiguous_output ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_effects-4faa22cbdaf8c358)
+
+running 2 tests
+test tests::every_builtin_is_a_valid_public_api_plugin ... ok
+test tests::effect_registry_contains_all_11_builtins ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/circle_plugin.rs (target/debug/deps/circle_plugin-136ee4140d650e4a)
+
+running 2 tests
+test test_microkernel_circle_evaluator ... ok
+test test_circle_manifest_registered ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/color_grading.rs (target/debug/deps/color_grading-dfe11ed713daa7f6)
+
+running 8 tests
+test exposure_is_linear_light_and_alpha_is_untouched ... ok
+test effect_animation_evaluates_at_composition_ticks_and_clamps_bezier_overshoot ... ok
+test neutral_grade_is_byte_exact_including_transparent_rgb_and_alpha ... ok
+test premultiplied_blur_does_not_bleed_hidden_transparent_colors ... ok
+test shader_paths_cannot_escape_the_pack_directory ... ok
+test temperature_and_monochrome_controls_change_pixels_predictably ... ok
+test third_party_cpu_plugin_uses_public_registration_and_duplicate_ids_fail ... ok
+test manifests_supply_defaults_and_refuse_unknown_wrong_typed_and_out_of_range_params ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/golden_frames.rs (target/debug/deps/golden_frames-d35e34090f33e8b5)
+
+running 11 tests
+test test_chromatic_aberration_identity_and_channel_shift ... ok
+test test_color_adjust_identity_and_brightness ... ok
+test test_directional_blur_identity_and_streak ... ok
+test test_drop_shadow_composite ... ok
+test test_blur_identity_and_smoothing ... ok
+test test_glow_deterministic ... ok
+test test_invert_exact_roundtrip ... ok
+test test_tint_duotone_remapping ... ok
+test test_transform_identity_and_offset ... ok
+test test_vignette_center_preserved_corners_darkened ... ok
+test test_dynamic_evaluate_effect_all_10 ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/manifest_validation.rs (target/debug/deps/manifest_validation-09acbf4dedc875cb)
+
+running 3 tests
+test test_all_10_builtin_manifests_are_valid ... ok
+test test_scanner_rejects_invalid_manifest ... ok
+test test_dynamic_pack_directory_scanner ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/shader_validation.rs (target/debug/deps/shader_validation-30ac05ee50759aa9)
+
+running 1 test
+test bundled_wgsl_parses_and_validates_without_claiming_gpu_execution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_engine-f7d5c8cfd8817de4)
+
+running 11 tests
+test graph::tests::chain_orders_inputs_before_consumers ... ok
+test graph::tests::build_from_comp_creates_valid_topological_dag ... ok
+test graph::tests::cycle_is_detected_not_hung ... ok
+test reference::tests::footage_layer_draws_injected_pixels ... ok
+test reference::tests::opacity_track_wins_over_static ... ok
+test reference::tests::renders_background_and_layering_is_bottom_to_top ... ok
+test reference::tests::precomp_cycle_detection_stops_infinite_recursion ... ok
+test tiles::tests::full_viewport_on_1080p_costs_40_tiles_not_a_4k_buffer ... ok
+test tiles::tests::viewports_outside_bounds_clamp_without_panicking ... ok
+test tiles::tests::zoomed_viewport_culls_to_intersecting_tiles_only ... ok
+test tiles::tests::render_tile_matches_render_comp_pixel_for_pixel ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/affine_transforms.rs (target/debug/deps/affine_transforms-0aca2d214bc4569e)
+
+running 4 tests
+test test_affine_identity_and_inversion ... ok
+test test_affine_rotation_90_degrees ... ok
+test test_affine_parent_hierarchy_transform ... ok
+test test_affine_translation_moves_layer ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/blend_modes.rs (target/debug/deps/blend_modes-1f04f81fe73df44e)
+
+running 3 tests
+test test_alpha_compositing_math ... ok
+test test_all_blend_channels_analytical ... ok
+test test_render_comp_with_all_blend_modes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/effect_compositing.rs (target/debug/deps/effect_compositing-abfdebc6a57eba3d)
+
+running 9 tests
+test adjustment_opacity_interpolates_premultiplied_backdrop_alpha ... ok
+test adjustment_affects_layers_below_but_not_above_it ... ok
+test alpha_is_not_gamma_encoded ... ok
+test bilinear_resampling_is_premultiplied_linear_light ... ok
+test ordered_layer_effects_render_and_bypass_is_a_real_noop ... ok
+test effect_aware_tiles_match_full_frame_at_kernel_boundaries ... ok
+test renderer_accepts_third_party_registry_without_engine_id_hooks ... ok
+test oversized_typography_returns_an_actionable_error ... ok
+test text_is_antialiased_and_content_changes_change_rendered_pixels ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/layer_types.rs (target/debug/deps/layer_types-0efc67766cdd03a2)
+
+running 2 tests
+test test_precomp_depth_limit ... ok
+test test_all_five_layer_kinds_render ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/preview_scene.rs (target/debug/deps/preview_scene-5dfd33449401a936)
+
+running 5 tests
+test odd_dimensions_round_up_and_never_become_zero ... ok
+test pixel_effect_parameters_scale_but_normalized_parameters_do_not ... ok
+test cache_retention_is_bounded_and_clear_releases_entries ... ok
+test resolution_changes_the_sampling_grid_not_document_coordinates ... ok
+test prepared_full_scene_matches_original_reference_byte_for_byte ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+
+     Running tests/render_graph.rs (target/debug/deps/render_graph-ab293aa1d256c71e)
+
+running 3 tests
+test test_render_graph_cycle_detection ... ok
+test test_build_from_comp_with_complex_hierarchy ... ok
+test test_render_graph_deterministic_tie_breaking ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shape_primitives.rs (target/debug/deps/shape_primitives-f963ec755718c013)
+
+running 2 tests
+test test_rounded_rect_shape_rasterization ... ok
+test test_circle_shape_rasterization ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/tile_scheduler.rs (target/debug/deps/tile_scheduler-805af3053e76213f)
+
+running 3 tests
+test test_tile_grid_geometry_and_counts ... ok
+test test_tile_ram_bound_and_render_tile_execution ... ok
+test test_viewport_stitching_matches_full_frame ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.17s
+
+     Running tests/wasm_purity.rs (target/debug/deps/wasm_purity-acd9b694dc73f4ec)
+
+running 1 test
+test test_engine_pure_in_memory_execution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_gpu-410cac50adb8fcc5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/parity.rs (target/debug/deps/parity-1f962f9117fa29c4)
+
+running 6 tests
+test opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames ... ok
+test nested_compositions_text_and_adjustments_match_at_all_preview_resolutions ... ok
+test raster_uploads_and_targets_are_reused_with_bounded_retention ... ok
+test real_draw_passes_cover_all_blends_transforms_and_rgba_readback_padding ... ok
+test third_party_shader_uses_reflected_padding_not_private_id_hooks ... ok
+test unsupported_kernels_are_explicit_and_never_masquerade_as_gpu_frames ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_mcp-5c165f7be973db44)
+
+running 1 test
+test png::tests::test_encode_png_valid_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/bonaparte_mcp-c26909ebf688928a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation.rs (target/debug/deps/foundation-8978466178fedddf)
+
+running 2 tests
+test mcp_bad_effect_proposals_and_requested_missing_comp_fail_explicitly ... ok
+test mcp_discovers_manifests_and_applies_the_same_persistent_effect_stack ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/integration_tests.rs (target/debug/deps/integration_tests-93431c9f2c4f6d7a)
+
+running 8 tests
+test test_mcp_initialize ... ok
+test test_mcp_tools_list_catalog ... ok
+test test_op_apply_and_history_undo_redo ... ok
+test test_ops_propose_dry_run_does_not_mutate_session ... ok
+test test_project_create_and_info ... ok
+test test_project_save_and_open_roundtrip ... ok
+test test_stdio_jsonrpc_loop ... ok
+test test_comp_render_single_png ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_media-c7bb2a9bc834f667)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cache_tests.rs (target/debug/deps/cache_tests-390be0a62d4cc8ed)
+
+running 3 tests
+test test_cache_clear_cleans_ram_and_disk ... ok
+test test_cache_insert_and_get_frame ... ok
+test test_cache_flat_ram_guarantee ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/decode_tests.rs (target/debug/deps/decode_tests-d9f6fd662e64b03a)
+
+running 2 tests
+test test_decode_non_existent_file_errors ... ok
+test test_decode_frame_from_video ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/export_tests.rs (target/debug/deps/export_tests-8febcb4d2c3b7f91)
+
+running 2 tests
+test test_export_invalid_frame_buffer_length_fails ... ok
+test test_streaming_export_mp4_video ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/probe_tests.rs (target/debug/deps/probe_tests-2f8a28c6a9e78ddc)
+
+running 5 tests
+test test_compute_perception_card_solid_red ... ok
+test test_compute_perception_card_logo_candidate ... ok
+test test_compute_perception_card_video ... ok
+test test_parse_rational_framerate ... ok
+test test_probe_real_video_asset ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/proxy_tests.rs (target/debug/deps/proxy_tests-613c87fd19cbdf20)
+
+running 2 tests
+test test_proxy_missing_input_errors ... ok
+test test_generate_half_resolution_proxy ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_model-5c91b0360e18bb4f)
+
+running 21 tests
+test keyframe::tests::default_easing_is_symmetric_ease_in_out ... ok
+test keyframe::tests::keys_stay_sorted_after_out_of_order_inserts ... ok
+test keyframe::tests::linear_interpolation ... ok
+test keyframe::tests::vec2_lerp ... ok
+test manifest::tests::parses_valid_manifest ... ok
+test keyframe::tests::bezier_easing_matches_known_css_curve ... ok
+test manifest::tests::refuses_duplicate_param_ids ... ok
+test manifest::tests::refuses_inverted_slider_range ... ok
+test ops::tests::roundtrip_all_layer_property_ops ... ok
+test manifest::tests::refuses_wrong_api_major ... ok
+test ops::tests::roundtrip_media_ops ... ok
+test ops::tests::roundtrip_layer_parenting_and_cycle_guard ... ok
+test ops::tests::roundtrip_remove_layer_exact_restoration ... ok
+test ops::tests::roundtrip_set_value ... ok
+test time::tests::common_rates_have_integer_ticks_per_frame ... ok
+test time::tests::framerate_display_and_conversions ... ok
+test time::tests::ntsc_film_frame_is_exactly_5005_ticks ... ok
+test time::tests::roundtrip_secs ... ok
+test time::tests::time_arithmetic ... ok
+test time::tests::timecode_roundtrip ... ok
+test ops::tests::roundtrip_remove_comp_exact_restoration ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation.rs (target/debug/deps/foundation-83f5482fa65f646a)
+
+running 10 tests
+test batch_is_atomic_and_records_one_human_readable_history_entry ... ok
+test duplicate_effect_instance_ids_fail_without_history_or_state_changes ... ok
+test effect_stack_order_parameters_animation_and_bypass_roundtrip_exactly ... ok
+test invalid_dimensions_parent_cycles_and_restoration_overwrites_are_refused ... ok
+test legacy_shape_files_get_styles_and_empty_effect_stacks ... ok
+test moving_layer_moves_transform_and_effect_keys_and_undo_is_exact ... ok
+test nonfinite_content_and_unsorted_effect_tracks_are_rejected ... ok
+test shift_overflow_and_oversized_batch_leave_document_and_redo_intact ... ok
+test unsafe_id_allocators_are_rejected_before_allocation_can_overflow ... ok
+test all_256_primitives_survive_the_200_transaction_history_limit ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/hierarchy_transform.rs (target/debug/deps/hierarchy_transform-7d185ab6a3d0818b)
+
+running 5 tests
+test test_cycle_detection ... ok
+test test_parent_child_hierarchy_transform ... ok
+test test_blend_mode_display_and_defaults ... ok
+test test_single_layer_effective_transform ... ok
+test test_three_level_deep_hierarchy ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ops_roundtrip.rs (target/debug/deps/ops_roundtrip-9874c00eb1ccd367)
+
+running 15 tests
+test test_op_descriptions ... ok
+test test_roundtrip_add_layer ... ok
+test test_roundtrip_create_comp ... ok
+test test_roundtrip_keyframe_ops ... ok
+test test_roundtrip_media_all_ops ... ok
+test test_roundtrip_remove_comp ... ok
+test test_roundtrip_remove_layer ... ok
+test test_roundtrip_rename_layer ... ok
+test test_roundtrip_set_comp_props ... ok
+test test_roundtrip_reorder_layer ... ok
+test test_roundtrip_set_layer_parent ... ok
+test test_roundtrip_set_layer_time ... ok
+test test_roundtrip_set_layer_visible_and_locked ... ok
+test test_roundtrip_set_value_all_properties ... ok
+test test_roundtrip_set_layer_blend_mode ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/serde_json.rs (target/debug/deps/serde_json-cf7fe44a2c189b07)
+
+running 3 tests
+test test_serde_all_model_entities ... ok
+test test_serde_layer_defaults_backward_compatibility ... ok
+test test_serde_all_op_variants ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/time_timecode.rs (target/debug/deps/time_timecode-aa209c08ede3578b)
+
+running 4 tests
+test test_smpte_timecode_conversions ... ok
+test test_smpte_timecode_errors ... ok
+test test_time_arithmetic_all_operators ... ok
+test test_framerate_display_and_ticks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/bonaparte_preview-005d7eda92678c80)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/bonaparte_runtime-142f0451d55f14a6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audio_workflow.rs (target/debug/deps/audio_workflow-3b67b23292a8e608)
+
+running 9 tests
+test distant_processed_seeks_prepare_in_bounded_steps_and_outside_time_is_silent ... ok
+test legacy_v2_still_opens_and_unknown_versions_do_not ... ok
+test mp4_contains_synchronized_audio_and_preserves_ntsc_video_frames ... ok
+test native_import_resamples_retains_original_and_is_one_undo_transaction ... ok
+test processed_packets_and_native_wav_share_the_compensated_timeline ... ok
+test sample_split_and_media_removal_rejection_keep_state_consistent ... ok
+test save_open_restores_audio_and_malformed_source_replacement_is_atomic ... ok
+test waveform_levels_chunk_headers_and_wav_are_real_samples ... ok
+test common_encoded_formats_decode_through_the_same_native_pipeline ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/editor_workflow.rs (target/debug/deps/editor_workflow-466ecdc32b429cf9)
+
+running 9 tests
+test atomic_file_writer_cleans_temporary_files_on_success_and_failure ... ok
+test embedded_image_import_save_open_and_render_round_trip ... ok
+test failed_video_render_preserves_existing_output_file ... ok
+test generic_batch_with_correct_length_but_invalid_base64_is_atomic ... ok
+test malformed_images_unknown_effects_and_future_files_do_not_mutate_state ... ok
+test ntsc_video_export_has_exact_frame_rate_and_count ... ok
+test rgba_binary_protocol_and_video_flattening_are_correct ... ok
+test transient_preview_and_global_bypass_never_enter_history_or_saved_project ... ok
+test editable_example_is_valid_and_rendered_by_normal_document_paths ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+     Running tests/interaction.rs (target/debug/deps/interaction-7b5fabc5f560e0da)
+
+running 4 tests
+test authoritative_deltas_roundtrip_undo_and_fall_back_for_wrong_revision ... ok
+test interaction_planes_are_real_rgba_and_bad_transforms_are_rejected ... ok
+test lightweight_transform_preview_matches_a_real_edit_without_mutation ... ok
+test visual_edits_and_markers_do_not_invalidate_audio_clock ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/preview_workflow.rs (target/debug/deps/preview_workflow-eb72f5435ff7f4b7)
+
+running 7 tests
+test clear_is_not_an_edit_and_invalid_requests_do_not_render ... ok
+test mutation_undo_open_and_late_old_jobs_cannot_repopulate_stale_caches ... ok
+test repeated_frames_share_pixels_and_packet_metadata_describes_actual_execution ... ok
+test resolution_time_and_bypass_are_distinct_and_exports_stay_full_size ... ok
+test temporary_gestures_are_never_persistent_frame_cache_entries ... ok
+test unavailable_gpu_falls_back_to_correct_cpu_pixels_with_a_reason ... ok
+test gpu_requests_report_real_submissions_and_unsupported_effects_fall_back ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+   Doc-tests bonaparte_audio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_effects
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_gpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_media
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_model
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bonaparte_runtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,3 +1,4 @@
+import type { AudioArrangement, AudioAsset } from "./audio/model";
 /// Wire types matching bonaparte-model. Struct fields are snake_case; Op fields camelCase.
 export const TICKS_PER_SEC = 120_000;
 export type Color = [number, number, number, number];
@@ -69,6 +70,7 @@ export interface ParamDef {
   group: string;
   step: number | null;
   unit: string;
+  scale_with_resolution?: boolean;
 }
 export interface EffectManifest {
   api_version: string;
@@ -121,6 +123,7 @@ export interface Comp {
   background: Color;
   layer_order: number[];
   layers: Record<string, Layer>;
+  audio?: AudioArrangement;
 }
 export interface MediaAsset {
   id: number;
@@ -128,6 +131,7 @@ export interface MediaAsset {
   path: string | null;
   kind: "Image" | { Video: { fps: FrameRate; duration: number } } | { Audio: { duration: number } };
   embedded?: { width: number; height: number; rgba_base64: string };
+  audio?: AudioAsset;
   slot: unknown;
   alias: string | null;
   perception: unknown;
@@ -146,8 +150,10 @@ export interface Snapshot {
   canRedo: boolean;
   history: string[];
   revision: number;
+  audioRevision?: number;
 }
 export type Op =
+  | { type: "setCompAudio"; comp: number; audio: AudioArrangement }
   | { type: "batch"; label: string; ops: Op[] }
   | { type: "renameProject"; name: string }
   | { type: "shiftLayer"; comp: number; layer: number; delta: number }
@@ -359,8 +365,14 @@ export function evaluate(layer: Layer, property: Property, time: number): PropVa
     if (time <= keys[0].time) return keys[0].value;
     const last = keys[keys.length - 1];
     if (time >= last.time) return last.value;
-    let i = keys.length - 2;
-    while (i >= 0 && keys[i].time > time) i--;
+    let lo = 0,
+      hi = keys.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (keys[mid].time <= time) lo = mid;
+      else hi = mid;
+    }
+    const i = lo;
     const a = keys[i];
     const b = keys[i + 1];
     const u = (time - a.time) / Math.max(b.time - a.time, 1);
@@ -392,4 +404,70 @@ export function staticValue(t: StaticTransform, property: Property): PropValue {
     case "AnchorPoint":
       return { Vec2: [...(t.anchor_point ?? [0, 0])] };
   }
+}
+
+export interface SnapshotPatch {
+  kind: "patch";
+  baseRevision: number;
+  revision: number;
+  audioRevision: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  history: string[];
+  name: string;
+  nextComp: number;
+  nextLayer: number;
+  nextMedia: number;
+  comps: Record<
+    string,
+    {
+      full?: Comp;
+      props?: Partial<Comp>;
+      layers?: Record<string, Layer>;
+      removedLayers?: number[];
+      layerOrder?: number[];
+      audio?: AudioArrangement;
+    }
+  >;
+  removedComps: number[];
+  media: Record<string, MediaAsset>;
+  removedMedia: number[];
+}
+export function mergeSnapshotPatch(project: Project, patch: SnapshotPatch): Project {
+  const comps = { ...project.comps };
+  for (const id of patch.removedComps) delete comps[String(id)];
+  for (const [id, delta] of Object.entries(patch.comps)) {
+    if (delta.full) {
+      comps[id] = delta.full;
+      continue;
+    }
+    const old = comps[id];
+    if (!old) throw new Error("A changed composition is missing; reload the project state");
+    let layers = old.layers;
+    if (delta.layers || delta.removedLayers?.length) {
+      layers = { ...layers, ...delta.layers };
+      for (const id of delta.removedLayers ?? []) delete layers[String(id)];
+    }
+    comps[id] = {
+      ...old,
+      ...delta.props,
+      layers,
+      ...(delta.layerOrder ? { layer_order: delta.layerOrder } : {}),
+      ...(delta.audio ? { audio: delta.audio } : {}),
+    };
+  }
+  let media = project.media;
+  if (Object.keys(patch.media).length || patch.removedMedia.length) {
+    media = { ...media, ...patch.media };
+    for (const id of patch.removedMedia) delete media[String(id)];
+  }
+  return {
+    ...project,
+    name: patch.name,
+    comps,
+    media,
+    next_comp: patch.nextComp,
+    next_layer: patch.nextLayer,
+    next_media: patch.nextMedia,
+  };
 }

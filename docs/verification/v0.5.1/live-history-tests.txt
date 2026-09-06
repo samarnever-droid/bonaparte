@@ -1,0 +1,11 @@
+   Compiling bonaparte-model v0.5.0 (/home/user/bonaparte/crates/model)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running tests/live_edits.rs (target/debug/deps/live_edits-04fde0c99fc43f5d)
+
+running 3 tests
+test grouped_animated_key_edits_undo_the_creation_as_a_unit ... ok
+test group_cannot_merge_different_property_targets_and_failures_preserve_history ... ok
+test grouped_content_edits_keep_original_inverse_and_latest_redo ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

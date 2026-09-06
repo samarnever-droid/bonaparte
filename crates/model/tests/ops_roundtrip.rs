@@ -26,6 +26,7 @@ fn create_base_project() -> (Project, CompId, LayerId, MediaId) {
         path: Some("assets/logo.png".into()),
         kind: MediaKind::Image,
         embedded: None,
+        audio: None,
         slot: None,
         alias: Some("logo".into()),
         perception: None,

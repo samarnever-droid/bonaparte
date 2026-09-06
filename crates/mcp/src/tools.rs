@@ -591,6 +591,10 @@ fn tool_comp_render(session: &mut McpSession, args: serde_json::Value) -> ToolCa
             comp_id,
             time: Time::ZERO,
             images: frames,
+            audio: match bonaparte_runtime::decode_project_audio(&session.project) {
+                Ok(audio) => audio,
+                Err(error) => return ToolCallResult::error(error),
+            },
             registry: builtin_registry().clone(),
         };
         let start = Time::from_secs_f64(parsed.start_time.unwrap_or(0.0));

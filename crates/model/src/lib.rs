@@ -35,3 +35,12 @@ pub use ops::{History, ModelError, Op};
 pub use time::{FrameRate, Time, TimecodeError, TICKS_PER_SEC};
 
 pub use effect::{EffectInstance, EffectValue};
+
+pub mod audio;
+pub use audio::*;
+
+pub mod interaction;
+pub use interaction::TransformOverride;
+
+pub mod audio_fx;
+pub use audio_fx::*;

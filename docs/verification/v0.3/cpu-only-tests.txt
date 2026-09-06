@@ -1,0 +1,17 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling bonaparte-media v0.3.0 (/home/user/bonaparte/crates/media)
+   Compiling bonaparte-runtime v0.3.0 (/home/user/bonaparte/crates/runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.92s
+     Running tests/preview_workflow.rs (target/debug/deps/preview_workflow-5f329fa6dfaccd1e)
+
+running 6 tests
+test clear_is_not_an_edit_and_invalid_requests_do_not_render ... ok
+test repeated_frames_share_pixels_and_packet_metadata_describes_actual_execution ... ok
+test resolution_time_and_bypass_are_distinct_and_exports_stay_full_size ... ok
+test temporary_gestures_are_never_persistent_frame_cache_entries ... ok
+test mutation_undo_open_and_late_old_jobs_cannot_repopulate_stale_caches ... ok
+test unavailable_gpu_falls_back_to_correct_cpu_pixels_with_a_reason ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

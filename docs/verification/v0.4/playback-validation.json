@@ -1,0 +1,197 @@
+{
+  "measurements": [
+    {
+      "wallSeconds": 1.062,
+      "sample": 60127,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.24605430662631989
+    },
+    {
+      "wallSeconds": 2.094,
+      "sample": 109666,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.13377700746059418
+    },
+    {
+      "wallSeconds": 3.147,
+      "sample": 160182,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.17563560605049133
+    },
+    {
+      "wallSeconds": 4.213,
+      "sample": 211158,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.2102513313293457
+    },
+    {
+      "wallSeconds": 5.244,
+      "sample": 260700,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.1266898214817047
+    },
+    {
+      "wallSeconds": 6.265,
+      "sample": 309281,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.0667058527469635
+    },
+    {
+      "wallSeconds": 7.297,
+      "sample": 358342,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.1960935890674591
+    },
+    {
+      "wallSeconds": 8.365,
+      "sample": 409810,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.22049623727798462
+    },
+    {
+      "wallSeconds": 9.392,
+      "sample": 458869,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.2828935980796814
+    },
+    {
+      "wallSeconds": 10.444,
+      "sample": 509376,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.19065582752227783
+    },
+    {
+      "wallSeconds": 11.462,
+      "sample": 558437,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.1499098390340805
+    },
+    {
+      "wallSeconds": 12.493,
+      "sample": 607978,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.0889434739947319
+    },
+    {
+      "wallSeconds": 13.51,
+      "sample": 656564,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.13444028794765472
+    },
+    {
+      "wallSeconds": 14.696,
+      "sample": 713321,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.22125111520290375
+    },
+    {
+      "wallSeconds": 15.714,
+      "sample": 762382,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.11328880488872528
+    },
+    {
+      "wallSeconds": 16.757,
+      "sample": 812401,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.09474141150712967
+    },
+    {
+      "wallSeconds": 17.827,
+      "sample": 863869,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.19101816415786743
+    },
+    {
+      "wallSeconds": 18.843,
+      "sample": 912457,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.14987513422966003
+    },
+    {
+      "wallSeconds": 19.945,
+      "sample": 964883,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.11292697489261627
+    },
+    {
+      "wallSeconds": 20.963,
+      "sample": 1013946,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.06167219206690788
+    },
+    {
+      "wallSeconds": 22.014,
+      "sample": 7975,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.03376926854252815
+    },
+    {
+      "wallSeconds": 23.042,
+      "sample": 57512,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.059505488723516464
+    },
+    {
+      "wallSeconds": 24.064,
+      "sample": 106573,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.2442590594291687
+    },
+    {
+      "wallSeconds": 25.113,
+      "sample": 156599,
+      "rate": 48000,
+      "underflows": 0,
+      "status": "Audio clock locked",
+      "peak": 0.18168328702449799
+    }
+  ],
+  "errors": []
+}

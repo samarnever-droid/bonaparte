@@ -23,7 +23,7 @@ fn default_visible() -> bool {
 
 /// The whole project: what the UI displays, the engine renders, and the MCP
 /// server edits. Serializes to the versioned JSON project file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub comps: BTreeMap<CompId, Comp>,
@@ -65,7 +65,7 @@ impl std::fmt::Display for BlendMode {
 }
 
 /// One composition: a canvas plus a stack of layers over time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Comp {
     pub id: CompId,
     pub name: String,
@@ -78,12 +78,14 @@ pub struct Comp {
     /// Bottom-to-top render order. Index 0 renders first (behind everything).
     pub layer_order: Vec<LayerId>,
     pub layers: BTreeMap<LayerId, Layer>,
+    #[serde(default, skip_serializing_if = "crate::AudioArrangement::is_default")]
+    pub audio: crate::AudioArrangement,
 }
 
 /// One layer on the timeline. Static property values live in `transform`;
 /// animated values live in `tracks` and win over the static value wherever a
 /// track exists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub id: LayerId,
     pub name: String,
@@ -384,7 +386,7 @@ impl Default for TextStyle {
 }
 
 /// Portable image pixels. The native host validates and decodes base64 once.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmbeddedImage {
     pub width: u32,
     pub height: u32,
@@ -395,7 +397,7 @@ pub struct EmbeddedImage {
 /// (template ecosystem, ARCHITECTURE.md); `perception` is the import-time
 /// measurement card that gives no-vision AI quantitative sight
 /// (ARCHITECTURE.md "Asset perception").
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaAsset {
     pub id: MediaId,
     pub name: String,
@@ -404,6 +406,8 @@ pub struct MediaAsset {
     pub kind: MediaKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedded: Option<EmbeddedImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<crate::EmbeddedAudio>,
     /// If present, this asset is a template placeholder slot the user fills
     /// with their own media.
     pub slot: Option<SlotDef>,
@@ -416,7 +420,7 @@ pub struct MediaAsset {
     pub perception: Option<PerceptionCard>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MediaKind {
     Image,
     Video { fps: FrameRate, duration: Time },
@@ -439,7 +443,7 @@ pub enum AssetRole {
 
 /// Deterministic measurements of a media asset, computed once at import by
 /// sidecar tools (RULES: perception is a service, not an AI sense).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerceptionCard {
     pub role: AssetRole,
     pub width: u32,
@@ -459,7 +463,7 @@ pub struct PerceptionCard {
 }
 
 /// A template placeholder: "drop your logo here".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SlotDef {
     pub label: String,
 }
@@ -499,6 +503,7 @@ impl Project {
                 background: [0.0, 0.0, 0.0, 1.0],
                 layer_order: Vec::new(),
                 layers: BTreeMap::new(),
+                audio: crate::AudioArrangement::default(),
             },
         );
         id
@@ -567,6 +572,14 @@ impl Comp {
     /// Compute the compound effective transform (inherited translation, rotation, scale, opacity)
     /// for `layer_id` at `time`, resolving through parent chains with cycle protection.
     pub fn effective_transform(&self, layer_id: LayerId, time: Time) -> Option<EffectiveTransform> {
+        self.effective_transform_with(layer_id, time, None)
+    }
+    pub fn effective_transform_with(
+        &self,
+        layer_id: LayerId,
+        time: Time,
+        transient: Option<&crate::TransformOverride>,
+    ) -> Option<EffectiveTransform> {
         let target_layer = self.layers.get(&layer_id)?;
 
         // Build hierarchy chain from target_layer up to root
@@ -594,24 +607,32 @@ impl Comp {
         let mut compound_rot = 0.0f32;
         let mut compound_scale = [1.0f32, 1.0f32];
 
+        let evaluate = |layer: &Layer, property: Property| {
+            transient
+                .filter(|o| {
+                    o.comp_id == self.id && o.layer_id == layer.id && o.property == property
+                })
+                .map(|o| o.value)
+                .unwrap_or_else(|| layer.evaluate(property, time))
+        };
         for (_, layer) in chain {
-            let pos = match layer.evaluate(Property::Position, time) {
+            let pos = match evaluate(layer, Property::Position) {
                 PropValue::Vec2(v) => v,
                 _ => [0.0, 0.0],
             };
-            let sc = match layer.evaluate(Property::Scale, time) {
+            let sc = match evaluate(layer, Property::Scale) {
                 PropValue::Vec2(v) => v,
                 _ => [100.0, 100.0],
             };
-            let rot = match layer.evaluate(Property::Rotation, time) {
+            let rot = match evaluate(layer, Property::Rotation) {
                 PropValue::Scalar(v) => v,
                 _ => 0.0,
             };
-            let op = match layer.evaluate(Property::Opacity, time) {
+            let op = match evaluate(layer, Property::Opacity) {
                 PropValue::Scalar(v) => v.clamp(0.0, 1.0),
                 _ => 1.0,
             };
-            let anchor = match layer.evaluate(Property::AnchorPoint, time) {
+            let anchor = match evaluate(layer, Property::AnchorPoint) {
                 PropValue::Vec2(v) => v,
                 _ => layer.transform.anchor_point,
             };
@@ -641,7 +662,7 @@ impl Comp {
             matrix = mul_affine(matrix, local_m);
         }
 
-        let target_anchor = match target_layer.evaluate(Property::AnchorPoint, time) {
+        let target_anchor = match evaluate(target_layer, Property::AnchorPoint) {
             PropValue::Vec2(v) => v,
             _ => target_layer.transform.anchor_point,
         };

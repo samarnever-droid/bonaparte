@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import Icon from "./Icon.svelte";
   import CurveEditor from "./CurveEditor.svelte";
+  import AudioTimeline from "./AudioTimeline.svelte";
   import {
     editor,
     activeComp,
@@ -14,6 +15,10 @@
     deleteSelected,
     notify,
     clone,
+    toggleLayerVisibility,
+    toggleLayerLock,
+    layerVisibility,
+    layerLocked,
   } from "../store.svelte";
   import { layerIcon, layerColor } from "../geometry";
   import {
@@ -27,6 +32,8 @@
     type Property,
     type Keyframe,
     type Track,
+    type Op,
+    type Comp,
   } from "../model";
   const comp = $derived(activeComp());
   const selected = $derived(selectedLayer());
@@ -39,7 +46,87 @@
   let filter = $state("");
   let showFilter = $state(false);
   let scrubbing = false;
-  const trackWidth = $derived(Math.max(320, bodyWidth - LABEL_WIDTH) * zoom);
+  const MAX_TIME = 24 * 60 * 60 * TICKS_PER_SEC;
+  function contentEnd(c: Comp): number {
+    let end = c.duration;
+    for (const l of Object.values(c.layers)) {
+      end = Math.max(end, l.start + l.duration);
+      for (const track of Object.values(l.tracks))
+        end = Math.max(end, track?.keys.at(-1)?.time ?? 0);
+    }
+    return Math.min(MAX_TIME, end);
+  }
+
+  let fitDuration = $state(30 * TICKS_PER_SEC),
+    viewDuration = $state(30 * TICKS_PER_SEC),
+    viewKey = "";
+  $effect(() => {
+    const c = comp,
+      key = `${editor.documentEpoch}:${c?.id}:${editor.timelineMode}`;
+    if (!c) return;
+    untrack(() => {
+      if (key !== viewKey) {
+        viewKey = key;
+        zoom = 1;
+        fitDuration = contentEnd(c);
+        viewDuration = fitDuration;
+        if (scroll) scroll.scrollLeft = 0;
+      } else if (contentEnd(c) > viewDuration) viewDuration = contentEnd(c);
+    });
+  });
+  const trackWidth = $derived(
+    (Math.max(320, bodyWidth - LABEL_WIDTH) * zoom * viewDuration) / Math.max(1, fitDuration),
+  );
+  function durationOp(c: Comp, end: number): Op | null {
+    if (end <= c.duration) return null;
+    return {
+      type: "setCompProps",
+      comp: c.id,
+      name: c.name,
+      width: c.width,
+      height: c.height,
+      fps: c.fps,
+      background: c.background,
+      duration: Math.min(MAX_TIME, Math.ceil(end / TICKS_PER_SEC) * TICKS_PER_SEC),
+    };
+  }
+  function withDuration(op: Op, end: number): Op {
+    const extra = comp ? durationOp(comp, end) : null;
+    return extra
+      ? { type: "batch", label: "Extended composition and edited timeline", ops: [extra, op] }
+      : op;
+  }
+  async function seekTimeline(time: number) {
+    const c = comp;
+    if (!c) return;
+    pause();
+    const extension = durationOp(c, time + ticksPerFrame(c.fps));
+    if (extension && !(await applyOp(extension))) return;
+    scrub(time);
+  }
+  async function setDuration(seconds: number) {
+    const c = comp;
+    if (!c || !Number.isFinite(seconds) || seconds <= 0 || seconds > 86400) return;
+    const duration = Math.max(ticksPerFrame(c.fps), Math.round(seconds * TICKS_PER_SEC));
+    if (
+      await applyOp({
+        type: "setCompProps",
+        comp: c.id,
+        name: c.name,
+        width: c.width,
+        height: c.height,
+        fps: c.fps,
+        background: c.background,
+        duration,
+      })
+    ) {
+      fitDuration = duration;
+      viewDuration = duration;
+      zoom = 1;
+      if (scroll) scroll.scrollLeft = 0;
+    }
+  }
+
   const layers = $derived(
     comp
       ? [...comp.layer_order]
@@ -50,7 +137,7 @@
   );
   const ticks = $derived.by(() => {
     if (!comp) return [];
-    const sec = timeToSecs(comp.duration),
+    const sec = timeToSecs(viewDuration),
       desired = sec / Math.max(2, Math.floor(trackWidth / 80));
     const step =
       [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200].find(
@@ -61,23 +148,25 @@
       label: step < 1 ? `${(i * step).toFixed(2)}s` : `${i * step}s`,
     }));
   });
-  const percent = (time: number) => (comp ? (time / comp.duration) * 100 : 0);
+  const percent = (time: number) => (time / viewDuration) * 100;
   function timeAt(e: PointerEvent): number {
     if (!ruler || !comp) return 0;
     const rect = ruler.getBoundingClientRect();
-    return snapToFrame(((e.clientX - rect.left) / rect.width) * comp.duration, comp.fps);
+    return snapToFrame(((e.clientX - rect.left) / rect.width) * viewDuration, comp.fps);
   }
   function rulerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     pause();
+    editor.timelineGesture = true;
     scrubbing = true;
     ruler?.setPointerCapture(e.pointerId);
     scrub(timeAt(e));
   }
-  onMount(() => {
-    if (!scroll) return;
+  $effect(() => {
+    const node = scroll;
+    if (!node) return;
     const ro = new ResizeObserver((entries) => (bodyWidth = entries[0].contentRect.width));
-    ro.observe(scroll);
+    ro.observe(node);
     return () => ro.disconnect();
   });
   type RowTrack = {
@@ -128,6 +217,7 @@
     editor.selected = layer.id;
     if (layer.locked) return;
     pause();
+    editor.timelineGesture = true;
     if (key) scrub(key.time);
     e.preventDefault();
     dragging = {
@@ -146,15 +236,24 @@
     window.addEventListener("pointerup", dragEnd);
     window.addEventListener("pointercancel", dragCancel);
   }
+  let dragRaf = 0,
+    pendingPointer: PointerEvent | null = null;
   function dragMove(e: PointerEvent) {
+    pendingPointer = e;
+    if (!dragRaf)
+      dragRaf = requestAnimationFrame(() => {
+        dragRaf = 0;
+        const event = pendingPointer;
+        pendingPointer = null;
+        if (event) applyDrag(event);
+      });
+  }
+  function applyDrag(e: PointerEvent) {
     if (!dragging || !comp) return;
     const dt = timeAt(e) - dragging.mouse,
       tpf = ticksPerFrame(comp.fps);
     if (dragging.kind === "move")
-      dragging.nextStart = Math.max(
-        0,
-        Math.min(Math.max(0, comp.duration - dragging.duration), dragging.start + dt),
-      );
+      dragging.nextStart = Math.max(0, Math.min(MAX_TIME - dragging.duration, dragging.start + dt));
     else if (dragging.kind === "in") {
       dragging.nextStart = Math.max(
         0,
@@ -164,14 +263,31 @@
     } else if (dragging.kind === "out")
       dragging.nextDuration = Math.max(
         tpf,
-        Math.min(comp.duration - dragging.start, dragging.duration + dt),
+        Math.min(MAX_TIME - dragging.start, dragging.duration + dt),
       );
     else {
-      dragging.nextKey = Math.max(0, Math.min(comp.duration, (dragging.keyTime ?? 0) + dt));
+      dragging.nextKey = Math.max(0, Math.min(MAX_TIME - tpf, (dragging.keyTime ?? 0) + dt));
       scrub(dragging.nextKey);
+    }
+    const end =
+      dragging.kind === "key"
+        ? (dragging.nextKey ?? 0) + tpf
+        : dragging.nextStart + dragging.nextDuration;
+    if (end > viewDuration)
+      viewDuration = Math.min(MAX_TIME, Math.ceil(end / (5 * TICKS_PER_SEC)) * 5 * TICKS_PER_SEC);
+    if (scroll) {
+      const bounds = scroll.getBoundingClientRect(),
+        old = scroll.scrollLeft;
+      if (e.clientX > bounds.right - 24) scroll.scrollLeft += 14;
+      else if (e.clientX < bounds.left + LABEL_WIDTH + 24) scroll.scrollLeft -= 14;
+      if (scroll.scrollLeft !== old) dragMove(e);
     }
   }
   function cleanup() {
+    if (dragRaf) cancelAnimationFrame(dragRaf);
+    dragRaf = 0;
+    pendingPointer = null;
+    editor.timelineGesture = false;
     window.removeEventListener("pointermove", dragMove);
     window.removeEventListener("pointerup", dragEnd);
     window.removeEventListener("pointercancel", dragCancel);
@@ -181,59 +297,79 @@
     dragging = null;
   }
   async function dragEnd() {
+    if (pendingPointer) applyDrag(pendingPointer);
     const d = dragging,
       c = comp;
-    dragging = null;
     cleanup();
-    if (!d || !c) return;
-    if (
-      d.kind === "key" &&
-      d.row &&
-      d.keyTime !== undefined &&
-      d.nextKey !== undefined &&
-      d.nextKey !== d.keyTime
-    ) {
-      const row = d.row;
-      if (row.track.keys.some((k) => k.time === d.nextKey && k.time !== d.keyTime)) {
-        notify("There is already a keyframe at this time.", true);
-        return;
-      }
-      if (row.prop)
-        await applyOp({
-          type: "moveKeyframe",
-          comp: c.id,
-          layer: d.layer,
-          property: row.prop,
-          from: d.keyTime,
-          to: d.nextKey,
-        });
-      else
-        await applyOp((project) => {
-          const layer = project.comps[String(c.id)]?.layers[String(d.layer)];
-          if (!layer) return null;
-          const effects = clone(layer.effects);
-          const track = effects.find((e) => e.id === row.effectId)?.tracks[row.paramId!];
-          const key = track?.keys.find((k) => k.time === d.keyTime);
-          if (!track || !key) return null;
-          key.time = d.nextKey!;
-          track.keys.sort((a, b) => a.time - b.time);
-          return { type: "setLayerEffects", comp: c.id, layer: d.layer, effects };
-        });
-    } else if (d.kind === "move" && d.nextStart !== d.start)
-      await applyOp({
-        type: "shiftLayer",
-        comp: c.id,
-        layer: d.layer,
-        delta: d.nextStart - d.start,
-      });
-    else if (d.kind !== "key" && (d.nextStart !== d.start || d.nextDuration !== d.duration))
-      await applyOp({
-        type: "setLayerTime",
-        comp: c.id,
-        layer: d.layer,
-        start: d.nextStart,
-        duration: d.nextDuration,
-      });
+    if (!d || !c) {
+      dragging = null;
+      return;
+    }
+    try {
+      if (
+        d.kind === "key" &&
+        d.row &&
+        d.keyTime !== undefined &&
+        d.nextKey !== undefined &&
+        d.nextKey !== d.keyTime
+      ) {
+        const row = d.row;
+        if (row.track.keys.some((k) => k.time === d.nextKey && k.time !== d.keyTime)) {
+          notify("There is already a keyframe at this time.", true);
+          return;
+        }
+        if (row.prop)
+          await applyOp(
+            withDuration(
+              {
+                type: "moveKeyframe",
+                comp: c.id,
+                layer: d.layer,
+                property: row.prop,
+                from: d.keyTime,
+                to: d.nextKey,
+              },
+              d.nextKey + ticksPerFrame(c.fps),
+            ),
+          );
+        else
+          await applyOp((project) => {
+            const layer = project.comps[String(c.id)]?.layers[String(d.layer)];
+            if (!layer) return null;
+            const effects = clone(layer.effects);
+            const track = effects.find((e) => e.id === row.effectId)?.tracks[row.paramId!];
+            const key = track?.keys.find((k) => k.time === d.keyTime);
+            if (!track || !key) return null;
+            key.time = d.nextKey!;
+            track.keys.sort((a, b) => a.time - b.time);
+            return withDuration(
+              { type: "setLayerEffects", comp: c.id, layer: d.layer, effects },
+              d.nextKey! + ticksPerFrame(c.fps),
+            );
+          });
+      } else if (d.kind === "move" && d.nextStart !== d.start)
+        await applyOp(
+          withDuration(
+            { type: "shiftLayer", comp: c.id, layer: d.layer, delta: d.nextStart - d.start },
+            d.nextStart + d.duration,
+          ),
+        );
+      else if (d.kind !== "key" && (d.nextStart !== d.start || d.nextDuration !== d.duration))
+        await applyOp(
+          withDuration(
+            {
+              type: "setLayerTime",
+              comp: c.id,
+              layer: d.layer,
+              start: d.nextStart,
+              duration: d.nextDuration,
+            },
+            d.nextStart + d.nextDuration,
+          ),
+        );
+    } finally {
+      if (dragging === d) dragging = null;
+    }
   }
   onDestroy(cleanup);
   function reorder(delta: number) {
@@ -256,16 +392,33 @@
   <div class="timeline-header">
     <button
       class="timeline-tab"
-      class:active={!editor.graphProperty}
-      onclick={() => (editor.graphProperty = null)}><Icon name="layers" size={13} />Timeline</button
+      class:active={!editor.graphProperty && editor.timelineMode === "layers"}
+      onclick={() => {
+        editor.graphProperty = null;
+        editor.timelineMode = "layers";
+      }}><Icon name="layers" size={13} />Timeline</button
     >
     <button
       class="timeline-tab"
       class:active={!!editor.graphProperty}
       disabled={!selected}
-      onclick={() => (editor.graphProperty ? (editor.graphProperty = null) : openGraph())}
-      ><Icon name="graph" size={13} />Graph editor</button
+      onclick={() => {
+        editor.timelineMode = "layers";
+        editor.graphProperty ? (editor.graphProperty = null) : openGraph();
+      }}><Icon name="graph" size={13} />Graph editor</button
     >
+    {#if editor.audioProtocol}<button
+        class="timeline-tab"
+        class:active={editor.timelineMode === "audio"}
+        aria-label="Audio timeline tab"
+        onclick={() => {
+          editor.graphProperty = null;
+          editor.timelineMode = "audio";
+          editor.workspace = "Audio";
+          editor.selected = null;
+          editor.sidebar = "audio";
+        }}><Icon name="wave" size={13} />Audio</button
+      >{/if}
     <span class="divider"></span><span class="timeline-comp truncate"
       >{comp?.name ?? "No composition"}</span
     >
@@ -279,9 +432,13 @@
         ><Icon name="back" size={13} /></button
       ><button
         class="play-control"
-        aria-label={editor.playing ? "Pause playback" : "Play"}
+        aria-label={editor.audioStarting
+          ? "Cancel audio start"
+          : editor.playing
+            ? "Pause playback"
+            : "Play"}
         title="Play / pause (Space)"
-        onclick={() => (editor.playing ? pause() : play())}
+        onclick={() => (editor.playing || editor.audioStarting ? pause() : void play())}
         ><Icon name={editor.playing ? "pause" : "play"} size={13} /></button
       ><button
         class="icon-button small"
@@ -300,30 +457,53 @@
           const time = timecodeToTime(e.currentTarget.value, comp.fps);
           if (time !== null) {
             pause();
-            scrub(time);
+            void seekTimeline(time);
           } else notify("Use a timecode such as 00:00:01:15.", true);
         }
       }}
     />
+    {#if comp}<label class="duration-control"
+        >Length <input
+          aria-label="Timeline duration seconds"
+          type="number"
+          min=".1"
+          max="86400"
+          step="1"
+          value={timeToSecs(comp.duration)}
+          onchange={(e) => void setDuration(Number(e.currentTarget.value))}
+        /><span>s</span></label
+      ><button
+        class="extend-duration"
+        aria-label="Extend composition by 10 seconds"
+        title="Add time to the composition"
+        onclick={() => void setDuration(Math.min(86400, timeToSecs(comp.duration) + 10))}
+        >+10s</button
+      >{/if}
     <span class="divider"></span><Icon name="search" size={12} class="dim" /><input
       class="timeline-zoom"
       type="range"
       aria-label="Timeline zoom"
       min="1"
-      max="8"
+      max={editor.timelineMode === "audio" ? 128 : 8}
       step=".25"
       bind:value={zoom}
     /><button
       class="icon-button small"
-      title="Reset timeline zoom"
+      title="Fit the entire composition in the timeline"
       aria-label="Reset timeline zoom"
       onclick={() => {
         zoom = 1;
+        if (comp) {
+          fitDuration = contentEnd(comp);
+          viewDuration = fitDuration;
+        }
         if (scroll) scroll.scrollLeft = 0;
       }}><Icon name="maximize" size={12} /></button
     >
   </div>
-  {#if editor.graphProperty && comp && selected}
+  {#if editor.timelineMode === "audio" && editor.audioProtocol}
+    <AudioTimeline {zoom} />
+  {:else if editor.graphProperty && comp && selected}
     <div class="graph-panel">
       <div class="graph-properties">
         <span class="upper dim">ANIMATED PROPERTY</span><strong>{selected.name}</strong
@@ -373,7 +553,7 @@
             tabindex="0"
             aria-label="Timeline ruler"
             aria-valuemin={0}
-            aria-valuemax={comp.duration}
+            aria-valuemax={viewDuration}
             aria-valuenow={editor.currentTime}
             onkeydown={(e) => {
               if (e.key === "ArrowRight") scrub(editor.currentTime + ticksPerFrame(comp.fps));
@@ -384,9 +564,20 @@
             onpointermove={(e) => {
               if (scrubbing) scrub(timeAt(e));
             }}
-            onpointerup={() => (scrubbing = false)}
-            onpointercancel={() => (scrubbing = false)}
+            onpointerup={() => {
+              scrubbing = false;
+              editor.timelineGesture = false;
+            }}
+            onpointercancel={() => {
+              scrubbing = false;
+              editor.timelineGesture = false;
+            }}
           >
+            <span
+              class="comp-out"
+              style={`left:${percent(comp.duration)}%`}
+              title="Composition output end">OUT</span
+            >
             {#each ticks as tick}<span class="tick" style={`left:${percent(tick.time)}%`}
                 ><span>{tick.label}</span></span
               >{/each}
@@ -400,32 +591,27 @@
             <div
               class="layer-label label-cell"
               class:selected={editor.selected === layer.id}
-              class:invisible={!layer.visible}
+              class:invisible={!layerVisibility(comp.id, layer)}
             >
               <button
                 class="tiny-button"
-                aria-label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
+                aria-label={`${layerVisibility(comp.id, layer) ? "Hide" : "Show"} ${layer.name}`}
                 title="Toggle visibility"
-                onclick={() =>
-                  void applyOp({
-                    type: "setLayerVisible",
-                    comp: comp.id,
-                    layer: layer.id,
-                    visible: !layer.visible,
-                  })}><Icon name={layer.visible ? "eye" : "eye-off"} size={11} /></button
+                aria-pressed={layerVisibility(comp.id, layer)}
+                onclick={() => void toggleLayerVisibility(comp.id, layer.id)}
+                ><Icon
+                  name={layerVisibility(comp.id, layer) ? "eye" : "eye-off"}
+                  size={11}
+                /></button
               >
               <button
                 class="tiny-button lock-button"
                 class:locked={layer.locked}
                 aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
                 title="Toggle lock"
-                onclick={() =>
-                  void applyOp({
-                    type: "setLayerLocked",
-                    comp: comp.id,
-                    layer: layer.id,
-                    locked: !layer.locked,
-                  })}><Icon name={layer.locked ? "lock" : "unlock"} size={9} /></button
+                aria-pressed={layerLocked(comp.id, layer)}
+                onclick={() => void toggleLayerLock(comp.id, layer.id)}
+                ><Icon name={layerLocked(comp.id, layer) ? "lock" : "unlock"} size={9} /></button
               >
               <span class="layer-swatch" style={`background:${layerColor(layer)}`}></span><span
                 class="layer-index mono">{String(index + 1).padStart(2, "0")}</span
@@ -539,7 +725,7 @@
             <div class="no-layers">Add text, shapes, or an image to start.</div>{/if}
           <div
             class="playhead-line"
-            style={`left:${LABEL_WIDTH + (editor.currentTime / comp.duration) * trackWidth}px`}
+            style={`left:${LABEL_WIDTH + (editor.currentTime / viewDuration) * trackWidth}px`}
           ></div>
         </div>
       {/if}
@@ -638,6 +824,42 @@
   }
   .timecode:focus {
     background: #3b3e39;
+  }
+  .extend-duration {
+    font: 8px monospace;
+    color: #b9ceab;
+    border: 1px solid #465740;
+    border-radius: 3px;
+    padding: 3px 5px;
+    margin-left: 4px;
+  }
+  .comp-out {
+    position: absolute;
+    top: 13px;
+    color: #d1aa75;
+    font: 7px monospace;
+    border-left: 1px solid #ccac77;
+    padding: 1px 3px;
+    transform: translateX(-100%);
+    pointer-events: none;
+  }
+  .duration-control {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #919a8c;
+    font-size: 8px;
+    margin-left: 8px;
+    flex-shrink: 0;
+  }
+  .duration-control input {
+    width: 46px;
+    background: #1b2119;
+    border: 1px solid #444d3c;
+    border-radius: 3px;
+    color: #c7d4bb;
+    padding: 3px 4px;
+    font: 9px monospace;
   }
   .timeline-zoom {
     width: 90px;

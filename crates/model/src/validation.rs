@@ -137,6 +137,7 @@ impl Project {
         if self.name.len() > 1024 || self.comps.len() > 128 || self.media.len() > 1024 {
             return Err("Project exceeds document limits".into());
         }
+        let mut precomp_depths = std::collections::BTreeMap::new();
         for (id, comp) in &self.comps {
             if *id != comp.id || id.0 == 0 || id.0 >= self.next_comp.0 {
                 return Err("Invalid composition ID allocator".into());
@@ -203,12 +204,16 @@ impl Project {
                     _ => {}
                 }
             }
-            self.validate_precomp(*id, &mut Vec::new())?;
+            self.validate_precomp(*id, &mut Vec::new(), &mut precomp_depths)?;
         }
+        self.validate_audio()?;
         let mut image_bytes = 0usize;
         for (id, asset) in &self.media {
             if *id != asset.id || id.0 == 0 || id.0 >= self.next_media.0 {
                 return Err("Invalid media ID allocator".into());
+            }
+            if let Some(audio) = &asset.audio {
+                image_bytes = image_bytes.saturating_add(audio.data_base64.len());
             }
             if let Some(image) = &asset.embedded {
                 if image.width == 0
@@ -227,7 +232,7 @@ impl Project {
             }
         }
         if image_bytes > 48 * 1024 * 1024 {
-            return Err("Embedded images exceed the 48 MB project budget".into());
+            return Err("Embedded media exceeds the 48 MB project budget".into());
         }
         Ok(())
     }
@@ -236,11 +241,19 @@ impl Project {
         &self,
         id: crate::CompId,
         active: &mut Vec<crate::CompId>,
-    ) -> Result<(), String> {
-        if active.contains(&id) || active.len() >= 32 {
+        memo: &mut std::collections::BTreeMap<crate::CompId, usize>,
+    ) -> Result<usize, String> {
+        if active.contains(&id) {
+            return Err("Nested composition cycle or depth limit (32) exceeded".into());
+        }
+        if let Some(depth) = memo.get(&id) {
+            return Ok(*depth);
+        }
+        if active.len() >= 32 {
             return Err("Nested composition cycle or depth limit (32) exceeded".into());
         }
         active.push(id);
+        let mut depth = 1;
         for layer in self
             .comps
             .get(&id)
@@ -249,10 +262,14 @@ impl Project {
             .values()
         {
             if let LayerKind::PreComp { comp } = layer.kind {
-                self.validate_precomp(comp, active)?;
+                depth = depth.max(1 + self.validate_precomp(comp, active, memo)?);
             }
         }
         active.pop();
-        Ok(())
+        if depth > 32 {
+            return Err("Nested composition cycle or depth limit (32) exceeded".into());
+        }
+        memo.insert(id, depth);
+        Ok(depth)
     }
 }

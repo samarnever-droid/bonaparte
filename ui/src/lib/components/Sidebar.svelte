@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import AudioLibrary from "./AudioLibrary.svelte";
   import {
     editor,
     activeComp,
@@ -56,13 +57,20 @@
 
 <aside class="panel sidebar" aria-label="Project and effects library">
   <div class="panel-tabs">
-    {#each ["project", "effects", "motion"] as tab}
+    {#each ["project", "effects", "motion", ...(editor.audioProtocol ? ["audio"] : [])] as tab}
       <button
         class:active={editor.sidebar === tab}
         onclick={() => {
           editor.sidebar = tab as typeof editor.sidebar;
           search = "";
-        }}>{tab === "project" ? "Project" : tab === "effects" ? "Effects" : "Motion"}</button
+        }}
+        >{tab === "project"
+          ? "Project"
+          : tab === "effects"
+            ? "Effects"
+            : tab === "audio"
+              ? "Audio"
+              : "Motion"}</button
       >
     {/each}
   </div>
@@ -133,9 +141,9 @@
       </div>
       {#each assets as asset (asset.id)}
         <div class="asset-item">
-          <Icon name="image" size={16} /><span class="truncate">{asset.name}</span><span
-            class="spacer"
-          ></span><small class="mono">{asset.embedded?.width ?? ""}</small>
+          <Icon name={asset.audio ? "wave" : "image"} size={16} /><span class="truncate"
+            >{asset.name}</span
+          ><span class="spacer"></span><small class="mono">{asset.embedded?.width ?? ""}</small>
         </div>
       {/each}
       <button class="import-zone" onclick={() => void importImage()} disabled={!comp}>
@@ -195,6 +203,8 @@
           >Controls come from plugin manifests. Effects are non-destructive and fully undoable.</span
         >
       </div>
+    {:else if editor.sidebar === "audio"}
+      <AudioLibrary {search} />
     {:else}
       <div class="library-intro">
         <span class="badge green"><Icon name="keyframe" size={11} />Animation presets</span>
@@ -260,7 +270,7 @@
       </div>{/if}
     <div class="local-note">
       <Icon name="layers" size={12} /><span>Editable. Portable. Yours.</span><span class="spacer"
-      ></span><span class="mono">v0.2</span>
+      ></span><span class="mono">v0.5.1</span>
     </div>
   </div>
 </aside>

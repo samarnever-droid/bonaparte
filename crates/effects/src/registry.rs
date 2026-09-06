@@ -433,24 +433,23 @@ impl EffectRegistry {
         evaluator(id, input, &params)
     }
 
-    pub fn evaluate_instance(
+    /// Resolve validated defaults, animation and pixel units once for either backend.
+    pub fn instance_parameters(
         &self,
         instance: &EffectInstance,
-        input: &CpuFrame,
         time: Time,
-    ) -> Result<CpuFrame, CpuEvalError> {
-        if !instance.enabled {
-            return Ok(input.clone());
+        pixel_scale: f32,
+    ) -> Result<HashMap<String, ParamValue>, CpuEvalError> {
+        if !pixel_scale.is_finite() || pixel_scale <= 0.0 || pixel_scale > 8.0 {
+            return Err(CpuEvalError::InvalidParam("preview scale".into()));
         }
         self.validate_instance(instance)?;
         let mut params: HashMap<_, _> = instance.evaluated_params(time).into_iter().collect();
-        // Temporal Bézier overshoot is allowed; bounded effect uniforms clamp at evaluation.
-        for param in &self
+        let manifest = &self
             .get(&instance.effect_id)
             .expect("validated effect")
-            .manifest
-            .params
-        {
+            .manifest;
+        for param in &manifest.params {
             if instance.tracks.contains_key(&param.id) {
                 if let (ParamKind::Slider { min, max, .. }, Some(ParamValue::Float(v))) =
                     (&param.kind, params.get_mut(&param.id))
@@ -459,6 +458,76 @@ impl EffectRegistry {
                 }
             }
         }
-        self.evaluate(&instance.effect_id, input, &params)
+        let mut params = self.parameters(&instance.effect_id, &params)?;
+        for param in &manifest.params {
+            if param.scale_with_resolution {
+                match params.get_mut(&param.id) {
+                    Some(ParamValue::Float(v)) => *v *= pixel_scale,
+                    Some(ParamValue::Point(v)) => {
+                        v[0] *= pixel_scale;
+                        v[1] *= pixel_scale;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(params)
+    }
+    pub fn evaluate_scaled(
+        &self,
+        id: &str,
+        input: &CpuFrame,
+        supplied: &HashMap<String, ParamValue>,
+        density: f32,
+    ) -> Result<CpuFrame, CpuEvalError> {
+        if !density.is_finite() || density <= 0.0 || density > 8.0 {
+            return Err(CpuEvalError::InvalidParam("raster density".into()));
+        }
+        let mut params = self.parameters(id, supplied)?;
+        let pack = self
+            .get(id)
+            .ok_or_else(|| CpuEvalError::UnknownEffect(id.into()))?;
+        for p in &pack.manifest.params {
+            if p.scale_with_resolution {
+                match params.get_mut(&p.id) {
+                    Some(ParamValue::Float(v)) => *v *= density,
+                    Some(ParamValue::Point(v)) => {
+                        v[0] *= density;
+                        v[1] *= density;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let evaluate = pack
+            .evaluator
+            .ok_or_else(|| CpuEvalError::UnsupportedBackend(id.into()))?;
+        evaluate(id, input, &params)
+    }
+
+    pub fn evaluate_instance(
+        &self,
+        instance: &EffectInstance,
+        input: &CpuFrame,
+        time: Time,
+    ) -> Result<CpuFrame, CpuEvalError> {
+        self.evaluate_instance_scaled(instance, input, time, 1.0)
+    }
+    pub fn evaluate_instance_scaled(
+        &self,
+        instance: &EffectInstance,
+        input: &CpuFrame,
+        time: Time,
+        pixel_scale: f32,
+    ) -> Result<CpuFrame, CpuEvalError> {
+        if !instance.enabled {
+            return Ok(input.clone());
+        }
+        let params = self.instance_parameters(instance, time, pixel_scale)?;
+        let evaluator = self
+            .get(&instance.effect_id)
+            .and_then(|e| e.evaluator)
+            .ok_or_else(|| CpuEvalError::UnsupportedBackend(instance.effect_id.clone()))?;
+        evaluator(&instance.effect_id, input, &params)
     }
 }

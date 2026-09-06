@@ -1,10 +1,15 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { inputGroup, releaseInputGroup, finiteInput } from "../live-input";
   import ColorField from "./ColorField.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
   import {
     editor,
     selectedLayer,
+    editingLayer,
+    liveContent,
+    liveProperty,
+    flushLiveEdits,
     activeComp,
     applyOp,
     setProperty,
@@ -12,6 +17,10 @@
     clone,
     selectComp,
     notify,
+    toggleLayerVisibility,
+    toggleLayerLock,
+    layerVisibility,
+    layerLocked,
   } from "../store.svelte";
   import {
     evaluate,
@@ -26,7 +35,7 @@
     type PropValue,
   } from "../model";
   import { layerIcon, layerColor, layerType } from "../geometry";
-  const layer = $derived(selectedLayer());
+  const layer = $derived(editingLayer());
   const comp = $derived(activeComp());
   let linkedScale = $state(true);
   const props: { key: Property; label: string; axes: string[]; step: number; unit?: string }[] = [
@@ -43,11 +52,11 @@
       ? value.Vec2
       : [property === "Opacity" ? value.Scalar * 100 : value.Scalar];
   }
-  async function changeNumber(property: Property, index: number, raw: string) {
+  async function changeNumber(property: Property, index: number, raw: string, group?: string) {
     if (!layer) return;
     const values = numbers(property),
       next = Number(raw);
-    if (!Number.isFinite(next)) return;
+    if (finiteInput(raw) === null) return;
     if (property === "Scale" && linkedScale) {
       const other = index === 0 ? 1 : 0;
       values[other] = values[index] !== 0 ? (values[other] * next) / values[index] : next;
@@ -60,9 +69,14 @@
             Scalar:
               property === "Opacity" ? Math.max(0, Math.min(100, values[0])) / 100 : values[0],
           };
-    await setProperty(layer.id, property, value);
+    if (group) liveProperty(group, property, value);
+    else await setProperty(layer.id, property, value);
   }
-  async function content(update: (kind: LayerKind) => void) {
+  async function content(update: (kind: LayerKind) => void, group?: string) {
+    if (group) {
+      liveContent(group, update);
+      return;
+    }
     const id = layer?.id,
       cid = comp?.id;
     if (id === undefined || cid === undefined) return;
@@ -139,26 +153,18 @@
         class="icon-button small"
         title={layer.visible ? "Hide layer" : "Show layer"}
         aria-label="Toggle layer visibility"
-        onclick={() =>
-          void applyOp({
-            type: "setLayerVisible",
-            comp: comp.id,
-            layer: layer.id,
-            visible: !layer.visible,
-          })}><Icon name={layer.visible ? "eye" : "eye-off"} size={14} /></button
+        aria-pressed={layerVisibility(comp.id, layer)}
+        onclick={() => void toggleLayerVisibility(comp.id, layer.id)}
+        ><Icon name={layerVisibility(comp.id, layer) ? "eye" : "eye-off"} size={14} /></button
       >
       <button
         class="icon-button small"
         class:active={layer.locked}
         title={layer.locked ? "Unlock layer" : "Lock layer"}
         aria-label="Toggle layer lock"
-        onclick={() =>
-          void applyOp({
-            type: "setLayerLocked",
-            comp: comp.id,
-            layer: layer.id,
-            locked: !layer.locked,
-          })}><Icon name={layer.locked ? "lock" : "unlock"} size={12} /></button
+        aria-pressed={layerLocked(comp.id, layer)}
+        onclick={() => void toggleLayerLock(comp.id, layer.id)}
+        ><Icon name={layerLocked(comp.id, layer) ? "lock" : "unlock"} size={12} /></button
       >
     </div>
     <div class="panel-tabs inspector-tabs">
@@ -192,14 +198,22 @@
               disabled={layer.locked}
               spellcheck={false}
               maxlength="16384"
-              onchange={(e) => {
+              oninput={(e) => {
                 const value = e.currentTarget.value;
+                const group = inputGroup(e.currentTarget);
                 void content((k) => {
                   if ("Text" in k) k.Text.text = value;
-                });
+                }, group);
+              }}
+              onblur={(e) => {
+                releaseInputGroup(e.currentTarget);
+                void flushLiveEdits();
               }}></textarea>
             <div class="font-row">
-              <span class="font-family">DejaVu Sans<Icon name="down" size={10} /></span><button
+              <span
+                class="font-family"
+                title="Bundled typeface; font selection is not implemented yet">DejaVu Sans</span
+              ><button
                 class="weight"
                 class:active={layer.kind.Text.style.bold}
                 disabled={layer.locked}
@@ -221,11 +235,17 @@
                   min="1"
                   max="2048"
                   disabled={layer.locked}
-                  onchange={(e) => {
-                    const v = Number(e.currentTarget.value);
+                  oninput={(e) => {
+                    const v = finiteInput(e.currentTarget.value);
+                    if (v === null || !e.currentTarget.validity.valid) return;
+                    const group = inputGroup(e.currentTarget);
                     void content((k) => {
                       if ("Text" in k) k.Text.size = v;
-                    });
+                    }, group);
+                  }}
+                  onblur={(e) => {
+                    releaseInputGroup(e.currentTarget);
+                    void flushLiveEdits();
                   }}
                 /><span>px</span>
               </div>
@@ -235,13 +255,20 @@
                   id="tracking"
                   type="number"
                   step=".5"
+                  min={-layer.kind.Text.size * 0.5}
                   value={layer.kind.Text.style.tracking}
                   disabled={layer.locked}
-                  onchange={(e) => {
-                    const v = Number(e.currentTarget.value);
+                  oninput={(e) => {
+                    const v = finiteInput(e.currentTarget.value);
+                    if (v === null || !e.currentTarget.validity.valid) return;
+                    const group = inputGroup(e.currentTarget);
                     void content((k) => {
                       if ("Text" in k) k.Text.style.tracking = v;
-                    });
+                    }, group);
+                  }}
+                  onblur={(e) => {
+                    releaseInputGroup(e.currentTarget);
+                    void flushLiveEdits();
                   }}
                 />
               </div>
@@ -251,10 +278,10 @@
                 label="Text fill"
                 value={layer.kind.Text.style.color}
                 disabled={layer.locked}
-                onchange={(color) =>
+                onchange={(color, group) =>
                   void content((k) => {
                     if ("Text" in k) k.Text.style.color = color;
-                  })}
+                  }, group)}
               />
             </div>
           </section>
@@ -292,14 +319,20 @@
                     max="8192"
                     disabled={layer.locked}
                     value={(layer.kind.Shape.style.size ?? [comp.width, comp.height])[axis]}
-                    onchange={(e) => {
-                      const v = Number(e.currentTarget.value);
+                    oninput={(e) => {
+                      const v = finiteInput(e.currentTarget.value);
+                      if (v === null || v <= 0 || v > 8192) return;
+                      const group = inputGroup(e.currentTarget);
                       void content((k) => {
                         if ("Shape" in k) {
                           k.Shape.style.size ??= [comp.width, comp.height];
                           k.Shape.style.size[axis] = v;
                         }
-                      });
+                      }, group);
+                    }}
+                    onblur={(e) => {
+                      releaseInputGroup(e.currentTarget);
+                      void flushLiveEdits();
                     }}
                   />
                 </div>{/each}
@@ -309,10 +342,10 @@
                 label="Shape fill"
                 value={layer.kind.Shape.color}
                 disabled={layer.locked}
-                onchange={(color) =>
+                onchange={(color, group) =>
                   void content((k) => {
                     if ("Shape" in k) k.Shape.color = color;
-                  })}
+                  }, group)}
               />
             </div>
             {#if !layer.kind.Shape.generator}<div class="form-row">
@@ -324,11 +357,17 @@
                     min="0"
                     value={layer.kind.Shape.style.corner_radius}
                     disabled={layer.locked}
-                    onchange={(e) => {
-                      const v = Number(e.currentTarget.value);
+                    oninput={(e) => {
+                      const v = finiteInput(e.currentTarget.value);
+                      if (v === null || !e.currentTarget.validity.valid) return;
+                      const group = inputGroup(e.currentTarget);
                       void content((k) => {
                         if ("Shape" in k) k.Shape.style.corner_radius = v;
-                      });
+                      }, group);
+                    }}
+                    onblur={(e) => {
+                      releaseInputGroup(e.currentTarget);
+                      void flushLiveEdits();
                     }}
                   /><span>px</span>
                 </div>
@@ -343,11 +382,17 @@
                   max="100"
                   value={layer.kind.Shape.style.stroke_width}
                   disabled={layer.locked}
-                  onchange={(e) => {
-                    const v = Number(e.currentTarget.value);
+                  oninput={(e) => {
+                    const v = finiteInput(e.currentTarget.value);
+                    if (v === null || !e.currentTarget.validity.valid) return;
+                    const group = inputGroup(e.currentTarget);
                     void content((k) => {
                       if ("Shape" in k) k.Shape.style.stroke_width = v;
-                    });
+                    }, group);
+                  }}
+                  onblur={(e) => {
+                    releaseInputGroup(e.currentTarget);
+                    void flushLiveEdits();
                   }}
                 /><span>px</span>
               </div>
@@ -357,10 +402,10 @@
                   label="Stroke"
                   value={layer.kind.Shape.style.stroke_color}
                   disabled={layer.locked}
-                  onchange={(color) =>
+                  onchange={(color, group) =>
                     void content((k) => {
                       if ("Shape" in k) k.Shape.style.stroke_color = color;
-                    })}
+                    }, group)}
                 />
               </div>{/if}
           </section>
@@ -372,10 +417,10 @@
                 label="Solid fill"
                 value={layer.kind.Solid.color}
                 disabled={layer.locked}
-                onchange={(color) =>
+                onchange={(color, group) =>
                   void content((k) => {
                     if ("Solid" in k) k.Solid.color = color;
-                  })}
+                  }, group)}
               />
             </div>
           </section>
@@ -448,7 +493,23 @@
                       value={Number((values[index] ?? 0).toFixed(2))}
                       step={prop.step}
                       disabled={layer.locked}
-                      onchange={(e) => void changeNumber(prop.key, index, e.currentTarget.value)}
+                      oninput={(e) =>
+                        void changeNumber(
+                          prop.key,
+                          index,
+                          e.currentTarget.value,
+                          inputGroup(e.currentTarget),
+                        )}
+                      onblur={(e) => {
+                        releaseInputGroup(e.currentTarget);
+                        void flushLiveEdits();
+                      }}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void flushLiveEdits();
+                        }
+                      }}
                     />{#if prop.unit}<span>{prop.unit}</span>{/if}
                   </div>{/each}
               </div>

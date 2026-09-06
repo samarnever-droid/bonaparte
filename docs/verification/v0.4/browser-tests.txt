@@ -1,0 +1,30 @@
+
+> bonaparte-ui@0.4.0 test:e2e
+> playwright test
+
+[WebServer]    Compiling bonaparte-preview v0.4.0 (/home/user/bonaparte/crates/preview)
+[WebServer]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.19s
+[WebServer] Bonaparte Rust render service on 0.0.0.0:4318 (development only)
+
+Running 18 tests using 1 worker
+
+  ✓   1 tests/audio.spec.ts:71:1 › real audio import, waveform, portable save, undo and redo (2.2s)
+  ✓   2 tests/audio.spec.ts:97:1 › sample placement, gain/pan automation, fades and split are undoable (1.5s)
+  ✓   3 tests/audio.spec.ts:132:1 › AudioWorklet consumes real PCM, drives the clock and obeys mute (1.4s)
+  ✓   4 tests/audio.spec.ts:187:1 › source slip, reverse, track solo and tempo markers round-trip (1.1s)
+  ✓   5 tests/audio.spec.ts:206:1 › native WAV and MP4 contain the timeline mix, not a post-export soundtrack (1.6s)
+  ✓   6 tests/audio.spec.ts:249:1 › malformed audio import preserves the document (806ms)
+  ✓   7 tests/editor.spec.ts:108:1 › composition creation and background are one undoable transaction (1.3s)
+  ✓   8 tests/editor.spec.ts:138:1 › text, shape content, canvas gestures, lock and duplicate update Rust state (1.7s)
+  ✓   9 tests/editor.spec.ts:183:1 › color grading changes real pixels, supports bypass, order, and parameter keys (1.8s)
+  ✓  10 tests/editor.spec.ts:235:1 › image import, project file round trip, invalid open, PNG and MP4 downloads (1.8s)
+  ✓  11 tests/editor.spec.ts:304:1 › motion recipes, key seeking and dragging, easing editor and playback (1.5s)
+  ✓  12 tests/editor.spec.ts:356:1 › layer bars trim and retime transform keys in one undoable gesture (1.2s)
+  ✓  13 tests/editor.spec.ts:400:1 › editable Orbit example uses the same renderer in all three workspaces (1.5s)
+  ✓  14 tests/performance.spec.ts:75:1 › resolution, frame reuse, and cache clearing are preview-only controls (872ms)
+  ✓  15 tests/performance.spec.ts:97:1 › half-resolution canvas gestures use original coordinates and Auto restores full quality (1.1s)
+  ✓  16 tests/performance.spec.ts:128:1 › the engine badge reports real GPU execution and explicit whole-frame fallback (1.3s)
+  ✓  17 tests/performance.spec.ts:161:1 › quarter preview does not downsample downloaded PNG exports (1.2s)
+  ✓  18 tests/performance.spec.ts:175:1 › late real renderer responses cannot overwrite a newer resolution choice (1.4s)
+
+  18 passed (32.6s)

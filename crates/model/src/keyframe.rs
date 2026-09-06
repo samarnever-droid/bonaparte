@@ -154,12 +154,8 @@ impl Track {
         }
         // Find the segment [keys[i], keys[i+1]] containing `time`.
         let i = keys
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, k)| k.time <= time)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .partition_point(|key| key.time <= time)
+            .saturating_sub(1);
         let (a, b) = (&keys[i], &keys[i + 1]);
         let span = (b.time.0 - a.time.0).max(1);
         let u = (time.0 - a.time.0) as f32 / span as f32;

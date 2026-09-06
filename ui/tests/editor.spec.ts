@@ -248,7 +248,7 @@ test("image import, project file round trip, invalid open, PNG and MP4 downloads
   const savedPath = info.outputPath("image-project.bonaparte");
   await (await saved).saveAs(savedPath);
   const file = JSON.parse(await readFile(savedPath, "utf8"));
-  expect(file.version).toBe(2);
+  expect(file.version).toBe(4);
   expect(file.project.media["1"].embedded.rgba_base64).toBeTruthy();
   await edit(page, "Project name", "Changed project");
   await page.getByRole("button", { name: "File", exact: true }).click();
@@ -418,4 +418,10 @@ test("editable Orbit example uses the same renderer in all three workspaces", as
   await page.getByLabel("Expand Orbital form", { exact: true }).click();
   await page.getByLabel("Graph Rotation on Orbital form", { exact: true }).click();
   await page.screenshot({ path: info.outputPath("animate.png") });
+  await page.getByLabel("Close graph editor", { exact: true }).click();
+  await page.getByRole("button", { name: "Design", exact: true }).click();
+  await page.getByLabel("Preview resolution").selectOption("2");
+  await expect(page.getByLabel("Rendered composition")).toHaveAttribute("width", "480");
+  await page.getByLabel("Preview performance").click();
+  await page.screenshot({ path: info.outputPath("performance.png") });
 });

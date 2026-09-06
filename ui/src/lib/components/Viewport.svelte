@@ -5,14 +5,36 @@
     editor,
     activeComp,
     selectedLayer,
+    editingLayer,
+    flushLiveEdits,
     renderTo,
+    previewDivisor,
+    setPreviewPreference,
     clone,
     setProperty,
     addLayer,
     selectComp,
     scrub,
+    pause,
+    cancelInteraction,
   } from "../store.svelte";
-  import { layerGeometry, hitTest, worldMatrix, inverse, point, type Matrix } from "../geometry";
+  import type { PreviewBackend, PreviewQuality } from "../preview";
+  import {
+    getPlanes,
+    preparePlanes,
+    transformedLayer,
+    cssBlend,
+    type InteractionPlanes,
+  } from "../interaction";
+  import {
+    layerGeometry,
+    hitTest,
+    worldMatrix,
+    inverse,
+    multiply,
+    point,
+    type Matrix,
+  } from "../geometry";
   import {
     evaluate,
     timeToTimecode,
@@ -27,16 +49,37 @@
   let zoom = $state("fit");
   let pan = $state({ x: 0, y: 0 });
   const comp = $derived(activeComp());
-  const selected = $derived(selectedLayer());
+  const selected = $derived(editingLayer());
+  const poseLayer = $derived(
+    selected && editor.interaction?.layer === selected.id
+      ? transformedLayer(selected, editor.interaction.property, editor.interaction.value)
+      : editor.previewLayer?.id === selected?.id
+        ? editor.previewLayer
+        : selected,
+  );
   const previewComp = $derived(
-    comp && editor.previewLayer
-      ? {
-          ...comp,
-          layers: { ...comp.layers, [String(editor.previewLayer.id)]: editor.previewLayer },
-        }
+    comp && poseLayer && poseLayer !== selected
+      ? { ...comp, layers: { ...comp.layers, [String(poseLayer.id)]: poseLayer } }
       : comp,
   );
-  const layer = $derived(editor.previewLayer?.id === selected?.id ? editor.previewLayer : selected);
+  const layer = $derived(poseLayer);
+  let planes = $state.raw<InteractionPlanes | null>(null);
+  let baseCanvas = $state<HTMLCanvasElement | null>(null),
+    subjectCanvas = $state<HTMLCanvasElement | null>(null),
+    topCanvas = $state<HTMLCanvasElement | null>(null);
+  const proxyActive = $derived(
+    !!editor.interaction &&
+      editor.interaction.property === "Position" &&
+      !!planes &&
+      planes.layerId === editor.interaction.layer &&
+      planes.compId === editor.interaction.comp &&
+      planes.time === editor.interaction.time &&
+      !!layer?.visible &&
+      !layer.locked &&
+      selected?.id === editor.interaction.layer &&
+      editor.nativeInteractionSequence !== editor.interaction.sequence &&
+      editor.previewQuality !== "1",
+  );
   const scale = $derived(
     comp
       ? zoom === "fit"
@@ -53,6 +96,88 @@
       : null,
   );
   const points = $derived(geometry?.corners.map((p) => p.join(",")).join(" ") ?? "");
+  const rotationHandle = $derived.by(() => {
+    if (!geometry) return null;
+    const p = geometry.corners;
+    const top: [number, number] = [(p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2];
+    let nx = p[1][1] - p[0][1],
+      ny = p[0][0] - p[1][0];
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len;
+    ny /= len;
+    if (nx * (top[0] - geometry.center[0]) + ny * (top[1] - geometry.center[1]) < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    return { top, x: top[0] + (nx * 25) / scale, y: top[1] + (ny * 25) / scale };
+  });
+
+  const proxyMatrix = $derived.by(() => {
+    if (!planes || !geometry) return "none";
+    const inv = inverse(planes.matrix);
+    if (!inv) return "none";
+    const m = multiply(geometry.matrix, inv);
+    return `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] * scale},${m[5] * scale})`;
+  });
+  $effect(() => {
+    editor.interactionReady = proxyActive;
+  });
+  $effect(() => {
+    if (!planes || !baseCanvas || !subjectCanvas || !topCanvas) return;
+    [baseCanvas, subjectCanvas, topCanvas].forEach((node, i) => {
+      node.width = planes!.width;
+      node.height = planes!.height;
+      node.getContext("2d")?.putImageData(planes!.images[i], 0, 0);
+    });
+  });
+  async function prefetch(id: number) {
+    const c = comp,
+      revision = editor.revision,
+      time = editor.currentTime,
+      bypass = editor.bypassEffects;
+    if (!c || !editor.interactionProtocol || editor.playing) return;
+    const ready = await preparePlanes(c.id, id, revision, time, bypass);
+    if (
+      ready &&
+      comp?.id === c.id &&
+      editor.revision === revision &&
+      editor.currentTime === time &&
+      (editor.selected === id || gesture?.layer?.id === id)
+    )
+      planes = ready;
+  }
+  $effect(() => {
+    const id = editor.selected,
+      rev = editor.revision,
+      time = editor.currentTime,
+      playing = editor.playing;
+    if (id === null || playing || !editor.interactionProtocol) return;
+    const timer = setTimeout(() => {
+      if (editor.revision === rev && editor.currentTime === time) void prefetch(id);
+    }, 50);
+    return () => clearTimeout(timer);
+  });
+  $effect(() => {
+    const i = editor.interaction;
+    if (i?.phase !== "drag") return;
+    const timer = setTimeout(() => {
+      if (editor.interaction?.sequence === i.sequence) {
+        editor.refineInteractionSequence = i.sequence;
+        editor.renderSeq++;
+      }
+    }, 90);
+    return () => clearTimeout(timer);
+  });
+  let lastHover = 0;
+  function hover(e: PointerEvent) {
+    if (gesture || editor.playing || !comp || !editor.project || performance.now() - lastHover < 90)
+      return;
+    lastHover = performance.now();
+    const [x, y] = location(e);
+    const hit = hitTest(comp, editor.project, x, y, editor.currentTime);
+    if (hit) void prefetch(hit.id);
+  }
+
   const motion = $derived.by(() => {
     if (!comp || !selected || !editor.project || editor.workspace !== "Animate") return [];
     return (selected.tracks.Position?.keys ?? []).map((key) => ({
@@ -66,7 +191,13 @@
     void editor.currentTime;
     void editor.renderSeq;
     void editor.previewLayer;
+    void editor.liveEdit;
     void editor.bypassEffects;
+    void editor.previewQuality;
+    void editor.previewBackend;
+    void editor.playing;
+    void editor.interaction;
+    void editor.interactionReady;
     if (canvas) void renderTo(canvas);
   });
   onMount(() => {
@@ -80,6 +211,7 @@
   });
   let gesture: null | {
     mode: "move" | "scale" | "rotate" | "pan";
+    token: number;
     layer: Layer | null;
     start: [number, number];
     screen: [number, number];
@@ -92,10 +224,19 @@
     center: [number, number];
     moved: boolean;
     parentInverse: Matrix | null;
+    width: number;
+    height: number;
+    compId: number;
+    time: number;
+    bounds: DOMRect;
+    lastAngle: number;
+    rotationDelta: number;
+    anchor: [number, number];
   } = null;
+  let gestureToken = 0;
   function location(event: PointerEvent): [number, number] {
     if (!canvas || !comp) return [0, 0];
-    const bounds = canvas.getBoundingClientRect();
+    const bounds = gesture?.bounds ?? canvas.getBoundingClientRect();
     return [
       ((event.clientX - bounds.left) * comp.width) / bounds.width,
       ((event.clientY - bounds.top) * comp.height) / bounds.height,
@@ -111,6 +252,20 @@
     if (target?.locked) return;
     event.preventDefault();
     event.stopPropagation();
+    if (mode !== "pan") {
+      void flushLiveEdits();
+      pause();
+    }
+    if (target) {
+      planes = getPlanes(
+        comp.id,
+        target.id,
+        editor.revision,
+        editor.currentTime,
+        editor.bypassEffects,
+      );
+      void prefetch(target.id);
+    }
     const g = target ? layerGeometry(comp, target, editor.project, editor.currentTime) : null;
     const property: Property =
       mode === "scale" ? "Scale" : mode === "rotate" ? "Rotation" : "Position";
@@ -118,9 +273,25 @@
       target?.parent !== null && target?.parent !== undefined
         ? comp.layers[String(target.parent)]
         : null;
+    const anchorValue = target
+      ? evaluate(target, "AnchorPoint", editor.currentTime)
+      : { Vec2: [0, 0] as [number, number] };
+    const anchor: [number, number] = "Vec2" in anchorValue ? anchorValue.Vec2 : [0, 0];
+    const pivot = g ? point(g.matrix, anchor[0], anchor[1]) : ([0, 0] as [number, number]);
+    const parentInverse = parent ? inverse(worldMatrix(comp, parent, editor.currentTime)) : null;
+    const initial = location(event);
+    const dx = initial[0] - pivot[0],
+      dy = initial[1] - pivot[1];
+    const parentVector = parentInverse
+      ? [
+          parentInverse[0] * dx + parentInverse[2] * dy,
+          parentInverse[1] * dx + parentInverse[3] * dy,
+        ]
+      : [dx, dy];
     gesture = {
       mode,
-      layer: target ? clone(target) : null,
+      token: ++gestureToken,
+      layer: target,
       start: location(event),
       screen: [event.clientX, event.clientY],
       pan: { ...pan },
@@ -129,9 +300,17 @@
       base: target ? evaluate(target, property, editor.currentTime) : null,
       value: null,
       property,
-      center: g?.center ?? [0, 0],
+      center: pivot,
+      anchor,
       moved: false,
-      parentInverse: parent ? inverse(worldMatrix(comp, parent, editor.currentTime)) : null,
+      parentInverse,
+      width: g?.width ?? 0,
+      height: g?.height ?? 0,
+      compId: comp.id,
+      time: editor.currentTime,
+      bounds: canvas!.getBoundingClientRect(),
+      lastAngle: Math.atan2(parentVector[1], parentVector[0]),
+      rotationDelta: 0,
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
@@ -145,10 +324,31 @@
     }
     const [x, y] = location(event),
       hit = hitTest(comp, editor.project, x, y, editor.currentTime);
+    if (editor.tool === "rotate") {
+      const target = selected ?? hit;
+      if (target) {
+        editor.selected = target.id;
+        begin(event, "rotate", target);
+      }
+      return;
+    }
     editor.selected = hit?.id ?? null;
     if (hit) begin(event, "move", hit);
   }
+  let latestPointer: PointerEvent | null = null,
+    pointerRaf = 0,
+    pointerSequence = 0;
   function move(event: PointerEvent) {
+    latestPointer = event;
+    if (!pointerRaf)
+      pointerRaf = requestAnimationFrame(() => {
+        pointerRaf = 0;
+        const last = latestPointer;
+        latestPointer = null;
+        if (last) applyPointer(last);
+      });
+  }
+  function applyPointer(event: PointerEvent) {
     if (!gesture) return;
     const g = gesture;
     if (Math.hypot(event.clientX - g.screen[0], event.clientY - g.screen[1]) < 2 && !g.moved)
@@ -174,12 +374,13 @@
       }
       value = { Vec2: [Math.round(g.base.Vec2[0] + dx), Math.round(g.base.Vec2[1] + dy)] };
     } else if (g.mode === "scale" && "Vec2" in g.base && g.matrix && comp && editor.project) {
-      const original = layerGeometry(comp, g.layer, editor.project, editor.currentTime);
       const local = point(g.matrix, x, y);
       const sx = g.corner === 0 || g.corner === 3 ? -1 : 1,
         sy = g.corner < 2 ? -1 : 1;
-      let rx = local[0] / ((original.width / 2) * sx),
-        ry = local[1] / ((original.height / 2) * sy);
+      const denominatorX = (g.width / 2) * sx - g.anchor[0],
+        denominatorY = (g.height / 2) * sy - g.anchor[1];
+      let rx = Math.abs(denominatorX) < 1e-6 ? 1 : (local[0] - g.anchor[0]) / denominatorX,
+        ry = Math.abs(denominatorY) < 1e-6 ? 1 : (local[1] - g.anchor[1]) / denominatorY;
       if (event.shiftKey) {
         const r = Math.abs(rx) > Math.abs(ry) ? rx : ry;
         rx = r;
@@ -192,33 +393,66 @@
         ],
       };
     } else if (g.mode === "rotate" && "Scalar" in g.base) {
-      let degrees =
-        ((Math.atan2(y - g.center[1], x - g.center[0]) -
-          Math.atan2(g.start[1] - g.center[1], g.start[0] - g.center[0])) *
-          180) /
-          Math.PI +
-        g.base.Scalar;
+      let dx = x - g.center[0],
+        dy = y - g.center[1];
+      if (g.parentInverse) {
+        const m = g.parentInverse;
+        [dx, dy] = [m[0] * dx + m[2] * dy, m[1] * dx + m[3] * dy];
+      }
+      const angle = Math.atan2(dy, dx);
+      let delta = angle - g.lastAngle;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      g.rotationDelta += delta;
+      g.lastAngle = angle;
+      let degrees = g.base.Scalar + (g.rotationDelta * 180) / Math.PI;
       if (event.shiftKey) degrees = Math.round(degrees / 15) * 15;
       value = { Scalar: degrees };
     } else return;
     g.value = value;
-    const preview = clone(g.layer);
-    delete preview.tracks[g.property];
-    if (g.property === "Position" && "Vec2" in value) preview.transform.position = value.Vec2;
-    if (g.property === "Scale" && "Vec2" in value) preview.transform.scale = value.Vec2;
-    if (g.property === "Rotation" && "Scalar" in value) preview.transform.rotation = value.Scalar;
-    editor.previewLayer = preview;
+    const sequence = ++pointerSequence;
+    editor.interaction = {
+      layer: g.layer.id,
+      comp: g.compId,
+      property: g.property,
+      value,
+      time: g.time,
+      sequence,
+      gesture: g.token,
+      phase: "drag",
+    };
+    if (!editor.interactionProtocol)
+      editor.previewLayer = transformedLayer(g.layer, g.property, value);
   }
+
   function cleanup() {
+    if (pointerRaf) cancelAnimationFrame(pointerRaf);
+    pointerRaf = 0;
+    latestPointer = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", finish);
     window.removeEventListener("pointercancel", cancel);
   }
   async function finish() {
+    if (latestPointer) applyPointer(latestPointer);
     const g = gesture;
     gesture = null;
     cleanup();
-    if (g?.moved && g.layer && g.value) await setProperty(g.layer.id, g.property, g.value);
+    if (g?.moved && g.layer && g.value && comp?.id === g.compId) {
+      const state = editor.interaction;
+      if (state) editor.interaction = { ...state, phase: "commit" };
+      const ok = await setProperty(g.layer.id, g.property, g.value);
+      if (ok && state) {
+        if (editor.interaction?.sequence === state.sequence)
+          editor.interaction = { ...state, phase: "commit", committedRevision: editor.revision };
+      } else if (!state || editor.interaction?.sequence === state.sequence) {
+        editor.interaction = null;
+        editor.interactionReady = false;
+      }
+    } else {
+      editor.interaction = null;
+      editor.interactionReady = false;
+    }
     editor.previewLayer = null;
     editor.renderSeq++;
   }
@@ -226,6 +460,8 @@
     gesture = null;
     cleanup();
     editor.previewLayer = null;
+    editor.interaction = null;
+    editor.interactionReady = false;
     editor.renderSeq++;
   }
   onDestroy(() => {
@@ -255,6 +491,14 @@
   }
 </script>
 
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape" && gesture) {
+      e.preventDefault();
+      cancel();
+    }
+  }}
+/>
 <section class="panel viewport" aria-label="Composition viewer">
   <div class="panel-heading viewport-heading">
     <span class="viewer-label">Composition</span><span class="tab-separator"></span><Icon
@@ -295,6 +539,14 @@
         aria-label="Hand tool"
         onclick={() => (editor.tool = "hand")}><Icon name="hand" size={16} /></button
       >
+      <button
+        class="icon-button"
+        class:active={editor.tool === "rotate"}
+        title="Rotation tool (R): drag around the anchor"
+        aria-label="Rotation tool"
+        aria-pressed={editor.tool === "rotate"}
+        onclick={() => (editor.tool = "rotate")}><Icon name="rotate" size={16} /></button
+      >
       <span class="tool-rule"></span>
       <button
         class="icon-button"
@@ -333,6 +585,8 @@
           bind:this={canvas}
           aria-label="Rendered composition"
           onpointerdown={down}
+          onpointermove={hover}
+          style:opacity={proxyActive ? 0 : 1}
           ondblclick={() => {
             if (selected && "PreComp" in selected.kind) {
               selectComp(selected.kind.PreComp.comp);
@@ -340,6 +594,20 @@
             }
           }}
         ></canvas>
+        <div
+          class="interaction-planes"
+          class:shown={proxyActive}
+          aria-hidden="true"
+          data-interaction-active={proxyActive}
+          data-interaction-matrix={proxyMatrix}
+        >
+          <canvas bind:this={baseCanvas}></canvas>
+          <canvas
+            bind:this={subjectCanvas}
+            style={`transform:${proxyMatrix};mix-blend-mode:${planes ? cssBlend(planes.blendMode) : "normal"}`}
+          ></canvas>
+          <canvas bind:this={topCanvas}></canvas>
+        </div>
         <svg
           class="overlay"
           viewBox={`0 0 ${comp.width} ${comp.height}`}
@@ -375,7 +643,7 @@
                 stroke="#d2e2bd"
                 stroke-width={1 / scale}
               />{/each}{/if}
-          {#if geometry && layer && !layer.locked && editor.tool === "select"}
+          {#if geometry && layer && !layer.locked && editor.tool !== "hand"}
             <polygon
               {points}
               fill="none"
@@ -399,29 +667,37 @@
                 style={`cursor:${index % 2 === 0 ? "nwse" : "nesw"}-resize`}
                 onpointerdown={(e) => begin(e, "scale", layer, index)}
               />{/each}
-            {@const top:[number,number]=[(geometry.corners[0][0]+geometry.corners[1][0])/2,(geometry.corners[0][1]+geometry.corners[1][1])/2]}
-            <line
-              x1={top[0]}
-              y1={top[1]}
-              x2={top[0]}
-              y2={top[1] - 20 / scale}
-              stroke="#c0e6aa"
-              stroke-width={0.8 / scale}
-            />
-            <circle
-              role="button"
-              tabindex="0"
-              aria-label="Rotation handle"
-              onkeydown={(e) => nudgeHandle(e, "Rotation")}
-              class="transform-handle rotate-handle"
-              cx={top[0]}
-              cy={top[1] - 24 / scale}
-              r={3.5 / scale}
-              fill="#202a19"
-              stroke="#d7efc1"
-              stroke-width={1 / scale}
-              onpointerdown={(e) => begin(e, "rotate", layer)}
-            />
+            {#if rotationHandle}
+              <line
+                x1={rotationHandle.top[0]}
+                y1={rotationHandle.top[1]}
+                x2={rotationHandle.x}
+                y2={rotationHandle.y}
+                stroke="#c0e6aa"
+                stroke-width={0.8 / scale}
+              />
+              <circle
+                role="button"
+                tabindex="0"
+                aria-label="Rotation handle"
+                onkeydown={(e) => nudgeHandle(e, "Rotation")}
+                class="transform-handle rotate-handle"
+                cx={rotationHandle.x}
+                cy={rotationHandle.y}
+                r={11 / scale}
+                fill="transparent"
+                onpointerdown={(e) => begin(e, "rotate", layer)}
+              />
+              <circle
+                cx={rotationHandle.x}
+                cy={rotationHandle.y}
+                r={4 / scale}
+                fill="#202a19"
+                stroke="#d7efc1"
+                stroke-width={1 / scale}
+                pointer-events="none"
+              />
+            {/if}
             <path
               d={`M${geometry.center[0] - 5 / scale} ${geometry.center[1]}h${10 / scale} M${geometry.center[0]} ${geometry.center[1] - 5 / scale}v${10 / scale}`}
               stroke="#e3eed7"
@@ -431,6 +707,13 @@
           {/if}
         </svg>
       </div>
+      {#if editor.interaction}<div class="interaction-label">
+          {editor.interaction.phase === "commit"
+            ? "Refining final frame…"
+            : proxyActive
+              ? "Interactive · cached pixels"
+              : "Interactive · draft updating"}
+        </div>{/if}
       <div class="canvas-meta mono">
         {comp.width} × {comp.height}<span>·</span>{formatFps(comp.fps)}
       </div>
@@ -469,15 +752,100 @@
       ><span class="fx">ƒx</span><span>{editor.bypassEffects ? "Bypassed" : "Effects on"}</span
       ></button
     >
-    <span class="spacer"></span><span class="render-status"><span></span>Full resolution</span><span
-      class="divider"
-    ></span><span class="mono frame-time"
+    <span class="spacer"></span>
+    {#if editor.previewProtocol >= 3}
+      <select
+        class="preview-quality"
+        aria-label="Preview resolution"
+        title="Preview only. Auto uses full resolution while paused and half during playback. Exports remain full resolution."
+        value={editor.previewQuality}
+        onchange={(e) =>
+          setPreviewPreference(e.currentTarget.value as PreviewQuality, editor.previewBackend)}
+      >
+        <option value="auto">Auto · {previewDivisor() === 1 ? "Full" : "Half"}</option>
+        <option value="1">Full</option><option value="2">Half</option><option value="4"
+          >Quarter</option
+        >
+      </select>
+      <select
+        class="preview-backend"
+        aria-label="Preview renderer"
+        title="Requested backend. The engine badge reports actual execution and any fallback."
+        value={editor.previewBackend}
+        onchange={(e) =>
+          setPreviewPreference(editor.previewQuality, e.currentTarget.value as PreviewBackend)}
+      >
+        <option value="auto">Auto engine</option><option value="cpu">CPU</option><option value="gpu"
+          >{editor.previewStatus?.gpu.software ? "GPU · software" : "GPU"}</option
+        >
+      </select>
+      <span
+        class="cache-status"
+        class:cached={editor.previewMetadata?.cacheHit}
+        title={editor.previewMetadata
+          ? `${editor.previewMetadata.width} × ${editor.previewMetadata.height} preview pixels; ${editor.previewMetadata.cacheHit ? "served from frame cache" : "rendered now"}`
+          : "Waiting for preview"}>{editor.previewMetadata?.cacheHit ? "CACHED" : "LIVE"}</span
+      >
+    {:else}<span class="render-status"><span></span>Full resolution</span>{/if}
+    <span class="divider"></span><span class="mono frame-time"
       >{comp ? timeToTimecode(editor.currentTime, comp.fps) : "00:00:00:00"}</span
     >
   </div>
 </section>
 
 <style>
+  .interaction-planes {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    display: none;
+    isolation: isolate;
+    overflow: hidden;
+  }
+  .interaction-planes.shown {
+    display: block;
+  }
+  .interaction-planes canvas {
+    position: absolute;
+    inset: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+  .interaction-label {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    font: 8px monospace;
+    letter-spacing: 0.4px;
+    background: #233320ee;
+    border: 1px solid #53664a;
+    padding: 5px 8px;
+    border-radius: 4px;
+    color: #bdd5ac;
+    pointer-events: none;
+  }
+
+  .preview-quality,
+  .preview-backend {
+    max-width: 114px;
+    font-size: 9px;
+    color: var(--text-secondary);
+  }
+  .cache-status {
+    color: #858e81;
+    font: 7px monospace;
+    letter-spacing: 0.5px;
+    padding: 3px 5px;
+    border: 1px solid #42483e;
+    border-radius: 3px;
+  }
+  .cache-status.cached {
+    color: var(--accent);
+    border-color: #637757;
+    background: #abc88a0d;
+  }
+
   .viewport {
     background: #171817;
   }

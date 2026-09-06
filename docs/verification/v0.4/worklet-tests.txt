@@ -1,0 +1,39 @@
+
+> bonaparte-ui@0.4.0 test:audio-worklet
+> node --test tests/unit/audio-worklet.test.mjs
+
+TAP version 13
+# Subtest: underflow emits silence without advancing composition time
+ok 1 - underflow emits silence without advancing composition time
+  ---
+  duration_ms: 4.787303
+  ...
+# Subtest: obsolete generations cannot inject old audio after a seek
+ok 2 - obsolete generations cannot inject old audio after a seek
+  ---
+  duration_ms: 1.169859
+  ...
+# Subtest: bounded queue never evicts the block currently being played
+ok 3 - bounded queue never evicts the block currently being played
+  ---
+  duration_ms: 1.373961
+  ...
+# Subtest: looping crosses boundaries without inserted samples or gaps
+ok 4 - looping crosses boundaries without inserted samples or gaps
+  ---
+  duration_ms: 2.572481
+  ...
+# Subtest: master meters remain pre-monitor so low listening volume does not hide clipping
+ok 5 - master meters remain pre-monitor so low listening volume does not hide clipping
+  ---
+  duration_ms: 1.576801
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 77.676389

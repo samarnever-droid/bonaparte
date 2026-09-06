@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import PerformancePanel from "./PerformancePanel.svelte";
   import {
     editor,
     activeComp,
@@ -150,7 +151,7 @@
     >
   </div>
   <div class="workspace-tabs">
-    {#each [{ name: "Design", icon: "layers" }, { name: "Color", icon: "palette" }, { name: "Animate", icon: "graph" }] as item}
+    {#each [{ name: "Design", icon: "layers" }, { name: "Color", icon: "palette" }, { name: "Animate", icon: "graph" }, ...(editor.audioProtocol ? [{ name: "Audio", icon: "headphones" }] : [])] as item}
       <button
         class:active={editor.workspace === item.name}
         onclick={() => setWorkspace(item.name as typeof editor.workspace)}
@@ -158,12 +159,7 @@
       >
     {/each}
   </div>
-  <div
-    class="engine-tag"
-    title="The project currently uses the deterministic Rust CPU renderer. The GPU backend is not implemented yet."
-  >
-    <span></span>Rust compositor<span class="cpu-badge">CPU</span>
-  </div>
+  <PerformancePanel />
 </nav>
 {#if menu}<button class="menu-overlay" aria-label="Close menu" onclick={() => (menu = null)}
   ></button>{/if}
@@ -296,28 +292,6 @@
     background: #393b37;
     box-shadow: inset 0 0 0 1px #50534e;
   }
-  .engine-tag {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 220px;
-    justify-content: flex-end;
-    color: #8e908d;
-    font-size: 9px;
-  }
-  .engine-tag > span:first-child {
-    width: 4px;
-    height: 4px;
-    background: #969d93;
-    border-radius: 50%;
-  }
-  .cpu-badge {
-    font: 8px monospace;
-    border: 1px solid #4e504d;
-    border-radius: 2px;
-    padding: 2px 3px;
-    margin-left: 4px;
-  }
   @media (max-width: 1150px) {
     .save-state {
       display: none;
@@ -328,9 +302,6 @@
     .project-name {
       width: 200px;
     }
-    .engine-tag {
-      width: 170px;
-    }
   }
   @media (max-width: 900px) {
     .brand {
@@ -339,9 +310,6 @@
     }
     .project-name {
       width: 150px;
-    }
-    .engine-tag {
-      display: none;
     }
     .workspace-tabs {
       margin-left: auto;

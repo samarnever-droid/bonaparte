@@ -1,0 +1,8 @@
+[package]
+name = "bonaparte-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" } # pure sample-addressed arrangement, shared by native mixing and tests
+serde = { workspace = true }

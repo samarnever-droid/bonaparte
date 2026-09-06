@@ -1,0 +1,48 @@
+
+> bonaparte-ui@0.5.1 test:e2e
+> playwright test
+
+[WebServer]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
+[WebServer] Bonaparte Rust render service on 0.0.0.0:4318 (development only)
+
+Running 36 tests using 1 worker
+
+  ✓   1 tests/audio.spec.ts:71:1 › real audio import, waveform, portable save, undo and redo (2.7s)
+  ✓   2 tests/audio.spec.ts:97:1 › sample placement, gain/pan automation, fades and split are undoable (1.4s)
+  ✓   3 tests/audio.spec.ts:132:1 › AudioWorklet consumes real PCM, drives the clock and obeys mute (1.6s)
+  ✓   4 tests/audio.spec.ts:187:1 › source slip, reverse, track solo and tempo markers round-trip (1.0s)
+  ✓   5 tests/audio.spec.ts:206:1 › native WAV and MP4 contain the timeline mix, not a post-export soundtrack (1.6s)
+  ✓   6 tests/audio.spec.ts:249:1 › malformed audio import preserves the document (808ms)
+  ✓   7 tests/audio.spec.ts:267:1 › native EQ, compression, compensated limiter and bus routing stay editable (1.3s)
+  ✓   8 tests/audio.spec.ts:306:1 › processing edits replace prepared audio without resetting the running clock (1.1s)
+  ✓   9 tests/editor.spec.ts:108:1 › composition creation and background are one undoable transaction (1.2s)
+  ✓  10 tests/editor.spec.ts:138:1 › text, shape content, canvas gestures, lock and duplicate update Rust state (1.8s)
+  ✓  11 tests/editor.spec.ts:183:1 › color grading changes real pixels, supports bypass, order, and parameter keys (1.6s)
+  ✓  12 tests/editor.spec.ts:235:1 › image import, project file round trip, invalid open, PNG and MP4 downloads (1.5s)
+  ✓  13 tests/editor.spec.ts:304:1 › motion recipes, key seeking and dragging, easing editor and playback (1.6s)
+  ✓  14 tests/editor.spec.ts:356:1 › layer bars trim and retime transform keys in one undoable gesture (970ms)
+  ✓  15 tests/editor.spec.ts:400:1 › editable Orbit example uses the same renderer in all three workspaces (1.4s)
+INTERACTION_METRICS {"project":"IGNITION, plus one editable probe","layers":487,"eventToNextRafMedianMs":0.10000000009313226,"eventToNextRafP95Ms":0.2999999998137355,"rafIntervalP95Ms":16.700000000000273,"framesOver50ms":0,"commitObservedMs":50,"mutationResponseBytes":761,"previewRequests":4}
+  ✓  16 tests/interaction.spec.ts:5:1 › large-project pointer interaction measurements and one-gesture undo (4.2s)
+  ✓  17 tests/interaction.spec.ts:168:1 › cached transform pixels respond without waiting for delayed authoritative frames (1.1s)
+  ✓  18 tests/performance.spec.ts:75:1 › resolution, frame reuse, and cache clearing are preview-only controls (832ms)
+  ✓  19 tests/performance.spec.ts:97:1 › half-resolution canvas gestures use original coordinates and Auto restores full quality (943ms)
+  ✓  20 tests/performance.spec.ts:128:1 › the engine badge reports real GPU execution and explicit whole-frame fallback (1.3s)
+  ✓  21 tests/performance.spec.ts:161:1 › quarter preview does not downsample downloaded PNG exports (780ms)
+  ✓  22 tests/performance.spec.ts:175:1 › late real renderer responses cannot overwrite a newer resolution choice (1.2s)
+  ✓  23 tests/stability.spec.ts:99:1 › text and position update while the input remains focused (967ms)
+  ✓  24 tests/stability.spec.ts:117:1 › color and alpha apply on input without a blur click (1.4s)
+  ✓  25 tests/stability.spec.ts:133:1 › rapid visibility toggles use the latest state rather than the captured old value (990ms)
+  ✓  26 tests/stability.spec.ts:150:1 › rotation handle follows the rotated edge and uses the anchor as pivot (829ms)
+  ✓  27 tests/stability.spec.ts:188:1 › timeline fits on composition change and permits time beyond the old viewport (662ms)
+  ✓  28 tests/stability.spec.ts:216:1 › a visibility edit during post-transform refinement cannot leave a stuck proxy (965ms)
+  ✓  29 tests/stability.spec.ts:244:1 › focused typing persists incrementally but remains one undoable edit (1.7s)
+  ✓  30 tests/stability.spec.ts:263:1 › effect values update without blur and incomplete numeric prefixes do not change content (1.4s)
+  ✓  31 tests/stability.spec.ts:291:1 › scaling uses the anchor pivot and Full quality stays Full during the gesture (769ms)
+  ✓  32 tests/stability.spec.ts:318:1 › timeline duration can be extended and far timecode seeks create usable range (617ms)
+  ✓  33 tests/stability.spec.ts:336:1 › rotation remains correct beneath a non-uniformly scaled parent (863ms)
+  ✓  34 tests/stability.spec.ts:393:1 › late edit acknowledgements do not replace newer focused text (1.4s)
+  ✓  35 tests/stability.spec.ts:412:1 › native color-picker input and shape dimensions update without change events (1.4s)
+  ✓  36 tests/stability.spec.ts:429:1 › blank projects start with an editable thirty-second timeline (822ms)
+
+  36 passed (51.2s)

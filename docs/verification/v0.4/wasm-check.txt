@@ -1,0 +1,2 @@
+    Checking bonaparte-audio v0.4.0 (/home/user/bonaparte/crates/audio)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.43s

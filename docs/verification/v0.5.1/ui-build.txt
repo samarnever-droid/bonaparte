@@ -1,0 +1,16 @@
+
+> bonaparte-ui@0.5.1 build
+> vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 161 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                0.32 kB │ gzip:  0.22 kB
+dist/assets/image-import.worker-CLofnIZL.js    0.59 kB
+dist/assets/worklet-CihfHCBr.js                5.20 kB
+dist/assets/index-wE8Rxbwh.css                79.36 kB │ gzip: 17.06 kB
+dist/assets/index-ovp5YJga.js                  1.25 kB │ gzip:  0.48 kB
+dist/assets/index-p7X8IP7z.js                276.07 kB │ gzip: 91.24 kB
+✓ built in 3.28s

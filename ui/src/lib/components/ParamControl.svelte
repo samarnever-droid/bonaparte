@@ -5,9 +5,13 @@
     effectValue,
     setEffectParam,
     previewEffect,
+    editingLayer,
+    liveEffect,
+    flushLiveEdits,
     toggleEffectKey,
   } from "../store.svelte";
   import Icon from "./Icon.svelte";
+  import { inputGroup, releaseInputGroup, finiteInput } from "../live-input";
   import ColorField from "./ColorField.svelte";
   let {
     param,
@@ -15,7 +19,9 @@
     disabled = false,
   }: { param: ParamDef; instance: EffectInstance; disabled?: boolean } = $props();
   const current = $derived(
-    editor.previewLayer?.effects.find((e) => e.id === instance.id) ?? instance,
+    editingLayer()?.effects.find((e) => e.id === instance.id) ??
+      editor.previewLayer?.effects.find((e) => e.id === instance.id) ??
+      instance,
   );
   const value = $derived(effectValue(current, param));
   const animated = $derived(!!instance.tracks[param.id]?.keys.length);
@@ -48,7 +54,22 @@
         max={param.kind.Slider.max}
         step={param.step ?? 0.01}
         {disabled}
-        onchange={(e) => commit({ Float: scalar(e.currentTarget.value) })}
+        oninput={(e) => {
+          if (finiteInput(e.currentTarget.value) !== null)
+            liveEffect(inputGroup(e.currentTarget), instance.id, param, {
+              Float: scalar(e.currentTarget.value),
+            });
+        }}
+        onblur={(e) => {
+          releaseInputGroup(e.currentTarget);
+          void flushLiveEdits();
+        }}
+        onkeydown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void flushLiveEdits();
+          }
+        }}
       /><span class="unit">{param.unit}</span>
     {/if}
     {#if animatable}<button
@@ -72,8 +93,15 @@
       step={param.step ?? (param.kind.Slider.max - param.kind.Slider.min) / 200}
       value={value.Float}
       {disabled}
-      oninput={(e) => previewEffect(instance.id, param, { Float: scalar(e.currentTarget.value) })}
-      onchange={(e) => commit({ Float: scalar(e.currentTarget.value) })}
+      oninput={(e) =>
+        liveEffect(inputGroup(e.currentTarget), instance.id, param, {
+          Float: scalar(e.currentTarget.value),
+        })}
+      onchange={() => void flushLiveEdits()}
+      onblur={(e) => {
+        releaseInputGroup(e.currentTarget);
+        void flushLiveEdits();
+      }}
       onpointercancel={() => (editor.previewLayer = null)}
     />
   {:else if "Color" in value}
@@ -82,7 +110,8 @@
       label={param.name}
       linear={false}
       {disabled}
-      onchange={(color) => commit({ Color: color })}
+      onchange={(color, group) =>
+        liveEffect(group ?? crypto.randomUUID(), instance.id, param, { Color: color })}
     />
   {:else if "Point" in value}
     <div class="point-fields">
@@ -92,12 +121,17 @@
             aria-label={`${param.name} ${axis === 0 ? "X" : "Y"}`}
             {disabled}
             value={value.Point[axis]}
-            onchange={(e) => {
-              if ("Point" in value) {
+            oninput={(e) => {
+              const n = finiteInput(e.currentTarget.value);
+              if (n !== null && "Point" in value) {
                 const next: [number, number] = [...value.Point];
-                next[axis] = Number(e.currentTarget.value);
-                commit({ Point: next });
+                next[axis] = n;
+                liveEffect(inputGroup(e.currentTarget), instance.id, param, { Point: next });
               }
+            }}
+            onblur={(e) => {
+              releaseInputGroup(e.currentTarget);
+              void flushLiveEdits();
             }}
           />
         </div>{/each}

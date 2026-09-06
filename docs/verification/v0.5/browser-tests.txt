@@ -1,0 +1,34 @@
+
+> bonaparte-ui@0.5.0 test:e2e
+> playwright test
+
+[WebServer]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.32s
+[WebServer] Bonaparte Rust render service on 0.0.0.0:4318 (development only)
+
+Running 22 tests using 1 worker
+
+  ✓   1 tests/audio.spec.ts:71:1 › real audio import, waveform, portable save, undo and redo (3.0s)
+  ✓   2 tests/audio.spec.ts:97:1 › sample placement, gain/pan automation, fades and split are undoable (1.8s)
+  ✓   3 tests/audio.spec.ts:132:1 › AudioWorklet consumes real PCM, drives the clock and obeys mute (2.0s)
+  ✓   4 tests/audio.spec.ts:187:1 › source slip, reverse, track solo and tempo markers round-trip (1.6s)
+  ✓   5 tests/audio.spec.ts:206:1 › native WAV and MP4 contain the timeline mix, not a post-export soundtrack (2.0s)
+  ✓   6 tests/audio.spec.ts:249:1 › malformed audio import preserves the document (1.2s)
+  ✓   7 tests/audio.spec.ts:267:1 › native EQ, compression, compensated limiter and bus routing stay editable (1.6s)
+  ✓   8 tests/audio.spec.ts:306:1 › processing edits replace prepared audio without resetting the running clock (1.5s)
+  ✓   9 tests/editor.spec.ts:108:1 › composition creation and background are one undoable transaction (1.3s)
+  ✓  10 tests/editor.spec.ts:138:1 › text, shape content, canvas gestures, lock and duplicate update Rust state (1.8s)
+  ✓  11 tests/editor.spec.ts:183:1 › color grading changes real pixels, supports bypass, order, and parameter keys (1.8s)
+  ✓  12 tests/editor.spec.ts:235:1 › image import, project file round trip, invalid open, PNG and MP4 downloads (2.3s)
+  ✓  13 tests/editor.spec.ts:304:1 › motion recipes, key seeking and dragging, easing editor and playback (1.9s)
+  ✓  14 tests/editor.spec.ts:356:1 › layer bars trim and retime transform keys in one undoable gesture (1.2s)
+  ✓  15 tests/editor.spec.ts:400:1 › editable Orbit example uses the same renderer in all three workspaces (1.5s)
+INTERACTION_METRICS {"project":"IGNITION, plus one editable probe","layers":487,"eventToNextRafMedianMs":0.10000000149011612,"eventToNextRafP95Ms":0.30000000074505806,"rafIntervalP95Ms":16.80000000000109,"framesOver50ms":0,"commitObservedMs":148,"mutationResponseBytes":761,"previewRequests":4}
+  ✓  16 tests/interaction.spec.ts:5:1 › large-project pointer interaction measurements and one-gesture undo (17.8s)
+  ✓  17 tests/interaction.spec.ts:168:1 › cached transform pixels respond without waiting for delayed authoritative frames (6.5s)
+  ✓  18 tests/performance.spec.ts:75:1 › resolution, frame reuse, and cache clearing are preview-only controls (1.7s)
+  ✓  19 tests/performance.spec.ts:97:1 › half-resolution canvas gestures use original coordinates and Auto restores full quality (1.4s)
+  ✓  20 tests/performance.spec.ts:128:1 › the engine badge reports real GPU execution and explicit whole-frame fallback (2.6s)
+  ✓  21 tests/performance.spec.ts:161:1 › quarter preview does not downsample downloaded PNG exports (2.0s)
+  ✓  22 tests/performance.spec.ts:175:1 › late real renderer responses cannot overwrite a newer resolution choice (2.0s)
+
+  22 passed (1.1m)

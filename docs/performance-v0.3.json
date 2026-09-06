@@ -1,0 +1,243 @@
+{
+  "cache": {
+    "cpuFrames": 27,
+    "fallbacks": 0,
+    "frames": {
+      "budgetBytes": 67108864,
+      "bytes": 1166400,
+      "entries": 9,
+      "hits": 48,
+      "misses": 54
+    },
+    "gpu": {
+      "api": "Vulkan",
+      "available": true,
+      "compiled": true,
+      "deviceType": "Cpu",
+      "initialized": true,
+      "name": "llvmpipe (LLVM 19.1.7, 256 bits)",
+      "pooledBytes": 9380700,
+      "reason": "Software graphics adapter detected. Auto uses CPU; GPU mode is available for validation, not a hardware-speed promise.",
+      "software": true,
+      "submittedFrames": 27,
+      "uploadBytes": 1576756
+    },
+    "gpuFrames": 27,
+    "protocol": 3,
+    "renders": 54,
+    "sources": {
+      "budgetBytes": 33554432,
+      "bytes": 1576756,
+      "entries": 9,
+      "hits": 801,
+      "misses": 9
+    }
+  },
+  "method": "8 successive 4000-tick frames after warm-up; isolated in-process dev build; includes snapshot/packet work, not network or browser painting. Cache samples repeat the last frame. Software GPU results do not establish hardware performance.",
+  "project": "examples/orbit.bonaparte.json",
+  "results": [
+    {
+      "divisor": 1,
+      "medianMs": 102.37166500000001,
+      "path": "legacy CPU raw",
+      "samplesMs": [
+        102.699597,
+        103.813815,
+        103.251573,
+        104.834114,
+        100.77000799999999,
+        100.824075,
+        100.767716,
+        102.043733
+      ]
+    },
+    {
+      "actualBackend": "cpu",
+      "adapter": null,
+      "cacheHitMedianMs": 0.220843,
+      "cacheHitSamplesMs": [
+        0.336537,
+        0.245427,
+        0.20790199999999998,
+        0.198504,
+        0.222966,
+        0.21872,
+        0.20630900000000002,
+        0.23477599999999998
+      ],
+      "divisor": 1,
+      "height": 540,
+      "medianMs": 83.024191,
+      "path": "prepared preview packet",
+      "requestedBackend": "cpu",
+      "samplesMs": [
+        80.274433,
+        89.656086,
+        81.570826,
+        82.891879,
+        88.04598,
+        83.156503,
+        89.22064999999999,
+        80.643029
+      ],
+      "width": 960
+    },
+    {
+      "actualBackend": "cpu",
+      "adapter": null,
+      "cacheHitMedianMs": 0.1041545,
+      "cacheHitSamplesMs": [
+        0.145494,
+        0.091904,
+        0.082668,
+        0.07798500000000001,
+        0.07582199999999999,
+        0.116405,
+        0.120535,
+        0.126825
+      ],
+      "divisor": 2,
+      "height": 270,
+      "medianMs": 22.9412935,
+      "path": "prepared preview packet",
+      "requestedBackend": "cpu",
+      "samplesMs": [
+        23.043456,
+        26.323959000000002,
+        22.839131,
+        22.838572000000003,
+        22.494123000000002,
+        23.841725,
+        23.955261,
+        20.992029
+      ],
+      "width": 480
+    },
+    {
+      "actualBackend": "cpu",
+      "adapter": null,
+      "cacheHitMedianMs": 0.057683,
+      "cacheHitSamplesMs": [
+        0.108667,
+        0.06579,
+        0.059808,
+        0.057239,
+        0.058127,
+        0.055867,
+        0.051495,
+        0.050568
+      ],
+      "divisor": 4,
+      "height": 135,
+      "medianMs": 6.8021305000000005,
+      "path": "prepared preview packet",
+      "requestedBackend": "cpu",
+      "samplesMs": [
+        5.830213,
+        7.576135000000001,
+        6.521711000000001,
+        7.569048,
+        6.8367890000000004,
+        7.46821,
+        6.767472,
+        6.2504040000000005
+      ],
+      "width": 240
+    },
+    {
+      "actualBackend": "gpu-software",
+      "adapter": "llvmpipe (LLVM 19.1.7, 256 bits)",
+      "cacheHitMedianMs": 0.2603405,
+      "cacheHitSamplesMs": [
+        0.363333,
+        0.313758,
+        0.265927,
+        0.287159,
+        0.23650400000000002,
+        0.254754,
+        0.222119,
+        0.23562999999999998
+      ],
+      "divisor": 1,
+      "height": 540,
+      "medianMs": 62.803471,
+      "path": "prepared preview packet",
+      "requestedBackend": "gpu",
+      "samplesMs": [
+        63.764272,
+        62.928703000000006,
+        62.794081,
+        60.763913,
+        62.812861,
+        62.938140000000004,
+        60.957888000000004,
+        61.356819
+      ],
+      "width": 960
+    },
+    {
+      "actualBackend": "gpu-software",
+      "adapter": "llvmpipe (LLVM 19.1.7, 256 bits)",
+      "cacheHitMedianMs": 0.0879105,
+      "cacheHitSamplesMs": [
+        0.188593,
+        0.16956,
+        0.086029,
+        0.089792,
+        0.077362,
+        0.071507,
+        0.07370199999999999,
+        0.130412
+      ],
+      "divisor": 2,
+      "height": 270,
+      "medianMs": 23.408393,
+      "path": "prepared preview packet",
+      "requestedBackend": "gpu",
+      "samplesMs": [
+        23.873089,
+        22.808951,
+        22.943697,
+        25.313616,
+        22.890399,
+        23.900592,
+        22.875462,
+        25.643426
+      ],
+      "width": 480
+    },
+    {
+      "actualBackend": "gpu-software",
+      "adapter": "llvmpipe (LLVM 19.1.7, 256 bits)",
+      "cacheHitMedianMs": 0.052762,
+      "cacheHitSamplesMs": [
+        0.173294,
+        0.068468,
+        0.051062,
+        0.048157,
+        0.047431,
+        0.04660400000000001,
+        0.080719,
+        0.054462
+      ],
+      "divisor": 4,
+      "height": 135,
+      "medianMs": 12.788632499999999,
+      "path": "prepared preview packet",
+      "requestedBackend": "gpu",
+      "samplesMs": [
+        13.335246999999999,
+        12.855475,
+        12.747777,
+        12.599381,
+        12.60579,
+        12.864009,
+        12.135873,
+        12.829488
+      ],
+      "width": 240
+    }
+  ],
+  "date": "2026-09-06",
+  "environment": "2-vCPU Linux x86_64 sandbox; Rust 1.98.1; dev profile with engine/effects/font optimization; Mesa llvmpipe software Vulkan"
+}

@@ -18,19 +18,27 @@ struct Params {
 @group(0) @binding(3) var<uniform> u_time: f32;
 @group(0) @binding(4) var<uniform> params: Params;
 
+
+fn sample_nearest(uv:vec2<f32>)->vec4<f32>{
+    if any(uv<vec2<f32>(0.0))||any(uv>vec2<f32>(1.0)){return vec4<f32>(0.0);}
+    let dims=vec2<i32>(textureDimensions(u_texture));
+    let p=clamp(vec2<i32>(floor(uv*vec2<f32>(dims))),vec2<i32>(0),dims-vec2<i32>(1));
+    return textureLoad(u_texture,p,0);
+}
+
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     if (params.amount <= 0.0) {
-        return textureSample(u_texture, u_sampler, uv);
+        return sample_nearest(uv);
     }
 
     let texel = 1.0 / u_resolution;
     let rad = radians(params.angle);
     let dir = vec2<f32>(cos(rad), sin(rad)) * params.amount * texel;
 
-    let r_col = textureSample(u_texture, u_sampler, uv + dir);
-    let g_col = textureSample(u_texture, u_sampler, uv);
-    let b_col = textureSample(u_texture, u_sampler, uv - dir);
+    let r_col = sample_nearest(uv + dir);
+    let g_col = sample_nearest(uv);
+    let b_col = sample_nearest(uv - dir);
 
     let max_a = max(r_col.a, max(g_col.a, b_col.a));
     return vec4<f32>(r_col.r, g_col.g, b_col.b, max_a);

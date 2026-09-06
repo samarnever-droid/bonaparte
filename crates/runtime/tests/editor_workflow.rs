@@ -51,7 +51,7 @@ fn embedded_image_import_save_open_and_render_round_trip() {
         .to_owned();
     assert_eq!(
         serde_json::from_str::<Value>(&serialized).unwrap()["version"],
-        2
+        4
     );
     let p = parse_project(&serialized).unwrap();
     let reopened = EditorSession::new(p).unwrap();
@@ -205,6 +205,7 @@ fn failed_video_render_preserves_existing_output_file() {
         path: None,
         kind: MediaKind::Image,
         embedded: None,
+        audio: None,
         slot: None,
         alias: None,
         perception: None,
@@ -241,6 +242,7 @@ fn generic_batch_with_correct_length_but_invalid_base64_is_atomic() {
             height: 1,
             rgba_base64: "!!!!!!!!".into(),
         }),
+        audio: None,
         slot: None,
         alias: None,
         perception: None,

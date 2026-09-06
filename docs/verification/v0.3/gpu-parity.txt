@@ -1,0 +1,15 @@
+   Compiling bonaparte-engine v0.3.0 (/home/user/bonaparte/crates/engine)
+   Compiling bonaparte-gpu v0.3.0 (/home/user/bonaparte/crates/gpu)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.31s
+     Running tests/parity.rs (target/debug/deps/parity-ec11fc4bd1ebe240)
+
+running 6 tests
+test opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames ... ok
+test nested_compositions_text_and_adjustments_match_at_all_preview_resolutions ... ok
+test raster_uploads_and_targets_are_reused_with_bounded_retention ... ok
+test real_draw_passes_cover_all_blends_transforms_and_rgba_readback_padding ... ok
+test third_party_shader_uses_reflected_padding_not_private_id_hooks ... ok
+test unsupported_kernels_are_explicit_and_never_masquerade_as_gpu_frames ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+

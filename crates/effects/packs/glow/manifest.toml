@@ -8,6 +8,7 @@ inputs = ["input"]
 
 [[params]]
 id = "radius"
+scale_with_resolution = true
 name = "Radius"
 doc = "Blur radius of the glow halo, in pixels."
 kind = { Slider = { min = 0.0, max = 100.0, default = 12.0 } }

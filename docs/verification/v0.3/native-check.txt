@@ -1,0 +1,7 @@
+    Blocking waiting for file lock on build directory
+    Checking bonaparte-engine v0.3.0 (/home/user/bonaparte/crates/engine)
+    Checking bonaparte-gpu v0.3.0 (/home/user/bonaparte/crates/gpu)
+    Checking bonaparte-media v0.3.0 (/home/user/bonaparte/crates/media)
+    Checking bonaparte-runtime v0.3.0 (/home/user/bonaparte/crates/runtime)
+    Checking bonaparte-app v0.3.0 (/home/user/bonaparte/ui/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.99s

@@ -1,0 +1,13 @@
+{
+  "method": "Bonaparte Export dialog → shared Rust audio mixer → native FFmpeg H.264 + AAC",
+  "elapsedSeconds": 320.583,
+  "previewDivisor": 4,
+  "width": 1920,
+  "height": 1080,
+  "expectedVideoFrames": 528,
+  "expectedAudioSampleFrames": 1056000,
+  "audioSampleRate": 48000,
+  "audioChannels": 2,
+  "errors": [],
+  "downloadFailure": null
+}

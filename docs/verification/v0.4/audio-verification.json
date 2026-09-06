@@ -1,0 +1,12 @@
+{
+  "referenceFrames": 1056000,
+  "aacDecodedFramesIncludingPadding": 1056768,
+  "containerDurationSeconds": 22,
+  "audioVideoDurationMatch": true,
+  "onsetCorrelationLagSamples": 0,
+  "leftChannelCorrelation": 0.999498860237373,
+  "samplePeak": 0.8649042248725891,
+  "rms": 0.10473772963189731,
+  "overloadSamples": 0,
+  "decodeErrors": ""
+}

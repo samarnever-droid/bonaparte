@@ -8,18 +8,21 @@ inputs = ["input"]
 
 [[params]]
 id = "offset_x"
+scale_with_resolution = true
 name = "Offset X"
 doc = "Horizontal shadow offset in pixels."
 kind = { Slider = { min = -200.0, max = 200.0, default = 10.0 } }
 
 [[params]]
 id = "offset_y"
+scale_with_resolution = true
 name = "Offset Y"
 doc = "Vertical shadow offset in pixels."
 kind = { Slider = { min = -200.0, max = 200.0, default = 10.0 } }
 
 [[params]]
 id = "radius"
+scale_with_resolution = true
 name = "Radius"
 doc = "Blur radius of the shadow in pixels."
 kind = { Slider = { min = 0.0, max = 100.0, default = 15.0 } }

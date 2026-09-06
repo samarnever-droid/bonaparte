@@ -1,4 +1,5 @@
-//! GPU compositor backend scaffolding behind `gpu` feature.
+//! Legacy shader and descriptor fixtures. Executable rendering now lives in
+//! the bonaparte-gpu crate; these compatibility types do not initialize a device.
 //!
 //! Provides the WGSL shader contract, pipeline configuration, and GPU
 //! compositor abstractions for hardware-accelerated tile rendering.

@@ -1,5 +1,5 @@
 // Color Grade — straight-alpha sRGB in/out. The native CPU implementation
-// in grading.rs is the reference. This shader awaits a real GPU execution host.
+// in grading.rs is the reference. This shader executes in the native bonaparte-gpu preview host.
 struct Params {
     temperature: f32, tint: f32, exposure: f32, contrast: f32,
     highlights: f32, shadows: f32, whites: f32, blacks: f32,

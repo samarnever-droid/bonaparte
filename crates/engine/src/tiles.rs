@@ -472,7 +472,18 @@ fn needs_full_frame_effects(project: &Project) -> bool {
         .comps
         .values()
         .flat_map(|c| c.layers.values())
-        .any(|l| l.effects.iter().any(|e| e.enabled))
+        .any(|l| {
+            l.effects.iter().any(|e| e.enabled)
+                || matches!(
+                    l.kind,
+                    LayerKind::Text { .. }
+                        | LayerKind::PreComp { .. }
+                        | LayerKind::Shape {
+                            generator: Some(_),
+                            ..
+                        }
+                )
+        })
 }
 fn crop_tile(frame: &Frame, tile: Tile) -> TileFrame {
     let x = tile.x * TILE_SIZE;

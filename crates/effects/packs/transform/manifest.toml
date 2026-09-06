@@ -2,18 +2,21 @@ api_version = "1.0"
 id = "builtin.transform"
 name = "Transform Effect"
 category = "Distort"
+gpu_preview = true
 cost = "light"
 shader = "transform.wgsl"
 inputs = ["input"]
 
 [[params]]
 id = "offset_x"
+scale_with_resolution = true
 name = "Offset X"
 doc = "Horizontal translation in pixels."
 kind = { Slider = { min = -1000.0, max = 1000.0, default = 0.0 } }
 
 [[params]]
 id = "offset_y"
+scale_with_resolution = true
 name = "Offset Y"
 doc = "Vertical translation in pixels."
 kind = { Slider = { min = -1000.0, max = 1000.0, default = 0.0 } }

@@ -2,12 +2,14 @@ api_version = "1.0"
 id = "builtin.directional_blur"
 name = "Directional Blur"
 category = "Blur & sharpen"
+gpu_preview = true
 cost = "medium"
 shader = "directional_blur.wgsl"
 inputs = ["input"]
 
 [[params]]
 id = "length"
+scale_with_resolution = true
 name = "Length"
 doc = "Streak length of the motion blur in pixels."
 kind = { Slider = { min = 0.0, max = 200.0, default = 20.0 } }

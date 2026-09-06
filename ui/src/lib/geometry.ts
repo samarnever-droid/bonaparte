@@ -60,6 +60,10 @@ export function worldMatrix(
   );
 }
 let context: CanvasRenderingContext2D | null;
+const textSizes = new Map<string, [number, number]>();
+export function clearGeometryCache() {
+  textSizes.clear();
+}
 export function naturalSize(comp: Comp, layer: Layer, project: Project): [number, number] {
   const k = layer.kind;
   if ("Shape" in k) return k.Shape.style.size ?? [comp.width, comp.height];
@@ -72,6 +76,14 @@ export function naturalSize(comp: Comp, layer: Layer, project: Project): [number
     return [a?.embedded?.width ?? comp.width, a?.embedded?.height ?? comp.height];
   }
   if ("Text" in k) {
+    const key = JSON.stringify([
+      k.Text.text,
+      k.Text.size,
+      k.Text.style.bold,
+      k.Text.style.tracking,
+    ]);
+    const cached = textSizes.get(key);
+    if (cached) return cached;
     context ??= document.createElement("canvas").getContext("2d");
     if (!context) return [k.Text.text.length * k.Text.size * 0.6, k.Text.size * 1.2];
     context.font = `${k.Text.style.bold ? "bold" : "normal"} ${k.Text.size}px "Bonaparte Sans"`;
@@ -85,10 +97,13 @@ export function naturalSize(comp: Comp, layer: Layer, project: Project): [number
     const metrics = context.measureText("Mg");
     const height =
       metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent || k.Text.size * 1.2;
-    return [
+    const result: [number, number] = [
       Math.max(1, Math.ceil(Math.max(...widths))),
       Math.max(1, Math.ceil(height * lines.length)),
     ];
+    if (textSizes.size >= 256) textSizes.delete(textSizes.keys().next().value!);
+    textSizes.set(key, result);
+    return result;
   }
   return [comp.width, comp.height];
 }

@@ -10,6 +10,7 @@
     newProject,
     exportFile,
     saveProject,
+    hasAudio,
   } from "../store.svelte";
   import { formatFps, timeToSecs, secsToTime, ticksPerFrame, type Color } from "../model";
   const comp = $derived(activeComp());
@@ -18,7 +19,7 @@
     width = $state(1920),
     height = $state(1080),
     fps = $state("30/1"),
-    seconds = $state(10),
+    seconds = $state(30),
     background = $state<Color>([0, 0, 0, 1]);
   let format = $state<"png" | "mp4">("mp4");
   let submitting = $state(false);
@@ -40,7 +41,7 @@
       width = c?.width ?? 1920;
       height = c?.height ?? 1080;
       fps = c ? `${c.fps.num}/${c.fps.den}` : "30/1";
-      seconds = c ? timeToSecs(c.duration) : 10;
+      seconds = c ? timeToSecs(c.duration) : 30;
       background = c ? [...c.background] : [0, 0, 0, 1];
     }
   });
@@ -318,8 +319,10 @@
       </div>
       {#if format === "mp4"}<p class="modal-note">
           <Icon name="info" size={12} /><span
-            >Video is silent; audio mixing is not implemented. Transparency is flattened to black.
-            Rendering time depends on your layers and effects.</span
+            >{editor.audioProtocol && hasAudio()
+              ? "Project audio is mixed at 48 kHz stereo and encoded as AAC at 256 kbps. Mute/solo, automation and fades are included."
+              : "This composition has no audio clips; the export will be silent."} Transparency is flattened
+            to black. Rendering time depends on your layers and effects.</span
           >
         </p>{/if}
       {#if format === "mp4" && !editor.ffmpeg}<p class="validation-message">
@@ -381,7 +384,7 @@
       <div class="new-project-options">
         <button onclick={() => void newProject(false)}
           ><Icon name="plus" size={25} /><strong>Blank project</strong><span
-            >1920 × 1080 · 30 fps · 10 seconds</span
+            >1920 × 1080 · 30 fps · 30 seconds</span
           ><Icon name="right" size={15} /></button
         ><button onclick={() => void newProject(true)}
           ><Icon name="circle" size={25} /><strong>Orbit studio ident</strong><span

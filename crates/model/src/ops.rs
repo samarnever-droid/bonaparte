@@ -30,6 +30,11 @@ use crate::time::{FrameRate, Time};
     rename_all_fields = "camelCase"
 )]
 pub enum Op {
+    /// One sample-accurate audio arrangement edit: clips, tracks, markers and mixer.
+    SetCompAudio {
+        comp: CompId,
+        audio: crate::AudioArrangement,
+    },
     /// One transaction and one history entry. Nested batches are deliberately refused.
     Batch {
         label: String,
@@ -264,6 +269,13 @@ impl Op {
                 *project
                     .layer_mut(comp, layer)
                     .ok_or(ModelError::LayerNotFound(layer))? = shifted;
+                Ok(())
+            }
+            Op::SetCompAudio { comp, audio } => {
+                project
+                    .comp_mut(comp)
+                    .ok_or(ModelError::CompNotFound(comp))?
+                    .audio = audio;
                 Ok(())
             }
             Op::RenameProject { name } => {
@@ -614,6 +626,14 @@ impl Op {
                     ModelError::Invalid("Timeline shift overflows time range".into())
                 })?),
             }),
+            Op::SetCompAudio { comp, .. } => Ok(Op::SetCompAudio {
+                comp: *comp,
+                audio: project
+                    .comp(*comp)
+                    .ok_or(ModelError::CompNotFound(*comp))?
+                    .audio
+                    .clone(),
+            }),
             Op::RenameProject { .. } => Ok(Op::RenameProject {
                 name: project.name.clone(),
             }),
@@ -891,6 +911,7 @@ impl Op {
                 "Moved layer {layer} and its animation by {:.3}s",
                 delta.as_secs_f64()
             ),
+            Op::SetCompAudio { .. } => "Edited audio timeline".into(),
             Op::RenameProject { name } => format!("Renamed project to “{name}”"),
             Op::SetLayerContent { layer, .. } => format!("Edited layer {layer} content"),
             Op::SetLayerEffects { layer, .. } => format!("Edited layer {layer} effects"),
@@ -975,6 +996,7 @@ impl Op {
 struct HistoryEntry {
     op: Op,
     label: String,
+    edit_group: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -983,12 +1005,70 @@ pub struct History {
     redo_stack: Vec<HistoryEntry>,
 }
 
+fn merge_targets(op: &Op) -> Option<Vec<String>> {
+    let mut result = match op {
+        Op::SetLayerContent { comp, layer, .. } => vec![format!("content:{comp}:{layer}")],
+        Op::SetLayerEffects { comp, layer, .. } => vec![format!("effects:{comp}:{layer}")],
+        Op::SetValue {
+            comp,
+            layer,
+            property,
+            ..
+        } => vec![format!("value:{comp}:{layer}:{property:?}")],
+        Op::AddKeyframe {
+            comp,
+            layer,
+            property,
+            key,
+        } => vec![format!("key:{comp}:{layer}:{property:?}:{}", key.time.0)],
+        Op::RemoveKeyframe {
+            comp,
+            layer,
+            property,
+            time,
+        } => vec![format!("key:{comp}:{layer}:{property:?}:{}", time.0)],
+        Op::RenameLayer { comp, layer, .. } => vec![format!("name:{comp}:{layer}")],
+        Op::Batch { ops, .. } => {
+            let mut all = vec![];
+            for op in ops {
+                all.extend(merge_targets(op)?);
+            }
+            all
+        }
+        _ => return None,
+    };
+    result.sort();
+    Some(result)
+}
+
 impl History {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn commit(&mut self, project: &mut Project, op: Op) -> Result<(), ModelError> {
+        self.commit_grouped(project, op, None)
+    }
+    pub fn commit_grouped(
+        &mut self,
+        project: &mut Project,
+        op: Op,
+        group: Option<String>,
+    ) -> Result<(), ModelError> {
+        if group
+            .as_ref()
+            .is_some_and(|g| g.is_empty() || g.len() > 128)
+        {
+            return Err(ModelError::Invalid("Invalid live edit group".into()));
+        }
+        let merge = group.as_ref().is_some_and(|g| {
+            self.redo_stack.is_empty()
+                && self.undo_stack.last().is_some_and(|last| {
+                    last.edit_group.as_ref() == Some(g)
+                        && merge_targets(&last.op) == merge_targets(&op)
+                        && merge_targets(&op).is_some()
+                })
+        });
         project.validate().map_err(ModelError::Invalid)?;
         let label = op.describe();
         let inverse = match &op {
@@ -1008,7 +1088,15 @@ impl History {
         op.apply(&mut candidate)?;
         candidate.validate().map_err(ModelError::Invalid)?;
         *project = candidate;
-        self.undo_stack.push(HistoryEntry { op: inverse, label });
+        if merge {
+            self.undo_stack.last_mut().expect("merge target").label = label;
+        } else {
+            self.undo_stack.push(HistoryEntry {
+                op: inverse,
+                label,
+                edit_group: group,
+            });
+        }
         if self.undo_stack.len() > 200 {
             self.undo_stack.remove(0);
         }
@@ -1026,9 +1114,13 @@ impl History {
         candidate.validate().map_err(ModelError::Invalid)?;
         *project = candidate;
         self.undo_stack.pop();
+        if let Some(last) = self.undo_stack.last_mut() {
+            last.edit_group = None;
+        }
         self.redo_stack.push(HistoryEntry {
             op: redo,
             label: entry.label,
+            edit_group: None,
         });
         Ok(true)
     }
@@ -1046,6 +1138,7 @@ impl History {
         self.undo_stack.push(HistoryEntry {
             op: inverse,
             label: entry.label,
+            edit_group: None,
         });
         Ok(true)
     }
@@ -1345,6 +1438,7 @@ mod tests {
             path: Some("/path/to/test.png".into()),
             kind: MediaKind::Image,
             embedded: None,
+            audio: None,
             slot: None,
             alias: Some("logo".into()),
             perception: None,

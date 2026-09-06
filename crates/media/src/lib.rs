@@ -1,11 +1,10 @@
 //! # bonaparte-media
 //!
-//! NATIVE-ONLY crate (RULES §1.5): Crash-isolated FFmpeg process orchestration,
-//! media asset probing, PerceptionCard generation, proxy transcoding,
-//! two-tier disk-backed frame cache with Flat RAM guarantee, and streaming MP4 export.
-//!
-//! Owns: everything that touches media files on disk or spawns media child processes.
-//! Must never: be compiled into the WASM target, or be depended on by the engine core.
+//! Native-only media I/O: bounded FFmpeg subprocess orchestration, probing,
+//! image/video utilities, decoded audio acquisition and streaming exports.
+//! Audio PCM is disk-backed. Resource budgets are not a flat-RAM guarantee;
+//! child processes inherit caller privileges and are not a security sandbox.
+//! The pure engine/audio crates do not depend on this crate.
 
 pub mod cache;
 pub mod decode;
@@ -21,3 +20,5 @@ pub use proxy::{generate_proxy, ProxyError, ProxyInfo};
 
 // Re-export engine MediaFrames trait for convenience
 pub use bonaparte_engine::reference::{FrameView, MediaFrames};
+
+pub mod audio;

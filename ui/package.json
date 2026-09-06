@@ -1,7 +1,7 @@
 {
   "name": "bonaparte-ui",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:e2e": "playwright test",
     "studio": "node scripts/studio.mjs",
-    "format": "prettier --write \"src/**/*.{svelte,ts,css}\" \"scripts/**/*.mjs\" vite.config.ts"
+    "format": "prettier --write \"src/**/*.{svelte,ts,css}\" \"scripts/**/*.mjs\" vite.config.ts",
+    "test:audio-worklet": "node --test tests/unit/audio-worklet.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

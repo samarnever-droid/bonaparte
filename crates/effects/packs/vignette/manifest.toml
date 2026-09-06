@@ -2,6 +2,7 @@ api_version = "1.0"
 id = "builtin.vignette"
 name = "Vignette"
 category = "Light & stylize"
+gpu_preview = true
 cost = "light"
 shader = "vignette.wgsl"
 inputs = ["input"]

@@ -8,13 +8,18 @@ async function db(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
   });
 }
-export async function saveRecovery(project: Project): Promise<void> {
+export async function saveRecovery(project: Project | string, version = 3): Promise<void> {
   const database = await db();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction("recovery", "readwrite");
     transaction
       .objectStore("recovery")
-      .put(JSON.stringify({ format: "bonaparte", version: 2, project }), "latest");
+      .put(
+        typeof project === "string"
+          ? project
+          : JSON.stringify({ format: "bonaparte", version, project }),
+        "latest",
+      );
     transaction.oncomplete = () => {
       database.close();
       resolve();

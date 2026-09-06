@@ -9,7 +9,14 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub const PROJECT_VERSION: u32 = 2;
+pub mod audio;
+pub mod interaction;
+mod patch;
+pub mod preview;
+pub use audio::{decode_project_audio, AudioChunkRequest, DecodedAudios};
+pub use preview::{PreviewJob, PreviewRenderer, PreviewRequest};
+
+pub const PROJECT_VERSION: u32 = 4;
 pub const MAX_PROJECT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -21,12 +28,16 @@ struct ProjectFile {
 
 pub fn serialize_project(project: &Project) -> Result<String, String> {
     project.validate()?;
-    serde_json::to_string_pretty(&ProjectFile {
+    let text = serde_json::to_string_pretty(&ProjectFile {
         format: "bonaparte".into(),
         version: PROJECT_VERSION,
         project: project.clone(),
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    if text.len() > MAX_PROJECT_BYTES {
+        return Err("Serialized project exceeds the 64 MiB portable file limit".into());
+    }
+    Ok(text)
 }
 
 /// Write beside the destination and rename only after all bytes have reached
@@ -55,7 +66,7 @@ pub fn parse_project(text: &str) -> Result<Project, String> {
         serde_json::from_str(text).map_err(|e| format!("Invalid project JSON: {e}"))?;
     let project = if root.get("version").is_some() || root.get("format").is_some() {
         let file: ProjectFile = serde_json::from_value(root).map_err(|e| e.to_string())?;
-        if file.format != "bonaparte" || file.version != PROJECT_VERSION {
+        if file.format != "bonaparte" || !matches!(file.version, 2 | 3 | PROJECT_VERSION) {
             return Err("Unsupported project format/version".into());
         }
         file.project
@@ -65,6 +76,7 @@ pub fn parse_project(text: &str) -> Result<Project, String> {
     project.validate()?;
     validate_effects(&project, &EffectRegistry::new())?;
     decode_embedded_frames(&project)?;
+    decode_project_audio(&project)?;
     Ok(project)
 }
 
@@ -98,6 +110,15 @@ pub fn commit(
     registry: &EffectRegistry,
     op: Op,
 ) -> Result<(), String> {
+    commit_grouped(project, history, registry, op, None)
+}
+pub fn commit_grouped(
+    project: &mut Project,
+    history: &mut History,
+    registry: &EffectRegistry,
+    op: Op,
+    group: Option<String>,
+) -> Result<(), String> {
     project.validate()?;
     let mut candidate = project.clone();
     op.clone()
@@ -114,8 +135,11 @@ pub fn commit(
     }
     if touches_media(&op) {
         decode_embedded_frames(&candidate)?;
+        decode_project_audio(&candidate)?;
     }
-    history.commit(project, op).map_err(|e| e.to_string())
+    history
+        .commit_grouped(project, op, group)
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Default)]
@@ -123,6 +147,9 @@ pub struct DecodedImages {
     pub frames: BTreeMap<MediaId, Arc<CpuFrame>>,
 }
 impl MediaFrames for DecodedImages {
+    fn shared_frame(&self, media: MediaId, _time: Time) -> Option<Arc<CpuFrame>> {
+        self.frames.get(&media).cloned()
+    }
     fn frame_rgba(&self, media: MediaId, _time: Time) -> Option<FrameView<'_>> {
         let frame = self.frames.get(&media)?;
         Some(FrameView {
@@ -170,6 +197,7 @@ pub struct Snapshot {
     pub can_redo: bool,
     pub history: Vec<String>,
     pub revision: u64,
+    pub audio_revision: u64,
 }
 
 pub struct EditorSession {
@@ -177,7 +205,13 @@ pub struct EditorSession {
     pub history: History,
     pub registry: EffectRegistry,
     images: DecodedImages,
+    pub audio: DecodedAudios,
+    audio_plans: audio::MixCache,
     revision: u64,
+    audio_revision: u64,
+    delta_base: Option<(u64, Arc<Project>)>,
+    preview_snapshot: Arc<Project>,
+    pub preview: Arc<PreviewRenderer>,
 }
 impl Default for EditorSession {
     fn default() -> Self {
@@ -190,12 +224,19 @@ impl EditorSession {
         let registry = EffectRegistry::new();
         validate_effects(&project, &registry)?;
         let images = decode_embedded_frames(&project)?;
+        let audio = decode_project_audio(&project)?;
         Ok(Self {
+            preview_snapshot: Arc::new(project.clone()),
+            preview: Arc::new(PreviewRenderer::default()),
             project,
+            audio,
+            audio_plans: Default::default(),
             history: History::new(),
             registry,
             images,
             revision: 0,
+            audio_revision: 0,
+            delta_base: None,
         })
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -205,24 +246,89 @@ impl EditorSession {
             can_redo: self.history.can_redo(),
             history: self.history.undo_descriptions(),
             revision: self.revision,
+            audio_revision: self.audio_revision,
         }
     }
     fn changed(&mut self) -> Result<Value, String> {
         self.images.refresh(&self.project)?;
+        self.audio.refresh(&self.project)?;
+        if patch::audio_changed(&self.preview_snapshot, &self.project) {
+            self.audio_revision += 1;
+            self.audio_plans
+                .lock()
+                .map_err(|_| "Audio plan cache unavailable")?
+                .clear();
+        }
         self.revision += 1;
-        serde_json::to_value(self.snapshot()).map_err(|e| e.to_string())
+        self.preview_snapshot = Arc::new(self.project.clone());
+        self.preview.invalidate();
+        if let Some((base, before)) = self.delta_base.take() {
+            return Ok(patch::delta(
+                &before,
+                &self.project,
+                base,
+                self.revision,
+                self.audio_revision,
+                &self.history,
+            ));
+        }
+        self.ui_snapshot()
+    }
+    fn ui_snapshot(&self) -> Result<Value, String> {
+        let mut snapshot = self.snapshot();
+        // Original audio is transferred on file save/recovery, not every clip edit.
+        for asset in snapshot.project.media.values_mut() {
+            if let Some(audio) = &mut asset.audio {
+                audio.data_base64 = Arc::from("");
+            }
+        }
+        serde_json::to_value(snapshot).map_err(|e| e.to_string())
     }
     pub fn command(&mut self, name: &str, args: Value) -> Result<Value, String> {
+        self.delta_base = if args["delta"].as_bool() == Some(true)
+            && args["baseRevision"].as_u64() == Some(self.revision)
+            && matches!(name, "apply" | "undo" | "redo" | "split_audio_clip")
+        {
+            Some((self.revision, self.preview_snapshot.clone()))
+        } else {
+            None
+        };
+        let result = self.command_inner(name, args);
+        self.delta_base = None;
+        result
+    }
+    fn command_inner(&mut self, name: &str, args: Value) -> Result<Value, String> {
         match name {
-            "state" => serde_json::to_value(self.snapshot()).map_err(|e| e.to_string()),
+            "state" => self.ui_snapshot(),
+            "audio_waveform" => self.audio_waveform(args),
+            "audio_eq_curve" => {
+                let eq: AudioEq =
+                    serde_json::from_value(args["eq"].clone()).map_err(|e| e.to_string())?;
+                Ok(json!(bonaparte_audio::eq_response(&eq, 48000)?))
+            }
+            "split_audio_clip" => self.split_audio(args),
             "catalog" => Ok(
-                json!({ "effects": self.registry.list(), "renderer": "CPU reference", "projectVersion": PROJECT_VERSION, "ffmpeg": std::process::Command::new("ffmpeg").arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }),
+                json!({ "effects": self.registry.list(), "renderer": "Rust preview runtime", "preview": self.preview.status(), "projectVersion": PROJECT_VERSION, "deltaProtocol":1, "interactionProtocol":1, "audio": {"protocol":2,"sampleRate":48000,"channels":2,"maxImportBytes":bonaparte_media::audio::MAX_AUDIO_FILE_BYTES,"originalMediaInSnapshot":false}, "ffmpeg": std::process::Command::new("ffmpeg").arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }),
             ),
+            "preview_status" => {
+                serde_json::to_value(self.preview.status()).map_err(|e| e.to_string())
+            }
+            "clear_preview_cache" | "retry_gpu" => {
+                self.preview.clear(name == "retry_gpu");
+                serde_json::to_value(self.preview.status()).map_err(|e| e.to_string())
+            }
             "apply" => {
                 let op: Op =
                     serde_json::from_value(args.get("op").cloned().ok_or("Missing operation")?)
                         .map_err(|e| e.to_string())?;
-                commit(&mut self.project, &mut self.history, &self.registry, op)?;
+                let group = args["editGroup"].as_str().map(str::to_owned);
+                commit_grouped(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    op,
+                    group,
+                )?;
                 self.changed()
             }
             "undo" => {
@@ -237,12 +343,31 @@ impl EditorSession {
                     .map_err(|e| e.to_string())?;
                 self.changed()
             }
-            "save_project" => Ok(json!(serialize_project(&self.project)?)),
+            "save_project" => {
+                if args["compact"].as_bool() == Some(true) {
+                    let text = serde_json::to_string(&ProjectFile {
+                        format: "bonaparte".into(),
+                        version: PROJECT_VERSION,
+                        project: self.project.clone(),
+                    })
+                    .map_err(|e| e.to_string())?;
+                    if text.len() > MAX_PROJECT_BYTES {
+                        return Err("Project exceeds 64 MiB".into());
+                    }
+                    Ok(json!(text))
+                } else {
+                    Ok(json!(serialize_project(&self.project)?))
+                }
+            }
             "open_project" => {
                 let project = parse_project(args["json"].as_str().ok_or("Missing project JSON")?)?;
                 let revision = self.revision;
+                let audio_revision = self.audio_revision + 1;
+                let preview = self.preview.clone();
                 *self = Self::new(project)?;
+                self.preview = preview;
                 self.revision = revision;
+                self.audio_revision = audio_revision;
                 self.changed()
             }
             "new_project" => {
@@ -252,17 +377,25 @@ impl EditorSession {
                     1920,
                     1080,
                     FrameRate::FPS_30,
-                    Time::from_secs_f64(10.0),
+                    Time::from_secs_f64(30.0),
                 );
                 let revision = self.revision;
+                let audio_revision = self.audio_revision + 1;
+                let preview = self.preview.clone();
                 *self = Self::new(project)?;
+                self.preview = preview;
                 self.revision = revision;
+                self.audio_revision = audio_revision;
                 self.changed()
             }
             "load_example" => {
                 let revision = self.revision;
+                let audio_revision = self.audio_revision + 1;
+                let preview = self.preview.clone();
                 *self = Self::default();
+                self.preview = preview;
                 self.revision = revision;
+                self.audio_revision = audio_revision;
                 self.changed()
             }
             "import_image" => {
@@ -295,6 +428,7 @@ impl EditorSession {
                         height: image.height,
                         rgba_base64: image.rgba_base64,
                     }),
+                    audio: None,
                     slot: None,
                     alias: None,
                     perception: None,
@@ -331,6 +465,38 @@ impl EditorSession {
             _ => Err(format!("Unknown editor command: {name}")),
         }
     }
+    /// Preview jobs share a document snapshot. Normal playback does not clone
+    /// embedded image strings on every frame. Overrides are separately validated
+    /// and deliberately excluded from the persistent frame cache.
+    pub fn preview_input(&self, request: PreviewRequest) -> Result<PreviewJob, String> {
+        if let Some(transform) = &request.transform_override {
+            transform.validate(&self.project)?;
+            if transform.comp_id != request.render.comp_id {
+                return Err("Transform belongs to a different composition".into());
+            }
+        }
+        let project = if request.render.layer_override.is_some() {
+            Arc::new(
+                self.render_input(RenderRequest {
+                    comp_id: request.render.comp_id,
+                    time: request.render.time,
+                    bypass_effects: false,
+                    layer_override: request.render.layer_override.clone(),
+                })?
+                .project,
+            )
+        } else {
+            self.preview_snapshot.clone()
+        };
+        self.preview.job(
+            project,
+            self.images.clone(),
+            Arc::new(self.registry.clone()),
+            self.revision,
+            request,
+        )
+    }
+
     pub fn render_input(&self, request: RenderRequest) -> Result<RenderInput, String> {
         let mut project = self.project.clone();
         if let Some(layer) = request.layer_override {
@@ -359,6 +525,7 @@ impl EditorSession {
             comp_id: request.comp_id,
             time: request.time,
             images: self.images.clone(),
+            audio: self.audio.clone(),
             registry: self.registry.clone(),
         })
     }
@@ -380,6 +547,7 @@ pub struct RenderInput {
     pub comp_id: CompId,
     pub time: Time,
     pub images: DecodedImages,
+    pub audio: DecodedAudios,
     pub registry: EffectRegistry,
 }
 impl RenderInput {
@@ -456,9 +624,29 @@ impl RenderInput {
             .tempfile_in(directory)
             .map_err(|e| e.to_string())?
             .into_temp_path();
-        let config =
+        let mut config =
             bonaparte_media::export::ExportConfig::new(&temp, comp.width, comp.height, fps, count)
                 .with_preset("veryfast");
+        let mut audio_temp = None;
+        if self.project.has_audio(self.comp_id) {
+            let plan = bonaparte_audio::MixPlan::new(&self.project, self.comp_id, &self.audio)?;
+            let wav = tempfile::Builder::new()
+                .prefix(".bonaparte-mix-")
+                .suffix(".wav")
+                .tempfile_in(directory)
+                .map_err(|e| e.to_string())?
+                .into_temp_path();
+            let frames = ((count as u128 * fps.den as u128 * AUDIO_RATE as u128)
+                .div_ceil(fps.num as u128)) as u64;
+            bonaparte_media::audio::write_mix_wav(
+                &plan,
+                &wav,
+                audio_frames(start).max(0) as u64,
+                frames,
+            )?;
+            config.audio_wav = Some(wav.to_path_buf());
+            audio_temp = Some(wav);
+        }
         let mut stats = bonaparte_media::export::export_mp4_stream(&config, |_, time| {
             let mut frame = render_comp_with_registry(
                 &self.project,
@@ -473,6 +661,7 @@ impl RenderInput {
         })
         .map_err(|e| e.to_string())?;
         temp.persist(path).map_err(|e| e.to_string())?;
+        drop(audio_temp);
         stats.output_path = path.to_path_buf();
         Ok(stats)
     }

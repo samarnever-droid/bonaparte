@@ -1,0 +1,32 @@
+   Compiling bonaparte-model v0.5.0 (/home/user/bonaparte/crates/model)
+   Compiling bonaparte-effects v0.5.0 (/home/user/bonaparte/crates/effects)
+   Compiling bonaparte-engine v0.5.0 (/home/user/bonaparte/crates/engine)
+   Compiling bonaparte-audio v0.5.0 (/home/user/bonaparte/crates/audio)
+   Compiling bonaparte-media v0.5.0 (/home/user/bonaparte/crates/media)
+   Compiling bonaparte-runtime v0.5.0 (/home/user/bonaparte/crates/runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.23s
+     Running tests/audio_workflow.rs (target/debug/deps/audio_workflow-b96ad29c2dce1523)
+
+running 9 tests
+test distant_processed_seeks_prepare_in_bounded_steps_and_outside_time_is_silent ... ok
+test legacy_v2_still_opens_and_unknown_versions_do_not ... ok
+test mp4_contains_synchronized_audio_and_preserves_ntsc_video_frames ... ok
+test native_import_resamples_retains_original_and_is_one_undo_transaction ... ok
+test processed_packets_and_native_wav_share_the_compensated_timeline ... ok
+test sample_split_and_media_removal_rejection_keep_state_consistent ... ok
+test save_open_restores_audio_and_malformed_source_replacement_is_atomic ... ok
+test waveform_levels_chunk_headers_and_wav_are_real_samples ... ok
+test common_encoded_formats_decode_through_the_same_native_pipeline ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running tests/interaction.rs (target/debug/deps/interaction-4bc69bd10161dc35)
+
+running 4 tests
+test authoritative_deltas_roundtrip_undo_and_fall_back_for_wrong_revision ... ok
+test interaction_planes_are_real_rgba_and_bad_transforms_are_rejected ... ok
+test lightweight_transform_preview_matches_a_real_edit_without_mutation ... ok
+test visual_edits_and_markers_do_not_invalidate_audio_clock ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

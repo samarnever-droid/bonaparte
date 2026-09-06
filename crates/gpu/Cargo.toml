@@ -1,0 +1,17 @@
+[package]
+name = "bonaparte-gpu"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" }
+bonaparte-engine = { path = "../engine" } # shared prepared scenes; the pure engine does not depend on GPU APIs
+bonaparte-effects = { path = "../effects" } # public manifests, shader sources and parameter resolution
+wgpu = { version = "24", features = ["wgsl"] } # real headless Vulkan/Metal/DX12 render passes and readback
+naga = { version = "24", features = ["wgsl-in"] } # reflect WGSL uniform offsets instead of guessing padding
+pollster = "0.4" # bridge device initialization/readback futures at the native service boundary
+bytemuck = { version = "1", features = ["derive"] } # checked POD uniform packing
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

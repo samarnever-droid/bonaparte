@@ -2,6 +2,7 @@ api_version = "1.0"
 id = "builtin.color_grade"
 name = "Color Grade"
 category = "Color correction"
+gpu_preview = true
 cost = "light"
 shader = "color_grade.wgsl"
 inputs = ["input"]

@@ -185,7 +185,7 @@ pub fn evaluate_blur(input: &CpuFrame, radius: f32, repeat_edge: bool) -> CpuFra
     if radius <= 0.0 || input.width == 0 || input.height == 0 {
         return input.clone();
     }
-    let radius = radius.min(100.0);
+    let radius = radius.min(800.0);
     let r = radius.ceil() as i32;
     let sigma = (radius * 0.5).max(0.5);
     let mut kernel: Vec<f32> = (-r..=r)

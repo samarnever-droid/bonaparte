@@ -40,12 +40,68 @@ pub trait MediaFrames {
     /// RGBA8 pixels (top-left origin, row-major) for `media` at `time`,
     /// or None if unavailable.
     fn frame_rgba(&self, media: MediaId, time: Time) -> Option<FrameView<'_>>;
+    /// Immutable shared pixels allow preview backends to reuse uploads safely.
+    /// Streaming providers may return None and keep using borrowed frame_rgba.
+    fn shared_frame(&self, _media: MediaId, _time: Time) -> Option<std::sync::Arc<CpuFrame>> {
+        None
+    }
 }
 
 pub struct FrameView<'a> {
     pub width: u32,
     pub height: u32,
     pub rgba: &'a [u8],
+}
+
+impl FrameView<'_> {
+    pub fn pixel(&self, x: u32, y: u32) -> [f32; 4] {
+        if x >= self.width || y >= self.height {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        let i = ((y as usize * self.width as usize) + x as usize) * 4;
+        [
+            srgb_byte_to_linear(self.rgba[i]),
+            srgb_byte_to_linear(self.rgba[i + 1]),
+            srgb_byte_to_linear(self.rgba[i + 2]),
+            self.rgba[i + 3] as f32 / 255.0,
+        ]
+    }
+    pub fn sample_bilinear(&self, u: f32, v: f32) -> [f32; 4] {
+        if self.width == 0 || self.height == 0 {
+            return [0.0; 4];
+        }
+        let fx = (u * self.width as f32 - 0.5).clamp(0.0, self.width.saturating_sub(1) as f32);
+        let fy = (v * self.height as f32 - 0.5).clamp(0.0, self.height.saturating_sub(1) as f32);
+        let x0 = fx.floor() as u32;
+        let y0 = fy.floor() as u32;
+        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
+        let y1 = (y0 + 1).min(self.height.saturating_sub(1));
+        let tx = fx - x0 as f32;
+        let ty = fy - y0 as f32;
+        let mut out = [0.0f32; 4];
+        for (x, y, weight) in [
+            (x0, y0, (1.0 - tx) * (1.0 - ty)),
+            (x1, y0, tx * (1.0 - ty)),
+            (x0, y1, (1.0 - tx) * ty),
+            (x1, y1, tx * ty),
+        ] {
+            let i = ((y * self.width + x) * 4) as usize;
+            let alpha_weight = self.rgba[i + 3] as f32 / 255.0 * weight;
+            if alpha_weight <= 0.0 {
+                continue;
+            }
+            for c in 0..3 {
+                out[c] += srgb_byte_to_linear(self.rgba[i + c]) * alpha_weight;
+            }
+            out[3] += alpha_weight;
+        }
+        if out[3] > 0.000001 {
+            for c in 0..3 {
+                out[c] /= out[3];
+            }
+        }
+        out
+    }
 }
 
 /// Always-empty source: for comps containing no footage layers.
@@ -96,16 +152,12 @@ impl Frame {
 
     /// Read a pixel as linear floats 0..1.
     pub fn pixel(&self, x: u32, y: u32) -> [f32; 4] {
-        if x >= self.width || y >= self.height {
-            return [0.0, 0.0, 0.0, 0.0];
+        FrameView {
+            width: self.width,
+            height: self.height,
+            rgba: &self.rgba,
         }
-        let i = ((y as usize * self.width as usize) + x as usize) * 4;
-        [
-            srgb_byte_to_linear(self.rgba[i]),
-            srgb_byte_to_linear(self.rgba[i + 1]),
-            srgb_byte_to_linear(self.rgba[i + 2]),
-            self.rgba[i + 3] as f32 / 255.0,
-        ]
+        .pixel(x, y)
     }
 
     /// Set a pixel directly as linear floats 0..1.
@@ -121,40 +173,12 @@ impl Frame {
     }
 
     pub fn sample_bilinear(&self, u: f32, v: f32) -> [f32; 4] {
-        if self.width == 0 || self.height == 0 {
-            return [0.0; 4];
+        FrameView {
+            width: self.width,
+            height: self.height,
+            rgba: &self.rgba,
         }
-        let fx = (u * self.width as f32 - 0.5).clamp(0.0, self.width.saturating_sub(1) as f32);
-        let fy = (v * self.height as f32 - 0.5).clamp(0.0, self.height.saturating_sub(1) as f32);
-        let x0 = fx.floor() as u32;
-        let y0 = fy.floor() as u32;
-        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
-        let y1 = (y0 + 1).min(self.height.saturating_sub(1));
-        let tx = fx - x0 as f32;
-        let ty = fy - y0 as f32;
-        let mut out = [0.0f32; 4];
-        for (x, y, weight) in [
-            (x0, y0, (1.0 - tx) * (1.0 - ty)),
-            (x1, y0, tx * (1.0 - ty)),
-            (x0, y1, (1.0 - tx) * ty),
-            (x1, y1, tx * ty),
-        ] {
-            let i = ((y * self.width + x) * 4) as usize;
-            let alpha_weight = self.rgba[i + 3] as f32 / 255.0 * weight;
-            if alpha_weight <= 0.0 {
-                continue;
-            }
-            for c in 0..3 {
-                out[c] += srgb_byte_to_linear(self.rgba[i + c]) * alpha_weight;
-            }
-            out[3] += alpha_weight;
-        }
-        if out[3] > 0.000001 {
-            for c in 0..3 {
-                out[c] /= out[3];
-            }
-        }
-        out
+        .sample_bilinear(u, v)
     }
 
     /// Blend source pixel onto destination using the specified BlendMode.
@@ -294,7 +318,15 @@ impl Affine2D {
     /// Build the canvas-space affine matrix for `layer` at `time`.
     /// Maps layer local centered coordinates [-w/2, w/2] x [-h/2, h/2] directly to comp canvas pixel coords.
     pub fn from_layer(comp: &Comp, layer: &Layer, time: Time) -> Option<Self> {
-        let eff = comp.effective_transform(layer.id, time)?;
+        Self::from_layer_with(comp, layer, time, None)
+    }
+    pub fn from_layer_with(
+        comp: &Comp,
+        layer: &Layer,
+        time: Time,
+        transient: Option<&bonaparte_model::TransformOverride>,
+    ) -> Option<Self> {
+        let eff = comp.effective_transform_with(layer.id, time, transient)?;
         // eff.matrix maps layer local coords to comp center coordinates.
         // Canvas pixel coordinates add (comp.width / 2.0, comp.height / 2.0).
         Some(Self {
@@ -317,8 +349,7 @@ pub fn render_comp(
     time: Time,
     frames: &dyn MediaFrames,
 ) -> Result<Frame, RenderError> {
-    let mut active_comps = Vec::new();
-    render_comp_internal(project, comp_id, time, frames, &mut active_comps, 0)
+    render_comp_with_registry(project, comp_id, time, frames, builtin_registry())
 }
 
 /// Render with a caller-owned registry, including third-party CPU plugins.
@@ -329,7 +360,36 @@ pub fn render_comp_with_registry(
     frames: &dyn MediaFrames,
     registry: &EffectRegistry,
 ) -> Result<Frame, RenderError> {
-    render_comp_registered(project, comp_id, time, frames, &mut Vec::new(), 0, registry)
+    static CACHE: std::sync::LazyLock<crate::preview::SourceCache> =
+        std::sync::LazyLock::new(crate::preview::SourceCache::default);
+    let scene = crate::preview::prepare_scene(
+        project,
+        comp_id,
+        time,
+        frames,
+        registry,
+        crate::preview::Resolution::FULL,
+        &CACHE,
+    )?;
+    crate::preview::render_scene_cpu(&scene, registry)
+}
+
+/// Historical fixed-density implementation for compatibility comparisons only.
+pub fn render_comp_legacy(
+    project: &Project,
+    comp_id: CompId,
+    time: Time,
+    frames: &dyn MediaFrames,
+) -> Result<Frame, RenderError> {
+    render_comp_registered(
+        project,
+        comp_id,
+        time,
+        frames,
+        &mut Vec::new(),
+        0,
+        builtin_registry(),
+    )
 }
 
 pub fn render_comp_internal(
@@ -998,6 +1058,7 @@ mod tests {
             path: None,
             kind: bonaparte_model::MediaKind::Image,
             embedded: None,
+            audio: None,
             slot: None,
             alias: None,
             perception: None,

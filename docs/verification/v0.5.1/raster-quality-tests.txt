@@ -1,0 +1,27 @@
+   Compiling smallvec v1.15.2
+   Compiling arrayvec v0.7.8
+   Compiling kurbo v0.11.3
+   Compiling bonaparte-model v0.5.0 (/home/user/bonaparte/crates/model)
+   Compiling bonaparte-effects v0.5.0 (/home/user/bonaparte/crates/effects)
+   Compiling bonaparte-engine v0.5.0 (/home/user/bonaparte/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.94s
+     Running tests/preview_scene.rs (target/debug/deps/preview_scene-74b123f4ea26f665)
+
+running 5 tests
+test odd_dimensions_round_up_and_never_become_zero ... ok
+test pixel_effect_parameters_scale_but_normalized_parameters_do_not ... ok
+test cache_retention_is_bounded_and_clear_releases_entries ... ok
+test resolution_changes_the_sampling_grid_not_document_coordinates ... ok
+test prepared_full_scene_matches_original_reference_byte_for_byte ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running tests/raster_quality.rs (target/debug/deps/raster_quality-278e191e1f5dae4f)
+
+running 3 tests
+test enlarged_precomps_and_generators_get_larger_render_grids ... ok
+test high_quality_preview_and_export_use_the_same_sampling_path ... ok
+test scaled_type_is_rasterized_at_output_density_not_the_old_glyph_mask ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
