@@ -7,6 +7,9 @@ edition.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+bonaparte-runtime = { path = "../../crates/runtime" }
+tauri-plugin-dialog = "2" # native, user-authorized project open/save dialogs
+tempfile = "3" # atomic project saves in the destination directory
 bonaparte-model = { path = "../../crates/model" }
 bonaparte-engine = { path = "../../crates/engine" }
 bonaparte-effects = { path = "../../crates/effects" }

@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.glow"
 name = "Glow"
+category = "Light & stylize"
 cost = "medium"
 shader = "glow.wgsl"
 inputs = ["input"]

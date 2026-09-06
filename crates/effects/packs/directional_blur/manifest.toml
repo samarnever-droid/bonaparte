@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.directional_blur"
 name = "Directional Blur"
+category = "Blur & sharpen"
 cost = "medium"
 shader = "directional_blur.wgsl"
 inputs = ["input"]

@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.transform"
 name = "Transform Effect"
+category = "Distort"
 cost = "light"
 shader = "transform.wgsl"
 inputs = ["input"]

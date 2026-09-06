@@ -13,7 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BlendMode, Comp, Layer, MediaAsset, Project, Property};
+use crate::document::{BlendMode, Comp, Layer, LayerKind, MediaAsset, Project, Property};
+use crate::effect::EffectInstance;
 use crate::ids::{CompId, LayerId, MediaId};
 use crate::keyframe::{Easing, Keyframe, PropValue};
 use crate::time::{FrameRate, Time};
@@ -23,8 +24,38 @@ use crate::time::{FrameRate, Time};
 /// Tagged JSON (`{"type": "addLayer", ...}`) so the TS UI, the MCP tools,
 /// and the AI-diff all speak one readable wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Op {
+    /// One transaction and one history entry. Nested batches are deliberately refused.
+    Batch {
+        label: String,
+        ops: Vec<Op>,
+    },
+    RenameProject {
+        name: String,
+    },
+    /// Move a layer and every transform/effect keyframe by the same tick delta.
+    ShiftLayer {
+        comp: CompId,
+        layer: LayerId,
+        delta: Time,
+    },
+    /// Replace typed layer content without disturbing transforms or keyframes.
+    SetLayerContent {
+        comp: CompId,
+        layer: LayerId,
+        kind: LayerKind,
+    },
+    /// Replace the small ordered stack as one gesture, including parameter animation.
+    SetLayerEffects {
+        comp: CompId,
+        layer: LayerId,
+        effects: Vec<EffectInstance>,
+    },
     /// Create a composition (ID allocated on apply; see `History::commit`).
     CreateComp {
         name: String,
@@ -166,6 +197,8 @@ pub enum Op {
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ModelError {
+    #[error("{0}")]
+    Invalid(String),
     #[error("composition {0} not found")]
     CompNotFound(CompId),
     #[error("layer {0} not found")]
@@ -185,12 +218,78 @@ pub enum ModelError {
 }
 
 impl Op {
-    /// Mutate the document. Validation happens here, never at the call site.
+    /// Apply a primitive mutation. Persisted edits must go through `History::commit`
+    /// (or the shared runtime commit) for whole-document validation and atomicity.
+    /// A Batch also stages its own changes before replacing the document.
     ///
     /// Note: `CreateComp`/`AddLayer`/`AddMedia` allocate IDs during apply;
     /// use `History::commit` to record inverses with the assigned IDs.
     pub fn apply(self, project: &mut Project) -> Result<(), ModelError> {
         match self {
+            Op::Batch { ops, .. } => {
+                if ops.len() > 256 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                    return Err(ModelError::Invalid(
+                        "Transactions allow at most 256 operations and cannot be nested".into(),
+                    ));
+                }
+                let mut candidate = project.clone();
+                for op in ops {
+                    op.apply(&mut candidate)?;
+                }
+                candidate.validate().map_err(ModelError::Invalid)?;
+                *project = candidate;
+                Ok(())
+            }
+            Op::ShiftLayer { comp, layer, delta } => {
+                let current = project
+                    .layer(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
+                let mut shifted = current.clone();
+                let shift = |t: Time| {
+                    t.0.checked_add(delta.0).map(Time).ok_or_else(|| {
+                        ModelError::Invalid("Timeline shift overflows time range".into())
+                    })
+                };
+                shifted.start = shift(shifted.start)?;
+                for track in shifted.tracks.values_mut().chain(
+                    shifted
+                        .effects
+                        .iter_mut()
+                        .flat_map(|effect| effect.tracks.values_mut()),
+                ) {
+                    for key in &mut track.keys {
+                        key.time = shift(key.time)?;
+                    }
+                }
+                *project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))? = shifted;
+                Ok(())
+            }
+            Op::RenameProject { name } => {
+                project.name = name;
+                Ok(())
+            }
+            Op::SetLayerContent { comp, layer, kind } => {
+                crate::validation::validate_content(&kind).map_err(ModelError::Invalid)?;
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .kind = kind;
+                Ok(())
+            }
+            Op::SetLayerEffects {
+                comp,
+                layer,
+                effects,
+            } => {
+                crate::effect::validate_effect_stack(&effects).map_err(ModelError::Invalid)?;
+                project
+                    .layer_mut(comp, layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?
+                    .effects = effects;
+                Ok(())
+            }
             Op::CreateComp {
                 name,
                 width,
@@ -202,6 +301,11 @@ impl Op {
                 Ok(())
             }
             Op::RestoreComp { comp } => {
+                if project.comps.contains_key(&comp.id) {
+                    return Err(ModelError::Invalid(
+                        "Cannot restore over an existing composition".into(),
+                    ));
+                }
                 project.comps.insert(comp.id, *comp);
                 Ok(())
             }
@@ -220,7 +324,10 @@ impl Op {
                 duration,
                 background,
             } => {
-                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let c = project
+                    .comps
+                    .get_mut(&comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
                 c.name = name;
                 c.width = width;
                 c.height = height;
@@ -237,16 +344,29 @@ impl Op {
                 Ok(())
             }
             Op::RestoreLayer { comp, layer, index } => {
-                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let c = project
+                    .comps
+                    .get_mut(&comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
                 let layer_id = layer.id;
+                if c.layers.contains_key(&layer_id) {
+                    return Err(ModelError::Invalid(
+                        "Cannot restore over an existing layer".into(),
+                    ));
+                }
                 c.layers.insert(layer_id, *layer);
                 let insert_idx = index.min(c.layer_order.len());
                 c.layer_order.insert(insert_idx, layer_id);
                 Ok(())
             }
             Op::RemoveLayer { comp, layer } => {
-                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
-                c.layers.remove(&layer).ok_or(ModelError::LayerNotFound(layer))?;
+                let c = project
+                    .comps
+                    .get_mut(&comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
+                c.layers
+                    .remove(&layer)
+                    .ok_or(ModelError::LayerNotFound(layer))?;
                 c.layer_order.retain(|&l| l != layer);
                 Ok(())
             }
@@ -275,7 +395,10 @@ impl Op {
                 layer,
                 parent,
             } => {
-                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let c = project
+                    .comps
+                    .get_mut(&comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
                 if !c.layers.contains_key(&layer) {
                     return Err(ModelError::LayerNotFound(layer));
                 }
@@ -361,8 +484,13 @@ impl Op {
                 let l = project
                     .layer_mut(comp, layer)
                     .ok_or(ModelError::LayerNotFound(layer))?;
-                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
-                track.remove_key(time).ok_or(ModelError::KeyframeNotFound(layer, time))?;
+                let track = l
+                    .tracks
+                    .get_mut(&property)
+                    .ok_or(ModelError::TrackMissing(property))?;
+                track
+                    .remove_key(time)
+                    .ok_or(ModelError::KeyframeNotFound(layer, time))?;
                 Ok(())
             }
             Op::MoveKeyframe {
@@ -375,7 +503,10 @@ impl Op {
                 let l = project
                     .layer_mut(comp, layer)
                     .ok_or(ModelError::LayerNotFound(layer))?;
-                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
+                let track = l
+                    .tracks
+                    .get_mut(&property)
+                    .ok_or(ModelError::TrackMissing(property))?;
                 if track.keys.iter().any(|k| k.time == to && k.time != from) {
                     return Err(ModelError::KeyframeOccupied(layer, from, to));
                 }
@@ -394,7 +525,10 @@ impl Op {
                 let l = project
                     .layer_mut(comp, layer)
                     .ok_or(ModelError::LayerNotFound(layer))?;
-                let track = l.tracks.get_mut(&property).ok_or(ModelError::TrackMissing(property))?;
+                let track = l
+                    .tracks
+                    .get_mut(&property)
+                    .ok_or(ModelError::TrackMissing(property))?;
                 let key = track
                     .keys
                     .iter_mut()
@@ -408,14 +542,18 @@ impl Op {
                 layer,
                 new_index,
             } => {
-                let c = project.comps.get_mut(&comp).ok_or(ModelError::CompNotFound(comp))?;
+                let c = project
+                    .comps
+                    .get_mut(&comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
                 let from = c
                     .layer_order
                     .iter()
                     .position(|&l| l == layer)
                     .ok_or(ModelError::LayerNotFound(layer))?;
                 let item = c.layer_order.remove(from);
-                c.layer_order.insert(new_index.min(c.layer_order.len()), item);
+                c.layer_order
+                    .insert(new_index.min(c.layer_order.len()), item);
                 Ok(())
             }
             Op::AddMedia { asset } => {
@@ -423,6 +561,11 @@ impl Op {
                 Ok(())
             }
             Op::RestoreMedia { asset } => {
+                if project.media.contains_key(&asset.id) {
+                    return Err(ModelError::Invalid(
+                        "Cannot restore over an existing media asset".into(),
+                    ));
+                }
                 project.media.insert(asset.id, asset);
                 Ok(())
             }
@@ -442,10 +585,63 @@ impl Op {
     /// is patched with the assigned ID by `History::commit`.
     pub fn invert(&self, project: &Project) -> Result<Op, ModelError> {
         match self {
+            Op::Batch { label, ops } => {
+                if ops.len() > 256 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                    return Err(ModelError::Invalid(
+                        "Transactions allow at most 256 operations and cannot be nested".into(),
+                    ));
+                }
+                let mut candidate = project.clone();
+                let mut history = History::new();
+                let mut inverses = Vec::with_capacity(ops.len());
+                for op in ops {
+                    history.commit(&mut candidate, op.clone())?;
+                    // A transaction may contain 256 primitives, but user history
+                    // retains 200 transactions. Drain each temporary entry now so
+                    // the history cap cannot silently discard part of an inverse.
+                    inverses.push(history.undo_stack.pop().expect("just committed").op);
+                }
+                inverses.reverse();
+                Ok(Op::Batch {
+                    label: label.clone(),
+                    ops: inverses,
+                })
+            }
+            Op::ShiftLayer { comp, layer, delta } => Ok(Op::ShiftLayer {
+                comp: *comp,
+                layer: *layer,
+                delta: Time(delta.0.checked_neg().ok_or_else(|| {
+                    ModelError::Invalid("Timeline shift overflows time range".into())
+                })?),
+            }),
+            Op::RenameProject { .. } => Ok(Op::RenameProject {
+                name: project.name.clone(),
+            }),
+            Op::SetLayerContent { comp, layer, .. } => Ok(Op::SetLayerContent {
+                comp: *comp,
+                layer: *layer,
+                kind: project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?
+                    .kind
+                    .clone(),
+            }),
+            Op::SetLayerEffects { comp, layer, .. } => Ok(Op::SetLayerEffects {
+                comp: *comp,
+                layer: *layer,
+                effects: project
+                    .layer(*comp, *layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?
+                    .effects
+                    .clone(),
+            }),
             Op::CreateComp { .. } => Ok(Op::RemoveComp { comp: CompId(0) }), // patched post-apply
             Op::RestoreComp { comp } => Ok(Op::RemoveComp { comp: comp.id }),
             Op::RemoveComp { comp } => {
-                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?.clone();
+                let c = project
+                    .comp(*comp)
+                    .ok_or(ModelError::CompNotFound(*comp))?
+                    .clone();
                 Ok(Op::RestoreComp { comp: Box::new(c) })
             }
             Op::SetCompProps { comp, .. } => {
@@ -470,8 +666,16 @@ impl Op {
             }),
             Op::RemoveLayer { comp, layer } => {
                 let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
-                let l = c.layers.get(layer).ok_or(ModelError::LayerNotFound(*layer))?.clone();
-                let idx = c.layer_order.iter().position(|&x| x == *layer).unwrap_or(c.layer_order.len());
+                let l = c
+                    .layers
+                    .get(layer)
+                    .ok_or(ModelError::LayerNotFound(*layer))?
+                    .clone();
+                let idx = c
+                    .layer_order
+                    .iter()
+                    .position(|&x| x == *layer)
+                    .unwrap_or(c.layer_order.len());
                 Ok(Op::RestoreLayer {
                     comp: *comp,
                     layer: Box::new(l),
@@ -595,7 +799,10 @@ impl Op {
                 let l = project
                     .layer(*comp, *layer)
                     .ok_or(ModelError::LayerNotFound(*layer))?;
-                let track = l.tracks.get(property).ok_or(ModelError::TrackMissing(*property))?;
+                let track = l
+                    .tracks
+                    .get(property)
+                    .ok_or(ModelError::TrackMissing(*property))?;
                 let key = track
                     .keys
                     .iter()
@@ -632,7 +839,10 @@ impl Op {
                 let l = project
                     .layer(*comp, *layer)
                     .ok_or(ModelError::LayerNotFound(*layer))?;
-                let track = l.tracks.get(property).ok_or(ModelError::TrackMissing(*property))?;
+                let track = l
+                    .tracks
+                    .get(property)
+                    .ok_or(ModelError::TrackMissing(*property))?;
                 let key = track
                     .keys
                     .iter()
@@ -662,7 +872,11 @@ impl Op {
             Op::AddMedia { .. } => Ok(Op::RemoveMedia { media: MediaId(0) }), // patched post-apply
             Op::RestoreMedia { asset } => Ok(Op::RemoveMedia { media: asset.id }),
             Op::RemoveMedia { media } => {
-                let a = project.media.get(media).ok_or(ModelError::MediaNotFound(*media))?.clone();
+                let a = project
+                    .media
+                    .get(media)
+                    .ok_or(ModelError::MediaNotFound(*media))?
+                    .clone();
                 Ok(Op::RestoreMedia { asset: a })
             }
         }
@@ -672,22 +886,41 @@ impl Op {
     /// the UI and MCP render from this (RULES §7).
     pub fn describe(&self) -> String {
         match self {
+            Op::Batch { label, .. } => label.clone(),
+            Op::ShiftLayer { layer, delta, .. } => format!(
+                "Moved layer {layer} and its animation by {:.3}s",
+                delta.as_secs_f64()
+            ),
+            Op::RenameProject { name } => format!("Renamed project to “{name}”"),
+            Op::SetLayerContent { layer, .. } => format!("Edited layer {layer} content"),
+            Op::SetLayerEffects { layer, .. } => format!("Edited layer {layer} effects"),
             Op::CreateComp { name, .. } => format!("Created comp “{name}”"),
             Op::RestoreComp { comp } => format!("Restored comp “{}” ({})", comp.name, comp.id),
             Op::RemoveComp { comp } => format!("Deleted comp {comp}"),
-            Op::SetCompProps { comp, name, .. } => format!("Updated comp {comp} properties ({name})"),
+            Op::SetCompProps { comp, name, .. } => {
+                format!("Updated comp {comp} properties ({name})")
+            }
             Op::AddLayer { layer, .. } => format!("Added layer “{}”", layer.name),
-            Op::RestoreLayer { layer, .. } => format!("Restored layer “{}” ({})", layer.name, layer.id),
+            Op::RestoreLayer { layer, .. } => {
+                format!("Restored layer “{}” ({})", layer.name, layer.id)
+            }
             Op::RemoveLayer { layer, .. } => format!("Removed layer {layer}"),
             Op::RenameLayer { name, .. } => format!("Renamed layer to “{name}”"),
-            Op::SetLayerTime { layer, start, duration, .. } => {
+            Op::SetLayerTime {
+                layer,
+                start,
+                duration,
+                ..
+            } => {
                 format!("Set layer {layer} timing: start={start}, duration={duration}")
             }
             Op::SetLayerParent { layer, parent, .. } => match parent {
                 Some(p) => format!("Parented layer {layer} to {p}"),
                 None => format!("Unparented layer {layer}"),
             },
-            Op::SetLayerBlendMode { layer, blend_mode, .. } => {
+            Op::SetLayerBlendMode {
+                layer, blend_mode, ..
+            } => {
                 format!("Set layer {layer} blend mode to {blend_mode}")
             }
             Op::SetLayerVisible { layer, visible, .. } => {
@@ -696,22 +929,37 @@ impl Op {
             Op::SetLayerLocked { layer, locked, .. } => {
                 format!("Set layer {layer} locked to {locked}")
             }
-            Op::SetValue { property, value, .. } => format!("Set {property:?} to {value:?}"),
+            Op::SetValue {
+                property, value, ..
+            } => format!("Set {property:?} to {value:?}"),
             Op::AddKeyframe { property, key, .. } => {
-                format!("Added {property:?} keyframe at t={:.2}s", key.time.as_secs_f64())
+                format!(
+                    "Added {property:?} keyframe at t={:.2}s",
+                    key.time.as_secs_f64()
+                )
             }
             Op::RemoveKeyframe { property, time, .. } => {
-                format!("Removed {property:?} keyframe at t={:.2}s", time.as_secs_f64())
+                format!(
+                    "Removed {property:?} keyframe at t={:.2}s",
+                    time.as_secs_f64()
+                )
             }
-            Op::MoveKeyframe { property, from, to, .. } => format!(
+            Op::MoveKeyframe {
+                property, from, to, ..
+            } => format!(
                 "Moved {property:?} keyframe {:.2}s → {:.2}s",
                 from.as_secs_f64(),
                 to.as_secs_f64()
             ),
             Op::SetEasing { property, time, .. } => {
-                format!("Changed {property:?} easing at t={:.2}s", time.as_secs_f64())
+                format!(
+                    "Changed {property:?} easing at t={:.2}s",
+                    time.as_secs_f64()
+                )
             }
-            Op::ReorderLayer { layer, new_index, .. } => {
+            Op::ReorderLayer {
+                layer, new_index, ..
+            } => {
                 format!("Reordered layer {layer} to position {new_index}")
             }
             Op::AddMedia { asset } => format!("Imported media “{}”", asset.name),
@@ -721,12 +969,18 @@ impl Op {
     }
 }
 
-/// Undo/redo stack. Stores *inverses*, not ops: undoing pops an inverse and
-/// applies it; redoing re-applies the inverse of the inverse.
+/// Bounded history with atomic commit, undo and redo. Failed operations never
+/// modify the document, allocators, or either history stack.
+#[derive(Debug, Clone)]
+struct HistoryEntry {
+    op: Op,
+    label: String,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct History {
-    undo_stack: Vec<Op>,
-    redo_stack: Vec<Op>,
+    undo_stack: Vec<HistoryEntry>,
+    redo_stack: Vec<HistoryEntry>,
 }
 
 impl History {
@@ -734,87 +988,79 @@ impl History {
         Self::default()
     }
 
-    /// Apply `op` and record it. ID-allocating ops (`CreateComp`, `AddLayer`,
-    /// `AddMedia`) get their inverses patched with the assigned IDs; failed
-    /// allocations are rolled back so counters never skip on failure.
     pub fn commit(&mut self, project: &mut Project, op: Op) -> Result<(), ModelError> {
-        let allocates = matches!(
-            op,
-            Op::CreateComp { .. } | Op::AddLayer { .. } | Op::AddMedia { .. }
-        );
-        if !allocates {
-            let inverse = op.invert(project)?;
-            op.apply(project)?;
-            self.undo_stack.push(inverse);
-            self.redo_stack.clear();
-            return Ok(());
-        }
-
-        // Snapshot ALL allocators; roll back on failure.
-        let (before_comp, before_layer, before_media) =
-            (project.next_comp, project.next_layer, project.next_media);
-        let op_clone = op.clone();
-        match op.apply(project) {
-            Ok(()) => {}
-            Err(e) => {
-                project.next_comp = before_comp;
-                project.next_layer = before_layer;
-                project.next_media = before_media;
-                return Err(e);
-            }
-        }
-
-        let inverse = match op_clone {
+        project.validate().map_err(ModelError::Invalid)?;
+        let label = op.describe();
+        let inverse = match &op {
             Op::CreateComp { .. } => Op::RemoveComp {
-                comp: CompId(before_comp.0),
+                comp: project.next_comp,
             },
             Op::AddLayer { comp, .. } => Op::RemoveLayer {
-                comp,
-                layer: LayerId(before_layer.0),
+                comp: *comp,
+                layer: project.next_layer,
             },
             Op::AddMedia { .. } => Op::RemoveMedia {
-                media: MediaId(before_media.0),
+                media: project.next_media,
             },
-            _ => unreachable!("allocates gate guarantees an allocating op"),
+            _ => op.invert(project)?,
         };
-        self.undo_stack.push(inverse);
+        let mut candidate = project.clone();
+        op.apply(&mut candidate)?;
+        candidate.validate().map_err(ModelError::Invalid)?;
+        *project = candidate;
+        self.undo_stack.push(HistoryEntry { op: inverse, label });
+        if self.undo_stack.len() > 200 {
+            self.undo_stack.remove(0);
+        }
         self.redo_stack.clear();
         Ok(())
     }
 
-    /// Undo the last committed op. Returns false when nothing to undo.
     pub fn undo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
-        let Some(inverse) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.last().cloned() else {
             return Ok(false);
         };
-        let redo = inverse.invert(project)?;
-        inverse.apply(project)?;
-        self.redo_stack.push(redo);
+        let redo = entry.op.invert(project)?;
+        let mut candidate = project.clone();
+        entry.op.apply(&mut candidate)?;
+        candidate.validate().map_err(ModelError::Invalid)?;
+        *project = candidate;
+        self.undo_stack.pop();
+        self.redo_stack.push(HistoryEntry {
+            op: redo,
+            label: entry.label,
+        });
         Ok(true)
     }
 
-    /// Redo the last undone op. Returns false when nothing to redo.
     pub fn redo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
-        let Some(redo) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.last().cloned() else {
             return Ok(false);
         };
-        let inverse = redo.invert(project)?;
-        redo.apply(project)?;
-        self.undo_stack.push(inverse);
+        let inverse = entry.op.invert(project)?;
+        let mut candidate = project.clone();
+        entry.op.apply(&mut candidate)?;
+        candidate.validate().map_err(ModelError::Invalid)?;
+        *project = candidate;
+        self.redo_stack.pop();
+        self.undo_stack.push(HistoryEntry {
+            op: inverse,
+            label: entry.label,
+        });
         Ok(true)
     }
 
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
-
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
-
-    /// The committed history, for the legible-undo UI.
     pub fn undo_descriptions(&self) -> Vec<String> {
-        self.undo_stack.iter().map(|op| op.describe()).collect()
+        self.undo_stack
+            .iter()
+            .map(|entry| entry.label.clone())
+            .collect()
     }
 }
 
@@ -856,13 +1102,19 @@ mod tests {
         };
 
         history.commit(&mut p, op).unwrap();
-        assert_eq!(p.layer(comp, layer).unwrap().transform.position, [150.0, -75.0]);
+        assert_eq!(
+            p.layer(comp, layer).unwrap().transform.position,
+            [150.0, -75.0]
+        );
 
         assert!(history.undo(&mut p).unwrap());
         assert_eq!(p.layer(comp, layer).unwrap().transform.position, [0.0, 0.0]);
 
         assert!(history.redo(&mut p).unwrap());
-        assert_eq!(p.layer(comp, layer).unwrap().transform.position, [150.0, -75.0]);
+        assert_eq!(
+            p.layer(comp, layer).unwrap().transform.position,
+            [150.0, -75.0]
+        );
     }
 
     #[test]
@@ -926,7 +1178,9 @@ mod tests {
             parent: Some(layer3),
         };
         let err = history.commit(&mut p, cycle_op);
-        assert!(matches!(err, Err(ModelError::ParentCycle(l1, l3)) if l1 == layer1 && l3 == layer3));
+        assert!(
+            matches!(err, Err(ModelError::ParentCycle(l1, l3)) if l1 == layer1 && l3 == layer3)
+        );
 
         // Undo 3 -> 2
         assert!(history.undo(&mut p).unwrap());
@@ -986,7 +1240,15 @@ mod tests {
         let mut history = History::new();
 
         // Remove layer1
-        history.commit(&mut p, Op::RemoveLayer { comp, layer: layer1 }).unwrap();
+        history
+            .commit(
+                &mut p,
+                Op::RemoveLayer {
+                    comp,
+                    layer: layer1,
+                },
+            )
+            .unwrap();
         assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer2]);
 
         // Undo -> layer1 restored at its original index (index 0)
@@ -1026,7 +1288,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(p.layer(comp, layer).unwrap().blend_mode, BlendMode::Multiply);
+        assert_eq!(
+            p.layer(comp, layer).unwrap().blend_mode,
+            BlendMode::Multiply
+        );
 
         // SetLayerVisible
         history
@@ -1079,6 +1344,7 @@ mod tests {
             name: "test.png".into(),
             path: Some("/path/to/test.png".into()),
             kind: MediaKind::Image,
+            embedded: None,
             slot: None,
             alias: Some("logo".into()),
             perception: None,
@@ -1088,7 +1354,9 @@ mod tests {
         assert_eq!(p.media.len(), 1);
         let media_id = *p.media.keys().next().unwrap();
 
-        history.commit(&mut p, Op::RemoveMedia { media: media_id }).unwrap();
+        history
+            .commit(&mut p, Op::RemoveMedia { media: media_id })
+            .unwrap();
         assert!(p.media.is_empty());
 
         assert!(history.undo(&mut p).unwrap());

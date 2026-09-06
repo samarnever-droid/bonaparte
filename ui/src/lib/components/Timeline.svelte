@@ -1,567 +1,1012 @@
 <script lang="ts">
-  import { editor, activeComp, scrub, applyOp } from "../store.svelte";
+  import { onMount, onDestroy } from "svelte";
+  import Icon from "./Icon.svelte";
+  import CurveEditor from "./CurveEditor.svelte";
   import {
-    ticksPerFrame,
-    snapToFrame,
-    timeToSecs,
-    formatFps,
+    editor,
+    activeComp,
+    selectedLayer,
+    scrub,
+    play,
+    pause,
+    applyOp,
+    duplicateSelected,
+    deleteSelected,
+    notify,
+    clone,
+  } from "../store.svelte";
+  import { layerIcon, layerColor } from "../geometry";
+  import {
     timeToTimecode,
+    timecodeToTime,
+    timeToSecs,
+    snapToFrame,
+    ticksPerFrame,
     TICKS_PER_SEC,
-    type Comp,
     type Layer,
     type Property,
     type Keyframe,
+    type Track,
   } from "../model";
-  import CurveEditor from "./CurveEditor.svelte";
-
   const comp = $derived(activeComp());
-  let rulerEl: HTMLElement | null = $state(null);
-  let scrollContainer: HTMLElement | null = $state(null);
-
-  // Zoom & Pan state
-  let zoom = $state(1.0); // 1.0x to 15.0x zoom
-  let scrubbing = $state(false);
-  let isPanning = $state(false);
-  let panStartX = 0;
-  let panStartScroll = 0;
-
-  // Keyframe Dragging state
-  let draggingKey = $state<{
-    layerId: number;
-    prop: Property;
-    origTime: number;
-    currentTime: number;
-  } | null>(null);
-
-  // In-place Curve Editor and expanded layer tracks state
-  let expandedLayers = $state<Record<number, boolean>>({});
-  let openCurveEditor = $state<{ layerId: number; prop: Property } | null>(null);
-
-  function snapTime(t: number): number {
-    if (!comp) return t;
-    return Math.min(comp.duration, Math.max(0, snapToFrame(t, comp.fps)));
-  }
-
+  const selected = $derived(selectedLayer());
+  const LABEL_WIDTH = 268;
+  let scroll = $state<HTMLDivElement | null>(null),
+    ruler = $state<HTMLDivElement | null>(null),
+    bodyWidth = $state(1100),
+    zoom = $state(1);
+  let expanded = $state<Record<number, boolean>>({});
+  let filter = $state("");
+  let showFilter = $state(false);
+  let scrubbing = false;
+  const trackWidth = $derived(Math.max(320, bodyWidth - LABEL_WIDTH) * zoom);
+  const layers = $derived(
+    comp
+      ? [...comp.layer_order]
+          .reverse()
+          .map((id) => comp.layers[String(id)])
+          .filter((l) => l.name.toLowerCase().includes(filter.toLowerCase()))
+      : [],
+  );
+  const ticks = $derived.by(() => {
+    if (!comp) return [];
+    const sec = timeToSecs(comp.duration),
+      desired = sec / Math.max(2, Math.floor(trackWidth / 80));
+    const step =
+      [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200].find(
+        (s) => s >= desired,
+      ) ?? 14400;
+    return Array.from({ length: Math.floor(sec / step) + 1 }, (_, i) => ({
+      time: Math.round(i * step * TICKS_PER_SEC),
+      label: step < 1 ? `${(i * step).toFixed(2)}s` : `${i * step}s`,
+    }));
+  });
+  const percent = (time: number) => (comp ? (time / comp.duration) * 100 : 0);
   function timeAt(e: PointerEvent): number {
-    if (!rulerEl || !comp) return 0;
-    const rect = rulerEl.getBoundingClientRect();
-    if (rect.width === 0) return 0;
-    const frac = (e.clientX - rect.left) / rect.width;
-    return Math.min(comp.duration, Math.max(0, Math.round(frac * comp.duration)));
+    if (!ruler || !comp) return 0;
+    const rect = ruler.getBoundingClientRect();
+    return snapToFrame(((e.clientX - rect.left) / rect.width) * comp.duration, comp.fps);
   }
-
-  function onRulerDown(e: PointerEvent) {
+  function rulerDown(e: PointerEvent) {
     if (e.button !== 0) return;
+    pause();
     scrubbing = true;
-    rulerEl?.setPointerCapture(e.pointerId);
+    ruler?.setPointerCapture(e.pointerId);
     scrub(timeAt(e));
   }
-
-  function onRulerMove(e: PointerEvent) {
-    if (scrubbing) {
-      scrub(timeAt(e));
+  onMount(() => {
+    if (!scroll) return;
+    const ro = new ResizeObserver((entries) => (bodyWidth = entries[0].contentRect.width));
+    ro.observe(scroll);
+    return () => ro.disconnect();
+  });
+  type RowTrack = {
+    label: string;
+    track: Track;
+    prop?: Property;
+    effectId?: string;
+    paramId?: string;
+  };
+  function tracks(layer: Layer): RowTrack[] {
+    const result: RowTrack[] = Object.entries(layer.tracks)
+      .filter(([, v]) => v?.keys.length)
+      .map(([prop, track]) => ({ label: prop, track: track!, prop: prop as Property }));
+    for (const effect of layer.effects) {
+      const manifest = editor.effects.find((e) => e.id === effect.effect_id);
+      for (const [id, track] of Object.entries(effect.tracks))
+        if (track.keys.length)
+          result.push({
+            label: `${manifest?.name ?? "Effect"} · ${manifest?.params.find((p) => p.id === id)?.name ?? id}`,
+            track,
+            effectId: effect.id,
+            paramId: id,
+          });
     }
+    return result;
   }
-
-  function onRulerUp(e?: PointerEvent) {
-    if (scrubbing && comp) {
-      scrub(snapTime(editor.currentTime));
-    }
-    scrubbing = false;
-  }
-
-  function onKeyframeDown(e: PointerEvent, layerId: number, prop: Property, key: Keyframe) {
+  let dragging = $state<null | {
+    kind: "move" | "in" | "out" | "key";
+    layer: number;
+    start: number;
+    duration: number;
+    mouse: number;
+    nextStart: number;
+    nextDuration: number;
+    keyTime?: number;
+    nextKey?: number;
+    row?: RowTrack;
+  }>(null);
+  function begin(
+    e: PointerEvent,
+    layer: Layer,
+    kind: "move" | "in" | "out" | "key",
+    row?: RowTrack,
+    key?: Keyframe,
+  ) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    editor.selected = layerId;
-    draggingKey = {
-      layerId,
-      prop,
-      origTime: key.time,
-      currentTime: key.time,
+    editor.selected = layer.id;
+    if (layer.locked) return;
+    pause();
+    if (key) scrub(key.time);
+    e.preventDefault();
+    dragging = {
+      kind,
+      layer: layer.id,
+      start: layer.start,
+      duration: layer.duration,
+      mouse: timeAt(e),
+      nextStart: layer.start,
+      nextDuration: layer.duration,
+      keyTime: key?.time,
+      nextKey: key?.time,
+      row,
     };
-    (e.currentTarget as Element)?.setPointerCapture(e.pointerId);
+    window.addEventListener("pointermove", dragMove);
+    window.addEventListener("pointerup", dragEnd);
+    window.addEventListener("pointercancel", dragCancel);
   }
-
-  function onKeyframeMove(e: PointerEvent) {
-    if (!draggingKey || !comp) return;
-    const rawTime = timeAt(e);
-    const snapped = snapTime(rawTime);
-    draggingKey.currentTime = snapped;
-    scrub(snapped);
-  }
-
-  async function onKeyframeUp() {
-    if (!draggingKey || !comp) {
-      draggingKey = null;
-      return;
-    }
-    const { layerId, prop, origTime, currentTime } = draggingKey;
-    draggingKey = null;
-
-    if (currentTime !== origTime) {
-      await applyOp({
-        type: "moveKeyframe",
-        comp: comp.id,
-        layer: layerId,
-        property: prop,
-        from: origTime,
-        to: currentTime,
-      });
-    }
-  }
-
-  function pct(t: number): string {
-    if (!comp || comp.duration <= 0) return "0%";
-    return `${(t / comp.duration) * 100}%`;
-  }
-
-  function kindLabel(kind: import("../model").LayerKind): string {
-    if ("Solid" in kind) return "▦";
-    if ("Shape" in kind) return "◆";
-    if ("Text" in kind) return "T";
-    if ("Footage" in kind) return "▶";
-    return "◫";
-  }
-
-  function toggleCurveEditor(layerId: number, prop: Property) {
-    if (openCurveEditor?.layerId === layerId && openCurveEditor?.prop === prop) {
-      openCurveEditor = null;
-    } else {
-      openCurveEditor = { layerId, prop };
+  function dragMove(e: PointerEvent) {
+    if (!dragging || !comp) return;
+    const dt = timeAt(e) - dragging.mouse,
+      tpf = ticksPerFrame(comp.fps);
+    if (dragging.kind === "move")
+      dragging.nextStart = Math.max(
+        0,
+        Math.min(Math.max(0, comp.duration - dragging.duration), dragging.start + dt),
+      );
+    else if (dragging.kind === "in") {
+      dragging.nextStart = Math.max(
+        0,
+        Math.min(dragging.start + dragging.duration - tpf, dragging.start + dt),
+      );
+      dragging.nextDuration = dragging.start + dragging.duration - dragging.nextStart;
+    } else if (dragging.kind === "out")
+      dragging.nextDuration = Math.max(
+        tpf,
+        Math.min(comp.duration - dragging.start, dragging.duration + dt),
+      );
+    else {
+      dragging.nextKey = Math.max(0, Math.min(comp.duration, (dragging.keyTime ?? 0) + dt));
+      scrub(dragging.nextKey);
     }
   }
-
-  function toggleLayerExpand(layerId: number) {
-    expandedLayers[layerId] = !expandedLayers[layerId];
+  function cleanup() {
+    window.removeEventListener("pointermove", dragMove);
+    window.removeEventListener("pointerup", dragEnd);
+    window.removeEventListener("pointercancel", dragCancel);
   }
-
-  function stepFrame(delta: number) {
-    if (!comp) return;
-    const tpf = ticksPerFrame(comp.fps);
-    if (tpf <= 0) return;
-    const currentFrame = Math.round(editor.currentTime / tpf);
-    const totalFrames = Math.round(comp.duration / tpf);
-    const targetFrame = Math.max(0, Math.min(totalFrames, currentFrame + delta));
-    scrub(targetFrame * tpf);
+  function dragCancel() {
+    cleanup();
+    dragging = null;
   }
-
-  function onTimelineWheel(e: WheelEvent) {
-    if (e.ctrlKey) {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.2 : 0.8;
-      zoom = Math.min(15.0, Math.max(1.0, Math.round(zoom * factor * 10) / 10));
-    }
-  }
-
-  function onPanDown(e: PointerEvent) {
-    if (e.button === 1 || (e.altKey && e.button === 0)) {
-      e.preventDefault();
-      isPanning = true;
-      panStartX = e.clientX;
-      panStartScroll = scrollContainer?.scrollLeft ?? 0;
-      (e.currentTarget as Element)?.setPointerCapture(e.pointerId);
-    }
-  }
-
-  function onPanMove(e: PointerEvent) {
-    if (isPanning && scrollContainer) {
-      const dx = e.clientX - panStartX;
-      scrollContainer.scrollLeft = panStartScroll - dx;
-    }
-  }
-
-  function onPanUp() {
-    isPanning = false;
-  }
-
-  // Generate ruler tick marks depending on zoom level
-  const rulerTicks = $derived.by(() => {
-    if (!comp || comp.duration <= 0) return [];
-    const ticks: { time: number; label: string; isMajor: boolean }[] = [];
-    const tpf = ticksPerFrame(comp.fps);
-    const totalDuration = comp.duration;
-    const totalSecs = Math.ceil(totalDuration / TICKS_PER_SEC);
-    const totalFrames = tpf > 0 ? Math.round(totalDuration / tpf) : 0;
-
-    if (zoom < 2.5) {
-      // 1-second major intervals
-      for (let s = 0; s <= totalSecs; s++) {
-        const t = s * TICKS_PER_SEC;
-        if (t <= totalDuration) {
-          ticks.push({ time: t, label: `${s}s`, isMajor: true });
-        }
+  async function dragEnd() {
+    const d = dragging,
+      c = comp;
+    dragging = null;
+    cleanup();
+    if (!d || !c) return;
+    if (
+      d.kind === "key" &&
+      d.row &&
+      d.keyTime !== undefined &&
+      d.nextKey !== undefined &&
+      d.nextKey !== d.keyTime
+    ) {
+      const row = d.row;
+      if (row.track.keys.some((k) => k.time === d.nextKey && k.time !== d.keyTime)) {
+        notify("There is already a keyframe at this time.", true);
+        return;
       }
-    } else if (zoom < 6) {
-      // Half-second / 15-frame intervals
-      const stepTicks = Math.round(TICKS_PER_SEC / 2);
-      for (let t = 0; t <= totalDuration; t += stepTicks) {
-        const isSec = t % TICKS_PER_SEC === 0;
-        const s = Math.floor(t / TICKS_PER_SEC);
-        const f = tpf > 0 ? Math.round((t % TICKS_PER_SEC) / tpf) : 0;
-        ticks.push({
-          time: t,
-          label: isSec ? `${s}s` : `:${String(f).padStart(2, "0")}`,
-          isMajor: isSec,
+      if (row.prop)
+        await applyOp({
+          type: "moveKeyframe",
+          comp: c.id,
+          layer: d.layer,
+          property: row.prop,
+          from: d.keyTime,
+          to: d.nextKey,
         });
-      }
-    } else {
-      // Frame-by-frame / sub-frame intervals
-      const frameStep = zoom >= 12 ? 1 : zoom >= 8 ? 2 : 5;
-      for (let f = 0; f <= totalFrames; f += frameStep) {
-        const t = f * tpf;
-        if (t <= totalDuration) {
-          const isSec = t % TICKS_PER_SEC === 0;
-          const s = Math.floor(t / TICKS_PER_SEC);
-          const framesPerSec = tpf > 0 ? Math.round(TICKS_PER_SEC / tpf) : 30;
-          const frameInSec = f % framesPerSec;
-          ticks.push({
-            time: t,
-            label: isSec ? `${s}s` : `${frameInSec}f`,
-            isMajor: isSec,
-          });
-        }
-      }
-    }
-    return ticks;
-  });
+      else
+        await applyOp((project) => {
+          const layer = project.comps[String(c.id)]?.layers[String(d.layer)];
+          if (!layer) return null;
+          const effects = clone(layer.effects);
+          const track = effects.find((e) => e.id === row.effectId)?.tracks[row.paramId!];
+          const key = track?.keys.find((k) => k.time === d.keyTime);
+          if (!track || !key) return null;
+          key.time = d.nextKey!;
+          track.keys.sort((a, b) => a.time - b.time);
+          return { type: "setLayerEffects", comp: c.id, layer: d.layer, effects };
+        });
+    } else if (d.kind === "move" && d.nextStart !== d.start)
+      await applyOp({
+        type: "shiftLayer",
+        comp: c.id,
+        layer: d.layer,
+        delta: d.nextStart - d.start,
+      });
+    else if (d.kind !== "key" && (d.nextStart !== d.start || d.nextDuration !== d.duration))
+      await applyOp({
+        type: "setLayerTime",
+        comp: c.id,
+        layer: d.layer,
+        start: d.nextStart,
+        duration: d.nextDuration,
+      });
+  }
+  onDestroy(cleanup);
+  function reorder(delta: number) {
+    if (!comp || !selected || selected.locked) return;
+    const index = comp.layer_order.indexOf(selected.id);
+    void applyOp({
+      type: "reorderLayer",
+      comp: comp.id,
+      layer: selected.id,
+      newIndex: Math.max(0, Math.min(comp.layer_order.length - 1, index + delta)),
+    });
+  }
+  function openGraph(prop?: Property) {
+    editor.graphProperty =
+      prop ?? (Object.keys(selected?.tracks ?? {})[0] as Property) ?? "Position";
+  }
 </script>
 
-<section
-  aria-label="Timeline Tracks and Ruler"
-  class="flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--bg-panel)] select-none"
-  onpointermove={(e) => {
-    onKeyframeMove(e);
-    onPanMove(e);
-  }}
-  onpointerup={() => {
-    void onKeyframeUp();
-    onPanUp();
-  }}
-  onpointercancel={() => {
-    void onKeyframeUp();
-    onPanUp();
-  }}
->
-  <!-- Timeline Toolbar (Zoom, Frame Stepping, Playhead Timecode) -->
-  <div
-    class="flex h-8 items-center justify-between border-b border-[var(--border)] bg-[var(--bg-raised)] px-3 text-xs"
-  >
-    <div class="flex items-center gap-2">
-      <span class="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-dim)]">
-        Timeline
-      </span>
-      {#if comp}
-        <span
-          class="rounded bg-[var(--bg-panel)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-dim)]"
-        >
-          {formatFps(comp.fps)} · {timeToSecs(comp.duration).toFixed(1)}s ({timeToTimecode(
-            editor.currentTime,
-            comp.fps,
-          )})
-        </span>
-      {/if}
-    </div>
-
-    <!-- Frame step buttons & Zoom controls -->
-    <div class="flex items-center gap-3">
-      <div class="flex items-center gap-1">
-        <button
-          class="rounded px-1.5 py-0.5 text-xs hover:bg-[var(--bg-panel)] text-[var(--text-dim)] hover:text-[var(--text)]"
-          title="Previous Frame (Left Arrow)"
-          onclick={() => stepFrame(-1)}
-        >
-          ◀
-        </button>
-        <button
-          class="rounded px-1.5 py-0.5 text-xs hover:bg-[var(--bg-panel)] text-[var(--text-dim)] hover:text-[var(--text)]"
-          title="Next Frame (Right Arrow)"
-          onclick={() => stepFrame(1)}
-        >
-          ▶
-        </button>
-      </div>
-
-      <!-- Zoom Controls -->
-      <div class="flex items-center gap-1.5 border-l border-[var(--border)] pl-3">
-        <span class="text-[10px] text-[var(--text-dim)]">Zoom</span>
-        <button
-          class="rounded px-1.5 py-0.5 font-mono text-xs hover:bg-[var(--bg-panel)] text-[var(--text-dim)] hover:text-[var(--text)]"
-          title="Zoom Out"
-          onclick={() => (zoom = Math.max(1.0, Math.round((zoom - 0.5) * 10) / 10))}
-        >
-          -
-        </button>
-        <input
-          type="range"
-          min="1"
-          max="15"
-          step="0.5"
-          bind:value={zoom}
-          class="h-1.5 w-16 accent-[var(--accent)] cursor-pointer"
-          title="Zoom: {zoom}x (Ctrl+Wheel to zoom, Middle-click to pan)"
-        />
-        <button
-          class="rounded px-1.5 py-0.5 font-mono text-xs hover:bg-[var(--bg-panel)] text-[var(--text-dim)] hover:text-[var(--text)]"
-          title="Zoom In"
-          onclick={() => (zoom = Math.min(15.0, Math.round((zoom + 0.5) * 10) / 10))}
-        >
-          +
-        </button>
-        {#if zoom > 1}
-          <button
-            class="rounded bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10px] text-[var(--accent)] hover:underline"
-            onclick={() => (zoom = 1.0)}
-          >
-            Fit
-          </button>
-        {/if}
-      </div>
-    </div>
-  </div>
-
-  <!-- Main Timeline Body (Layer List + Zoomable Track Area) -->
-  <div class="flex min-h-0 flex-1 overflow-hidden">
-    <!-- Left: Layer Header / Track Tree -->
-    <div class="w-64 shrink-0 overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-panel)]">
-      {#if comp}
-        {#each [...comp.layer_order].reverse() as layerId (layerId)}
-          {@const layer = comp.layers[String(layerId)]}
-          {@const hasTracks = Object.keys(layer.tracks).length > 0}
-          {@const isExpanded = expandedLayers[layerId]}
-
-          <div class="border-b border-[var(--border)]">
-            <!-- Layer Main Row -->
-            <div
-              role="button"
-              tabindex="0"
-              class="flex h-10 w-full items-center justify-between px-2 text-xs transition-colors {editor.selected ===
-              layerId
-                ? 'bg-[var(--accent-soft)]'
-                : 'hover:bg-[var(--bg-raised)]'}"
-              onclick={() => (editor.selected = layerId)}
-              onkeydown={(e) => e.key === "Enter" && (editor.selected = layerId)}
-            >
-              <div class="flex min-w-0 items-center gap-1.5">
-                {#if hasTracks}
-                  <button
-                    class="rounded p-0.5 text-[10px] text-[var(--text-dim)] hover:text-[var(--text)]"
-                    title={isExpanded ? "Collapse Tracks" : "Expand Tracks"}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      toggleLayerExpand(layerId);
-                    }}
-                  >
-                    {isExpanded ? "▼" : "▶"}
-                  </button>
-                {:else}
-                  <span class="w-3"></span>
-                {/if}
-                <span class="text-[var(--text-dim)]">{kindLabel(layer.kind)}</span>
-                <span class="truncate font-medium">{layer.name}</span>
-              </div>
-
-              <!-- Quick Add Keyframe / Curve Editor indicator -->
-              <div class="flex items-center gap-1">
-                {#if hasTracks}
-                  <span class="rounded bg-[var(--bg-raised)] px-1 py-0.5 font-mono text-[9px] text-[var(--accent)]">
-                    {Object.values(layer.tracks).reduce((acc, t) => acc + t.keys.length, 0)} keys
-                  </span>
-                {/if}
-              </div>
-            </div>
-
-            <!-- Sub-tracks list when expanded -->
-            {#if isExpanded && hasTracks}
-              <div class="bg-[var(--bg-base)] pb-1 pl-6">
-                {#each Object.entries(layer.tracks) as [prop, track] (prop)}
-                  <div class="flex h-7 items-center justify-between pr-2 text-[11px] text-[var(--text-dim)]">
-                    <span class="font-mono">{prop}</span>
-                    <button
-                      class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors {openCurveEditor?.layerId ===
-                        layerId && openCurveEditor?.prop === prop
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'bg-[var(--bg-panel)] text-[var(--accent)] hover:bg-[var(--border)]'}"
-                      title="Toggle in-place Bézier curve editor"
-                      onclick={() => toggleCurveEditor(layerId, prop as Property)}
-                    >
-                      <span>📈</span>
-                      <span>Curve</span>
-                    </button>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      {/if}
-    </div>
-
-    <!-- Right: Zoomable Timeline Ruler & Tracks Area -->
-    <div
-      bind:this={scrollContainer}
-      role="group"
-      aria-label="Timeline track scroll area"
-      class="relative min-w-0 flex-1 overflow-x-auto overflow-y-auto bg-[var(--bg-base)] {isPanning
-        ? 'cursor-grab'
-        : ''}"
-      onwheel={onTimelineWheel}
-      onpointerdown={onPanDown}
+<section class="panel timeline" aria-label="Timeline">
+  <div class="timeline-header">
+    <button
+      class="timeline-tab"
+      class:active={!editor.graphProperty}
+      onclick={() => (editor.graphProperty = null)}><Icon name="layers" size={13} />Timeline</button
     >
-      <div
-        class="relative min-h-full"
-        style="width: {zoom * 100}%; min-width: 100%;"
+    <button
+      class="timeline-tab"
+      class:active={!!editor.graphProperty}
+      disabled={!selected}
+      onclick={() => (editor.graphProperty ? (editor.graphProperty = null) : openGraph())}
+      ><Icon name="graph" size={13} />Graph editor</button
+    >
+    <span class="divider"></span><span class="timeline-comp truncate"
+      >{comp?.name ?? "No composition"}</span
+    >
+    <span class="spacer"></span>
+    <div class="transport">
+      <button
+        class="icon-button small"
+        aria-label="Step backward"
+        title="Previous frame (←)"
+        onclick={() => comp && scrub(editor.currentTime - ticksPerFrame(comp.fps))}
+        ><Icon name="back" size={13} /></button
+      ><button
+        class="play-control"
+        aria-label={editor.playing ? "Pause playback" : "Play"}
+        title="Play / pause (Space)"
+        onclick={() => (editor.playing ? pause() : play())}
+        ><Icon name={editor.playing ? "pause" : "play"} size={13} /></button
+      ><button
+        class="icon-button small"
+        aria-label="Step forward"
+        title="Next frame (→)"
+        onclick={() => comp && scrub(editor.currentTime + ticksPerFrame(comp.fps))}
+        ><Icon name="forward" size={13} /></button
       >
-        {#if comp}
-          <!-- Ruler -->
+    </div>
+    <input
+      class="timecode mono"
+      aria-label="Playhead timecode"
+      value={comp ? timeToTimecode(editor.currentTime, comp.fps) : "00:00:00:00"}
+      onchange={(e) => {
+        if (comp) {
+          const time = timecodeToTime(e.currentTarget.value, comp.fps);
+          if (time !== null) {
+            pause();
+            scrub(time);
+          } else notify("Use a timecode such as 00:00:01:15.", true);
+        }
+      }}
+    />
+    <span class="divider"></span><Icon name="search" size={12} class="dim" /><input
+      class="timeline-zoom"
+      type="range"
+      aria-label="Timeline zoom"
+      min="1"
+      max="8"
+      step=".25"
+      bind:value={zoom}
+    /><button
+      class="icon-button small"
+      title="Reset timeline zoom"
+      aria-label="Reset timeline zoom"
+      onclick={() => {
+        zoom = 1;
+        if (scroll) scroll.scrollLeft = 0;
+      }}><Icon name="maximize" size={12} /></button
+    >
+  </div>
+  {#if editor.graphProperty && comp && selected}
+    <div class="graph-panel">
+      <div class="graph-properties">
+        <span class="upper dim">ANIMATED PROPERTY</span><strong>{selected.name}</strong
+        >{#each ["Position", "Scale", "Rotation", "Opacity", "AnchorPoint"] as prop}<button
+            class:active={editor.graphProperty === prop}
+            onclick={() => (editor.graphProperty = prop as Property)}
+            ><Icon name="keyframe" size={10} />{prop}<span class="spacer"></span><span class="count"
+              >{selected.tracks[prop as Property]?.keys.length ?? 0}</span
+            ></button
+          >{/each}
+      </div>
+      <div class="curve-container">
+        <CurveEditor
+          {comp}
+          layer={selected}
+          property={editor.graphProperty}
+          onClose={() => (editor.graphProperty = null)}
+        />
+      </div>
+    </div>
+  {:else}
+    <div class="timeline-scroll" bind:this={scroll}>
+      {#if comp}
+        <div
+          class="timeline-grid"
+          style={`grid-template-columns:${LABEL_WIDTH}px ${trackWidth}px;width:${LABEL_WIDTH + trackWidth}px`}
+        >
+          <div class="name-heading label-cell">
+            <button
+              class="icon-button small"
+              title="Filter layers"
+              aria-label="Filter layers"
+              onclick={() => (showFilter = !showFilter)}><Icon name="search" size={11} /></button
+            >{#if showFilter}<input
+                aria-label="Filter timeline layers"
+                bind:value={filter}
+                placeholder="Filter layers…"
+              />{:else}<span>LAYER NAME</span><span class="count">{comp.layer_order.length}</span
+              >{/if}<span class="spacer"></span><span class="mono"
+              >{Math.floor(comp.duration / ticksPerFrame(comp.fps))}f</span
+            >
+          </div>
           <div
-            bind:this={rulerEl}
+            class="ruler"
+            bind:this={ruler}
             role="slider"
             tabindex="0"
-            aria-label="Timeline Ruler"
+            aria-label="Timeline ruler"
             aria-valuemin={0}
             aria-valuemax={comp.duration}
             aria-valuenow={editor.currentTime}
-            class="sticky top-0 z-20 h-7 w-full cursor-ew-resize border-b border-[var(--border)] bg-[var(--bg-panel)] shadow-sm select-none"
-            onpointerdown={onRulerDown}
-            onpointermove={onRulerMove}
-            onpointerup={onRulerUp}
+            onkeydown={(e) => {
+              if (e.key === "ArrowRight") scrub(editor.currentTime + ticksPerFrame(comp.fps));
+              if (e.key === "ArrowLeft") scrub(editor.currentTime - ticksPerFrame(comp.fps));
+              e.stopPropagation();
+            }}
+            onpointerdown={rulerDown}
+            onpointermove={(e) => {
+              if (scrubbing) scrub(timeAt(e));
+            }}
+            onpointerup={() => (scrubbing = false)}
+            onpointercancel={() => (scrubbing = false)}
           >
-            {#each rulerTicks as tick (tick.time)}
+            {#each ticks as tick}<span class="tick" style={`left:${percent(tick.time)}%`}
+                ><span>{tick.label}</span></span
+              >{/each}
+            <div class="playhead-cap" style={`left:${percent(editor.currentTime)}%`}></div>
+          </div>
+          {#each layers as layer, index (layer.id)}
+            {@const animated = tracks(layer)}
+            {@const draggingLayer = dragging?.layer === layer.id && dragging.kind !== "key"}
+            {@const start = draggingLayer ? dragging!.nextStart : layer.start}
+            {@const duration = draggingLayer ? dragging!.nextDuration : layer.duration}
+            <div
+              class="layer-label label-cell"
+              class:selected={editor.selected === layer.id}
+              class:invisible={!layer.visible}
+            >
+              <button
+                class="tiny-button"
+                aria-label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
+                title="Toggle visibility"
+                onclick={() =>
+                  void applyOp({
+                    type: "setLayerVisible",
+                    comp: comp.id,
+                    layer: layer.id,
+                    visible: !layer.visible,
+                  })}><Icon name={layer.visible ? "eye" : "eye-off"} size={11} /></button
+              >
+              <button
+                class="tiny-button lock-button"
+                class:locked={layer.locked}
+                aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+                title="Toggle lock"
+                onclick={() =>
+                  void applyOp({
+                    type: "setLayerLocked",
+                    comp: comp.id,
+                    layer: layer.id,
+                    locked: !layer.locked,
+                  })}><Icon name={layer.locked ? "lock" : "unlock"} size={9} /></button
+              >
+              <span class="layer-swatch" style={`background:${layerColor(layer)}`}></span><span
+                class="layer-index mono">{String(index + 1).padStart(2, "0")}</span
+              >
+              <button
+                class="tiny-button disclosure"
+                disabled={!animated.length}
+                title="Expand animated properties"
+                aria-label={`Expand ${layer.name}`}
+                onclick={() => (expanded[layer.id] = !expanded[layer.id])}
+                ><Icon name={expanded[layer.id] ? "down" : "right"} size={9} /></button
+              >
+              <button
+                class="layer-name"
+                aria-label={`Select layer ${layer.name}`}
+                onclick={() => (editor.selected = layer.id)}
+                ><Icon name={layerIcon(layer)} size={11} /><span class="truncate">{layer.name}</span
+                ></button
+              >
+              {#if layer.effects.length}<button
+                  class="layer-fx"
+                  title="Open effect controls"
+                  aria-label={`Effects on ${layer.name}`}
+                  onclick={() => {
+                    editor.selected = layer.id;
+                    editor.inspector = "effects";
+                  }}>ƒx</button
+                >{/if}
+            </div>
+            <div class="track-cell" class:selected={editor.selected === layer.id}>
+              {#each ticks as tick}<span
+                  class="track-gridline"
+                  style={`left:${percent(tick.time)}%`}
+                ></span>{/each}
               <div
-                class="absolute top-0 bottom-0 flex flex-col justify-between {tick.isMajor
-                  ? 'border-l border-[var(--border)]'
-                  : 'border-l border-[rgba(255,255,255,0.05)]'}"
-                style="left: {pct(tick.time)}"
+                class="layer-bar"
+                class:locked={layer.locked}
+                class:hidden-layer={!layer.visible}
+                style={`left:${percent(start)}%;width:${Math.max(0.1, percent(duration))}%;--layer-color:${layerColor(layer)};background:${layerColor(layer)}26;border-color:${layerColor(layer)}77`}
+                role="button"
+                tabindex="0"
+                aria-label={`Move ${layer.name} and its keyframes`}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") editor.selected = layer.id;
+                }}
+                onpointerdown={(e) => begin(e, layer, "move")}
               >
                 <span
-                  class="pl-1 font-mono text-[9px] {tick.isMajor
-                    ? 'text-[var(--text-dim)] font-semibold'
-                    : 'text-[rgba(255,255,255,0.25)]'}"
-                >
-                  {tick.label}
-                </span>
-                <div class="h-1.5 w-px bg-[var(--border)]"></div>
+                  class="trim-handle left"
+                  role="presentation"
+                  title="Trim in point"
+                  onpointerdown={(e) => begin(e, layer, "in")}
+                ></span><span class="bar-label truncate">{layer.name}</span>
+                {#if !expanded[layer.id]}{#each animated.flatMap((t) => t.track.keys) as key}<span
+                      class="summary-key"
+                      style={`left:${((key.time - start) / duration) * 100}%`}
+                    ></span>{/each}{/if}
+                <span
+                  class="trim-handle right"
+                  role="presentation"
+                  title="Trim out point"
+                  onpointerdown={(e) => begin(e, layer, "out")}
+                ></span>
               </div>
-            {/each}
-          </div>
-
-          <!-- Layer Track Rows with Bars & Keyframe Diamonds -->
-          <div class="relative">
-            {#each [...comp.layer_order].reverse() as layerId (layerId)}
-              {@const layer = comp.layers[String(layerId)]}
-              {@const hasTracks = Object.keys(layer.tracks).length > 0}
-              {@const isExpanded = expandedLayers[layerId]}
-
-              <!-- Main Layer Row Bar -->
-              <div
-                class="relative flex h-10 items-center border-b border-[var(--border)] {editor.selected ===
-                layerId
-                  ? 'bg-[var(--accent-soft)]'
-                  : ''}"
-              >
-                <!-- Layer duration bar -->
-                <div
-                  class="absolute h-6 rounded-sm bg-[var(--bg-raised)] ring-1 ring-[var(--border)] opacity-80"
-                  style="left: {pct(layer.start)}; width: {pct(layer.duration)};"
-                ></div>
-
-                <!-- Main layer row keyframe diamonds -->
-                {#each Object.entries(layer.tracks) as [prop, track] (prop)}
-                  {#each track.keys as key (key.time)}
-                    {@const isDragged =
-                      draggingKey &&
-                      draggingKey.layerId === layerId &&
-                      draggingKey.prop === prop &&
-                      draggingKey.origTime === key.time}
-                    {@const displayTime = isDragged ? draggingKey.currentTime : key.time}
-
-                    <div
-                      role="button"
-                      tabindex="0"
-                      aria-label="{prop} Keyframe at {timeToTimecode(displayTime, comp.fps)}"
-                      class="absolute z-10 h-3.5 w-3.5 -translate-x-1/2 rotate-45 border border-[var(--bg-base)] {isDragged
-                        ? 'bg-[var(--danger)] ring-2 ring-white'
-                        : 'bg-[var(--accent)] hover:brightness-125'} cursor-ew-resize"
-                      style="left: {pct(displayTime)}; top: calc(50% - 7px);"
-                      title="{prop} @ {timeToTimecode(
-                        displayTime,
-                        comp.fps,
-                      )} — Drag to move (snaps to frames)"
-                      onpointerdown={(e) => onKeyframeDown(e, layerId, prop as Property, key)}
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        editor.selected = layerId;
-                        scrub(key.time);
-                      }}
-                      onkeydown={(e) => e.key === "Enter" && scrub(key.time)}
-                    ></div>
-                  {/each}
-                {/each}
-              </div>
-
-              <!-- Expanded Sub-track Rows -->
-              {#if isExpanded && hasTracks}
-                {#each Object.entries(layer.tracks) as [prop, track] (prop)}
-                  <div
-                    class="relative flex h-7 items-center border-b border-[var(--border)] bg-[rgba(0,0,0,0.2)]"
-                  >
-                    {#each track.keys as key (key.time)}
-                      {@const isDragged =
-                        draggingKey &&
-                        draggingKey.layerId === layerId &&
-                        draggingKey.prop === prop &&
-                        draggingKey.origTime === key.time}
-                      {@const displayTime = isDragged ? draggingKey.currentTime : key.time}
-
-                      <div
-                        role="button"
-                        tabindex="0"
-                        aria-label="{prop} Keyframe at {timeToTimecode(displayTime, comp.fps)}"
-                        class="absolute z-10 h-3 w-3 -translate-x-1/2 rotate-45 border border-[var(--bg-base)] {isDragged
-                          ? 'bg-[var(--danger)] ring-2 ring-white'
-                          : 'bg-[var(--accent)] hover:brightness-125'} cursor-ew-resize"
-                        style="left: {pct(displayTime)}; top: calc(50% - 6px);"
-                        title="{prop} @ {timeToTimecode(displayTime, comp.fps)}"
-                        onpointerdown={(e) => onKeyframeDown(e, layerId, prop as Property, key)}
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          editor.selected = layerId;
-                          scrub(key.time);
-                        }}
-                        onkeydown={(e) => e.key === "Enter" && scrub(key.time)}
-                      ></div>
-                    {/each}
-                  </div>
-
-                  <!-- In-Place Curve Editor View Embedded Below Sub-track -->
-                  {#if openCurveEditor?.layerId === layerId && openCurveEditor?.prop === prop}
-                    <div class="border-b border-[var(--border)] bg-[var(--bg-panel)] p-3 shadow-inner">
-                      <CurveEditor
-                        {comp}
-                        {layer}
-                        property={prop as Property}
-                        onClose={() => (openCurveEditor = null)}
-                      />
-                    </div>
-                  {/if}
-                {/each}
-              {/if}
-            {/each}
-          </div>
-
-          <!-- Playhead Needle & Scrubber Line -->
+            </div>
+            {#if expanded[layer.id]}
+              {#each animated as row (`${row.prop ?? row.effectId}-${row.paramId ?? ""}`)}
+                <div class="property-label label-cell">
+                  <Icon name="keyframe" size={9} /><span class="truncate">{row.label}</span><span
+                    class="spacer"
+                  ></span>{#if row.prop}<button
+                      class="tiny-button"
+                      title="Edit easing curve"
+                      aria-label={`Graph ${row.prop} on ${layer.name}`}
+                      onclick={() => {
+                        editor.selected = layer.id;
+                        openGraph(row.prop);
+                      }}><Icon name="graph" size={11} /></button
+                    >{/if}
+                </div>
+                <div class="property-track track-cell">
+                  {#each ticks as tick}<span
+                      class="track-gridline"
+                      style={`left:${percent(tick.time)}%`}
+                    ></span>{/each}{#each row.track.keys as key (key.time)}{@const dragged =
+                      dragging?.kind === "key" &&
+                      dragging.layer === layer.id &&
+                      dragging.row?.prop === row.prop &&
+                      dragging.row?.effectId === row.effectId &&
+                      dragging.row?.paramId === row.paramId &&
+                      dragging.keyTime === key.time}<button
+                      class="timeline-key"
+                      class:at-playhead={key.time === editor.currentTime}
+                      style={`left:${percent(dragged ? dragging!.nextKey! : key.time)}%`}
+                      aria-label={`${row.label} keyframe at ${timeToSecs(key.time).toFixed(2)} seconds`}
+                      title="Drag to move · double-click to edit easing"
+                      onpointerdown={(e) => begin(e, layer, "key", row, key)}
+                      ondblclick={() => {
+                        editor.selected = layer.id;
+                        if (row.prop) openGraph(row.prop);
+                        else editor.inspector = "effects";
+                      }}><Icon name="keyframe" size={9} /></button
+                    >{/each}
+                </div>
+              {/each}
+            {/if}
+          {/each}
+          {#if !layers.length}<div class="no-layers label-cell">
+              {filter ? "No matching layers" : "No layers yet"}
+            </div>
+            <div class="no-layers">Add text, shapes, or an image to start.</div>{/if}
           <div
-            class="pointer-events-none absolute bottom-0 top-0 z-30 w-px bg-[var(--danger)] shadow-[0_0_8px_rgba(255,107,107,0.5)]"
-            style="left: {pct(editor.currentTime)};"
-          >
-            <!-- Playhead Thumb Diamond -->
-            <div
-              class="absolute -left-1.5 top-0 h-3 w-3 rotate-45 bg-[var(--danger)] shadow-md"
-            ></div>
-          </div>
-        {/if}
-      </div>
+            class="playhead-line"
+            style={`left:${LABEL_WIDTH + (editor.currentTime / comp.duration) * trackWidth}px`}
+          ></div>
+        </div>
+      {/if}
     </div>
+  {/if}
+  <div class="timeline-footer">
+    <button
+      class="icon-button small"
+      title="Move selected layer up"
+      aria-label="Move layer up"
+      disabled={!selected || selected.locked}
+      onclick={() => reorder(1)}><Icon name="up" size={12} /></button
+    ><button
+      class="icon-button small"
+      title="Move selected layer down"
+      aria-label="Move layer down"
+      disabled={!selected || selected.locked}
+      onclick={() => reorder(-1)}><Icon name="down" size={12} /></button
+    ><span class="divider"></span><button
+      class="icon-button small"
+      title="Duplicate selected layer (Ctrl/⌘ D)"
+      aria-label="Duplicate layer"
+      disabled={!selected || selected.locked}
+      onclick={() => void duplicateSelected()}><Icon name="copy" size={11} /></button
+    ><button
+      class="icon-button small"
+      title="Delete selected layer"
+      aria-label="Delete layer"
+      disabled={!selected || selected.locked}
+      onclick={() => void deleteSelected()}><Icon name="trash" size={11} /></button
+    ><span class="spacer"></span><span class="timeline-hint"
+      >Drag layers to move · drag edges to trim · ◇ animate</span
+    ><span class="divider"></span><span class="mono ticks-note">120,000 ticks / sec</span>
   </div>
 </section>
+
+<style>
+  .timeline {
+    border-top: 1px solid #4e514c;
+    background: #1d1e1c;
+  }
+  .timeline-header {
+    height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 13px;
+    border-bottom: 1px solid #3a3d39;
+    background: #262825;
+    flex-shrink: 0;
+  }
+  .timeline-tab {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 100%;
+    padding: 0 8px;
+    font-size: 10px;
+    color: #8c8f88;
+    border-bottom: 2px solid transparent;
+  }
+  .timeline-tab.active {
+    color: #d2d5d0;
+    border-bottom-color: #c4c8bf;
+  }
+  .timeline-comp {
+    font-size: 9px;
+    color: #868a83;
+    max-width: 200px;
+  }
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .play-control {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 24px;
+    height: 23px;
+    color: #daddd7;
+    background: #3e413c;
+    border: 1px solid #5a5e57;
+    border-radius: 3px;
+  }
+  .timecode {
+    font-size: 11px;
+    letter-spacing: 0.6px;
+    background: none;
+    border: 0;
+    color: #d0d5cc;
+    width: 104px;
+    text-align: center;
+    outline: 0;
+  }
+  .timecode:focus {
+    background: #3b3e39;
+  }
+  .timeline-zoom {
+    width: 90px;
+    height: 2px !important;
+  }
+  .timeline-scroll {
+    overflow: auto;
+    min-height: 0;
+    flex: 1;
+    position: relative;
+  }
+  .timeline-grid {
+    display: grid;
+    grid-auto-rows: min-content;
+    min-height: 100%;
+    position: relative;
+    background: #1a1b19;
+  }
+  .label-cell {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    border-right: 1px solid #454943;
+    background: #272926;
+  }
+  .name-heading {
+    top: 0;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 9px 0 4px;
+    border-bottom: 1px solid #40433e;
+    background: #232421;
+    font-size: 7px;
+    letter-spacing: 1px;
+    color: #858981;
+  }
+  .name-heading input {
+    background: none;
+    border: 0;
+    outline: 0;
+    color: #bfc3bc;
+    font-size: 9px;
+    letter-spacing: 0;
+    width: 145px;
+  }
+  .name-heading > .mono {
+    font-size: 7px;
+    color: #6e736a;
+  }
+  .name-heading .count {
+    height: 12px;
+    font-size: 7px;
+    border-color: #464944;
+  }
+  .ruler {
+    position: sticky;
+    top: 0;
+    height: 28px;
+    z-index: 8;
+    background: #222421;
+    border-bottom: 1px solid #484c46;
+    cursor: ew-resize;
+    overflow: hidden;
+    touch-action: none;
+  }
+  .tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px solid #4f524c;
+  }
+  .tick > span {
+    position: absolute;
+    top: 5px;
+    left: 6px;
+    font: 8px monospace;
+    color: #9da19a;
+    white-space: nowrap;
+  }
+  .playhead-cap {
+    position: absolute;
+    top: 5px;
+    width: 9px;
+    height: 17px;
+    margin-left: -4px;
+    clip-path: polygon(0 0, 100% 0, 100% 65%, 50% 100%, 0 65%);
+    background: #cbd2c7;
+    z-index: 2;
+  }
+  .playhead-line {
+    position: absolute;
+    top: 28px;
+    bottom: 0;
+    width: 1px;
+    background: #bec4b9;
+    opacity: 0.7;
+    z-index: 2;
+    pointer-events: none;
+  }
+  .layer-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 8px 0 6px;
+    height: 28px;
+    border-bottom: 1px solid #343732;
+  }
+  .layer-label.selected {
+    background: #464944;
+  }
+  .tiny-button {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    height: 20px;
+    width: 15px;
+    color: #a1a49e;
+  }
+  .tiny-button:hover {
+    color: #e6e8e4;
+  }
+  .lock-button {
+    opacity: 0.3;
+    width: 13px;
+  }
+  .lock-button.locked {
+    opacity: 1;
+    color: #c0c2bc;
+  }
+  .layer-swatch {
+    height: 15px;
+    width: 3px;
+    flex-shrink: 0;
+    border-radius: 1px;
+  }
+  .layer-index {
+    font-size: 7px;
+    color: #81857e;
+    width: 12px;
+  }
+  .disclosure {
+    width: 9px;
+  }
+  .disclosure:disabled {
+    opacity: 0.18;
+  }
+  .layer-name {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    font-size: 10px;
+    color: #c1c4bf;
+  }
+  .layer-name :global(svg) {
+    color: #b2b6af;
+  }
+  .layer-fx {
+    font-family: Georgia, serif;
+    font-style: italic;
+    color: #acb0a8;
+    font-size: 12px;
+  }
+  .layer-label.invisible {
+    opacity: 0.55;
+  }
+  .track-cell {
+    position: relative;
+    height: 28px;
+    border-bottom: 1px solid #2e312c;
+    overflow: hidden;
+    background: #1e201d;
+  }
+  .track-cell.selected {
+    background: #30332e;
+  }
+  .track-gridline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #3a3d38;
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .layer-bar {
+    position: absolute;
+    top: 5px;
+    height: 19px;
+    border: 1px solid;
+    border-radius: 2px;
+    cursor: grab;
+    touch-action: none;
+    color: var(--layer-color);
+    display: flex;
+    align-items: center;
+    padding: 0 9px;
+    overflow: hidden;
+    min-width: 4px;
+  }
+  .layer-bar.locked {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .layer-bar.hidden-layer {
+    opacity: 0.23;
+  }
+  .bar-label {
+    font-size: 8px;
+    max-width: 130px;
+    opacity: 0.75;
+    pointer-events: none;
+  }
+  .trim-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    background: var(--layer-color);
+    opacity: 0.25;
+    cursor: ew-resize;
+    z-index: 2;
+    touch-action: none;
+  }
+  .trim-handle:hover {
+    opacity: 1;
+  }
+  .trim-handle.left {
+    left: 0;
+  }
+  .trim-handle.right {
+    right: 0;
+  }
+  .summary-key {
+    position: absolute;
+    top: 6px;
+    width: 4px;
+    height: 4px;
+    background: #d0d2c7;
+    transform: translateX(-50%) rotate(45deg);
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .property-label {
+    height: 23px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px 0 72px;
+    color: #979c94;
+    font-size: 8px;
+    background: #212320;
+    border-bottom: 1px solid #31342f;
+  }
+  .property-label > :global(svg) {
+    color: #bcbdb4;
+  }
+  .property-track {
+    height: 23px;
+    background: #1c1e1b;
+  }
+  .timeline-key {
+    position: absolute;
+    top: 0;
+    height: 23px;
+    width: 15px;
+    transform: translateX(-50%);
+    display: grid;
+    place-items: center;
+    color: #bfc1b6;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .timeline-key :global(svg) {
+    fill: currentColor;
+  }
+  .timeline-key:hover,
+  .timeline-key.at-playhead {
+    color: #dedccf;
+    filter: drop-shadow(0 0 3px #ced2c770);
+  }
+  .no-layers {
+    padding: 18px;
+    color: #868b83;
+    font-size: 10px;
+  }
+  .timeline-footer {
+    height: 27px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    gap: 5px;
+    background: #232522;
+    border-top: 1px solid #3a3e38;
+    flex-shrink: 0;
+  }
+  .timeline-footer .icon-button {
+    color: #8a8e86;
+    width: 23px;
+    height: 22px;
+  }
+  .timeline-hint {
+    font-size: 8px;
+    color: #747970;
+    letter-spacing: 0.15px;
+  }
+  .ticks-note {
+    font-size: 7px;
+    color: #868b82;
+  }
+  .graph-panel {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: #1d1f1c;
+  }
+  .graph-properties {
+    width: 220px;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    padding: 15px 15px;
+    border-right: 1px solid #3e423c;
+  }
+  .graph-properties > .upper {
+    font-size: 7px;
+  }
+  .graph-properties strong {
+    font-size: 11px;
+    font-weight: 400;
+    color: #c4c8c1;
+    margin: 9px 0 12px;
+  }
+  .graph-properties button {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 8px;
+    font-size: 9px;
+    color: #888c84;
+    border-radius: 3px;
+  }
+  .graph-properties button.active {
+    background: #3b3e39;
+    color: #d5d9d2;
+  }
+  .curve-container {
+    flex: 1;
+    min-width: 400px;
+    padding: 9px 18px;
+  }
+  @media (max-width: 1050px) {
+    .timeline-comp {
+      display: none;
+    }
+    .timeline-hint {
+      display: none;
+    }
+    .timeline-header {
+      gap: 4px;
+    }
+    .timeline-zoom {
+      width: 65px;
+    }
+  }
+</style>

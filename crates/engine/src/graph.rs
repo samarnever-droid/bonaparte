@@ -6,9 +6,9 @@
 //! (shader + params). Edges flow from inputs to consumers. Evaluation order
 //! is a topological sort; cycles are a hard error.
 
-use std::collections::{BTreeMap, BTreeSet};
 use bonaparte_model::{BlendMode, CompId, LayerId, LayerKind, Project, Property, Time};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub u32);
@@ -103,10 +103,7 @@ impl RenderGraph {
     /// so `topological_order` can assume a well-formed edge set.
     pub fn connect(&mut self, input: NodeId, consumer: NodeId) -> Result<(), GraphError> {
         if input.0 as usize >= self.nodes.len() || consumer.0 as usize >= self.nodes.len() {
-            return Err(GraphError::MissingInput {
-                consumer,
-                input,
-            });
+            return Err(GraphError::MissingInput { consumer, input });
         }
         self.nodes[consumer.0 as usize].inputs.push(input);
         Ok(())
@@ -144,9 +141,7 @@ impl RenderGraph {
             }
         }
 
-        let mut ready: BTreeSet<usize> = (0..n)
-            .filter(|&i| indegree[i] == 0)
-            .collect();
+        let mut ready: BTreeSet<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
         let mut order = Vec::with_capacity(n);
 
         while let Some(&i) = ready.iter().next() {
@@ -172,7 +167,9 @@ impl RenderGraph {
         comp_id: CompId,
         time: Time,
     ) -> Result<Self, GraphError> {
-        let comp = project.comp(comp_id).ok_or(GraphError::CompNotFound(comp_id))?;
+        let comp = project
+            .comp(comp_id)
+            .ok_or(GraphError::CompNotFound(comp_id))?;
         let mut graph = Self::new();
 
         // 1. Cycle detection on parent hierarchy
@@ -211,12 +208,22 @@ impl RenderGraph {
                             comp: *child_id,
                             time: child_time,
                         },
-                        vec![Property::Position, Property::Scale, Property::Rotation, Property::Opacity],
+                        vec![
+                            Property::Position,
+                            Property::Scale,
+                            Property::Rotation,
+                            Property::Opacity,
+                        ],
                     )
                 }
                 _ => graph.add_node(
                     NodeKind::Source { layer: layer.id },
-                    vec![Property::Position, Property::Scale, Property::Rotation, Property::Opacity],
+                    vec![
+                        Property::Position,
+                        Property::Scale,
+                        Property::Rotation,
+                        Property::Opacity,
+                    ],
                 ),
             };
 
@@ -245,7 +252,37 @@ impl RenderGraph {
             if !layer.visible_at(time) {
                 continue;
             }
-            let source_node = layer_source_nodes[&layer.id];
+            let mut source_node = if matches!(layer.kind, LayerKind::Adjustment {}) {
+                current_backdrop
+            } else {
+                layer_source_nodes[&layer.id]
+            };
+            for effect in layer.effects.iter().filter(|e| e.enabled) {
+                let params = effect
+                    .evaluated_params(time)
+                    .into_iter()
+                    .map(|(key, value)| {
+                        use bonaparte_model::EffectValue as V;
+                        let value = match value {
+                            V::Float(v) => EffectParamValue::Slider(v),
+                            V::Color(v) => EffectParamValue::Color(v),
+                            V::Point(v) => EffectParamValue::Point(v),
+                            V::Bool(v) => EffectParamValue::Checkbox(v),
+                            V::Index(v) => EffectParamValue::Dropdown(v),
+                        };
+                        (key, value)
+                    })
+                    .collect();
+                let node = graph.add_node(
+                    NodeKind::Effect {
+                        effect: effect.effect_id.clone(),
+                        params,
+                    },
+                    vec![],
+                );
+                graph.connect(source_node, node)?;
+                source_node = node;
+            }
 
             // Composite node takes backdrop and layer source as inputs
             let comp_node = graph.add_node(
@@ -328,10 +365,29 @@ mod tests {
     #[test]
     fn build_from_comp_creates_valid_topological_dag() {
         let mut p = Project::new("Comp Graph Test");
-        let c = p.create_comp("main", 1920, 1080, bonaparte_model::FrameRate::FPS_30, Time(100));
+        let c = p.create_comp(
+            "main",
+            1920,
+            1080,
+            bonaparte_model::FrameRate::FPS_30,
+            Time(100),
+        );
 
-        let l1 = p.insert_layer(c, bonaparte_model::Layer::new("l1", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(100)));
-        let mut l2 = bonaparte_model::Layer::new("l2", LayerKind::Solid { color: [0.5; 4] }, Time::ZERO, Time(100));
+        let l1 = p.insert_layer(
+            c,
+            bonaparte_model::Layer::new(
+                "l1",
+                LayerKind::Solid { color: [1.0; 4] },
+                Time::ZERO,
+                Time(100),
+            ),
+        );
+        let mut l2 = bonaparte_model::Layer::new(
+            "l2",
+            LayerKind::Solid { color: [0.5; 4] },
+            Time::ZERO,
+            Time(100),
+        );
         l2.parent = Some(l1);
         l2.blend_mode = BlendMode::Multiply;
         let l2_id = p.insert_layer(c, l2);

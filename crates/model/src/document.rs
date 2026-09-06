@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::effect::EffectInstance;
 use crate::ids::{CompId, LayerId, MediaId};
 use crate::keyframe::{PropValue, Track};
 use crate::time::{FrameRate, Time};
@@ -108,6 +109,9 @@ pub struct Layer {
     /// Lock toggle preventing accidental edits.
     #[serde(default)]
     pub locked: bool,
+    /// Ordered, non-destructive filter stack; absent in v0.1 files.
+    #[serde(default)]
+    pub effects: Vec<EffectInstance>,
 }
 
 impl Layer {
@@ -124,15 +128,22 @@ impl Layer {
             blend_mode: BlendMode::Normal,
             visible: true,
             locked: false,
+            effects: Vec::new(),
         }
     }
 
-    pub fn new_circle(name: impl Into<String>, color: [f32; 4], start: Time, duration: Time) -> Self {
+    pub fn new_circle(
+        name: impl Into<String>,
+        color: [f32; 4],
+        start: Time,
+        duration: Time,
+    ) -> Self {
         Self::new(
             name,
             LayerKind::Shape {
                 color,
                 generator: Some("builtin.circle".into()),
+                style: ShapeStyle::default(),
             },
             start,
             duration,
@@ -145,18 +156,39 @@ impl Layer {
             LayerKind::Shape {
                 color,
                 generator: None,
+                style: ShapeStyle::default(),
             },
             start,
             duration,
         )
     }
 
-    pub fn new_solid(name: impl Into<String>, color: [f32; 4], start: Time, duration: Time) -> Self {
+    pub fn new_solid(
+        name: impl Into<String>,
+        color: [f32; 4],
+        start: Time,
+        duration: Time,
+    ) -> Self {
         Self::new(name, LayerKind::Solid { color }, start, duration)
     }
 
-    pub fn new_text(name: impl Into<String>, text: impl Into<String>, size: f32, start: Time, duration: Time) -> Self {
-        Self::new(name, LayerKind::Text { text: text.into(), size }, start, duration)
+    pub fn new_text(
+        name: impl Into<String>,
+        text: impl Into<String>,
+        size: f32,
+        start: Time,
+        duration: Time,
+    ) -> Self {
+        Self::new(
+            name,
+            LayerKind::Text {
+                text: text.into(),
+                size,
+                style: TextStyle::default(),
+            },
+            start,
+            duration,
+        )
     }
 }
 
@@ -297,15 +329,66 @@ pub enum LayerKind {
         color: [f32; 4],
         #[serde(default)]
         generator: Option<String>,
+        #[serde(default)]
+        style: ShapeStyle,
     },
     Text {
         text: String,
         size: f32,
+        #[serde(default)]
+        style: TextStyle,
     },
     /// A clip or still from the media library.
     Footage { media: MediaId },
     /// A nested composition ("Group into Comp").
     PreComp { comp: CompId },
+    /// Filters all layers below it; opacity mixes the original and filtered images.
+    Adjustment {},
+}
+
+/// Natural shape geometry, independent of composition dimensions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShapeStyle {
+    pub size: Option<[f32; 2]>,
+    pub corner_radius: f32,
+    pub stroke_width: f32,
+    pub stroke_color: [f32; 4],
+}
+impl Default for ShapeStyle {
+    fn default() -> Self {
+        Self {
+            size: None,
+            corner_radius: 0.0,
+            stroke_width: 0.0,
+            stroke_color: [1.0; 4],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextStyle {
+    pub color: [f32; 4],
+    pub bold: bool,
+    pub tracking: f32,
+}
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            color: [1.0; 4],
+            bold: false,
+            tracking: 0.0,
+        }
+    }
+}
+
+/// Portable image pixels. The native host validates and decodes base64 once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba_base64: String,
 }
 
 /// An asset in the media library. `slot` marks it as a template placeholder
@@ -319,6 +402,8 @@ pub struct MediaAsset {
     /// Where the media lives on disk. `None` for unfilled template slots.
     pub path: Option<String>,
     pub kind: MediaKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded: Option<EmbeddedImage>,
     /// If present, this asset is a template placeholder slot the user fills
     /// with their own media.
     pub slot: Option<SlotDef>,

@@ -17,10 +17,7 @@ pub enum ProxyError {
         source: std::io::Error,
     },
     #[error("FFmpeg proxy transcode failed for {path}: {message}")]
-    TranscodeFailed {
-        path: PathBuf,
-        message: String,
-    },
+    TranscodeFailed { path: PathBuf, message: String },
     #[error("Proxy output file was not created or empty at {0}")]
     EmptyOutput(PathBuf),
 }

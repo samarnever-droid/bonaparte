@@ -124,6 +124,7 @@ fn test_op_apply_and_history_undo_redo() {
         blend_mode: BlendMode::Normal,
         visible: true,
         locked: false,
+        effects: Default::default(),
         transform: StaticTransform::default(),
         tracks: Default::default(),
     };
@@ -134,7 +135,11 @@ fn test_op_apply_and_history_undo_redo() {
     };
 
     let apply_res = execute_tool(&mut session, "op.apply", json!({ "op": op }));
-    assert!(!apply_res.is_error, "Failed to apply Op: {:?}", apply_res.content);
+    assert!(
+        !apply_res.is_error,
+        "Failed to apply Op: {:?}",
+        apply_res.content
+    );
 
     // Verify layer is present
     let comp = session.project.comp(comp_id).unwrap();
@@ -186,12 +191,12 @@ fn test_ops_propose_dry_run_does_not_mutate_session() {
         name: "Renamed Layer 1".to_string(),
     };
 
-    let propose_res = execute_tool(
-        &mut session,
-        "ops.propose",
-        json!({ "ops": [op1, op2] }),
+    let propose_res = execute_tool(&mut session, "ops.propose", json!({ "ops": [op1, op2] }));
+    assert!(
+        !propose_res.is_error,
+        "Propose failed: {:?}",
+        propose_res.content
     );
-    assert!(!propose_res.is_error, "Propose failed: {:?}", propose_res.content);
     let val: serde_json::Value = serde_json::from_str(&propose_res.content[0].text).unwrap();
     assert_eq!(val["valid"], true);
     assert_eq!(val["applied_count"], 2);
@@ -205,7 +210,12 @@ fn test_ops_propose_dry_run_does_not_mutate_session() {
         "ops.propose must be pure dry-run and not mutate the active session"
     );
     assert!(
-        !session.project.comp(comp_id).unwrap().layers.contains_key(&expected_allocated_id),
+        !session
+            .project
+            .comp(comp_id)
+            .unwrap()
+            .layers
+            .contains_key(&expected_allocated_id),
         "Proposed layer must not exist in live session"
     );
 }
@@ -227,6 +237,7 @@ fn test_project_save_and_open_roundtrip() {
         blend_mode: BlendMode::Normal,
         visible: true,
         locked: false,
+        effects: Default::default(),
         transform: StaticTransform::default(),
         tracks: Default::default(),
     };
@@ -282,6 +293,7 @@ fn test_comp_render_single_png() {
         blend_mode: BlendMode::Normal,
         visible: true,
         locked: false,
+        effects: Default::default(),
         transform: StaticTransform::default(),
         tracks: Default::default(),
     };
@@ -308,7 +320,11 @@ fn test_comp_render_single_png() {
             "output_path": out_str
         }),
     );
-    assert!(!render_res.is_error, "comp.render failed: {:?}", render_res.content);
+    assert!(
+        !render_res.is_error,
+        "comp.render failed: {:?}",
+        render_res.content
+    );
 
     assert!(out_png.exists(), "PNG file must exist");
     let bytes = fs::read(&out_png).unwrap();

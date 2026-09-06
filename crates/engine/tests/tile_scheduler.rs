@@ -60,12 +60,7 @@ fn test_viewport_stitching_matches_full_frame() {
     p.comps.get_mut(&c).unwrap().background = [0.05, 0.05, 0.05, 1.0];
 
     // Layer 1: Green shape at center (300, 200) of size 200x200
-    let mut green = Layer::new_rect(
-        "green",
-        [0.0, 1.0, 0.0, 1.0],
-        Time::ZERO,
-        Time(100),
-    );
+    let mut green = Layer::new_rect("green", [0.0, 1.0, 0.0, 1.0], Time::ZERO, Time(100));
     green.transform.scale = [33.33, 50.0];
     p.insert_layer(c, green);
 

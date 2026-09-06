@@ -1,0 +1,27 @@
+api_version = "1.0"
+id = "builtin.gradient"
+name = "Gradient Ramp"
+category = "Color correction"
+cost = "light"
+shader = "gradient.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "start_color"
+name = "Start color"
+doc = "The first display-referred sRGB color. Gradient alpha multiplies source alpha."
+kind = { Color = { default = [0.70, 0.88, 0.55, 1.0] } }
+
+[[params]]
+id = "end_color"
+name = "End color"
+doc = "The second display-referred sRGB color."
+kind = { Color = { default = [0.18, 0.37, 0.31, 1.0] } }
+
+[[params]]
+id = "angle"
+name = "Angle"
+doc = "Gradient direction in degrees, in composition space."
+step = 1.0
+unit = "°"
+kind = { Slider = { min = -180.0, max = 180.0, default = 90.0 } }

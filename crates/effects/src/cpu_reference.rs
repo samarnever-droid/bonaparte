@@ -29,12 +29,20 @@ impl CpuFrame {
         for _ in 0..(width * height) {
             rgba.extend_from_slice(&color);
         }
-        Self { width, height, rgba }
+        Self {
+            width,
+            height,
+            rgba,
+        }
     }
 
     pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         assert_eq!(rgba.len(), (width * height * 4) as usize);
-        Self { width, height, rgba }
+        Self {
+            width,
+            height,
+            rgba,
+        }
     }
 
     #[inline]
@@ -43,7 +51,12 @@ impl CpuFrame {
             return [0, 0, 0, 0];
         }
         let i = ((y * self.width + x) * 4) as usize;
-        [self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3]]
+        [
+            self.rgba[i],
+            self.rgba[i + 1],
+            self.rgba[i + 2],
+            self.rgba[i + 3],
+        ]
     }
 
     #[inline]
@@ -130,118 +143,100 @@ pub enum CpuEvalError {
     UnknownEffect(String),
     #[error("Parameter {0} missing or wrong type")]
     InvalidParam(String),
+    #[error("Effect {0} has no CPU evaluator; GPU execution is not available in this host")]
+    UnsupportedBackend(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParamValue {
-    Float(f32),
-    Bool(bool),
-    Color([f32; 4]),
-    Point([f32; 2]),
-    Index(usize),
-}
+pub use bonaparte_model::EffectValue as ParamValue;
 
 fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-pub fn evaluate_glow(
-    input: &CpuFrame,
-    radius: f32,
-    intensity: f32,
-    tint: [f32; 4],
-) -> CpuFrame {
-    let mut out = CpuFrame::new(input.width, input.height);
-    let texel_x = 1.0 / input.width as f32;
-    let texel_y = 1.0 / input.height as f32;
-
-    for y in 0..input.height {
-        let v = (y as f32 + 0.5) * texel_y;
-        for x in 0..input.width {
-            let u = (x as f32 + 0.5) * texel_x;
-            let src = input.sample_uv(u, v, false);
-
-            let mut halo = [0.0f32; 4];
-            for d in 0..4 {
-                let dx = ((d & 1) * 2 - 1) as f32;
-                let dy = (((d & 2) * 2 - 1) as f32) * 0.5;
-                let su = u + dx * radius * texel_x;
-                let sv = v + dy * radius * texel_y;
-                let sample = input.sample_uv(su, sv, false);
-                for c in 0..4 {
-                    halo[c] += sample[c];
-                }
-            }
-
-            for c in 0..3 {
-                halo[c] = (halo[c] / 4.0) * tint[c] * intensity;
-            }
-            halo[3] = (halo[3] / 4.0) * tint[3] * intensity;
-
-            let out_r = src[0].max(halo[0]);
-            let out_g = src[1].max(halo[1]);
-            let out_b = src[2].max(halo[2]);
-            let out_a = src[3];
-
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(out_r),
-                    f32_to_u8(out_g),
-                    f32_to_u8(out_b),
-                    f32_to_u8(out_a),
-                ],
-            );
+/// Alpha-aware Gaussian glow. Halos contribute alpha outside the original silhouette.
+pub fn evaluate_glow(input: &CpuFrame, radius: f32, intensity: f32, tint: [f32; 4]) -> CpuFrame {
+    if intensity <= 0.0 {
+        return input.clone();
+    }
+    let halo = evaluate_blur(input, radius, false);
+    let mut out = input.clone();
+    for (i, pixel) in out.rgba.chunks_exact_mut(4).enumerate() {
+        let src = &input.rgba[i * 4..i * 4 + 4];
+        let glow = &halo.rgba[i * 4..i * 4 + 4];
+        let sa = src[3] as f32 / 255.0;
+        let ha = (glow[3] as f32 / 255.0 * intensity * tint[3]).clamp(0.0, 1.0);
+        let alpha = sa + ha * (1.0 - sa);
+        for ch in 0..3 {
+            let value = if alpha > 0.0 {
+                (src[ch] as f32 / 255.0 * sa + glow[ch] as f32 / 255.0 * tint[ch] * ha) / alpha
+            } else {
+                0.0
+            };
+            pixel[ch] = f32_to_u8(value);
         }
+        pixel[3] = f32_to_u8(alpha);
     }
     out
 }
 
+/// Separable convolution: O(width × height × radius), rather than radius².
+/// Filters premultiplied RGB/alpha and unpremultiplies only at the output edge.
 pub fn evaluate_blur(input: &CpuFrame, radius: f32, repeat_edge: bool) -> CpuFrame {
-    if radius <= 0.0 {
+    if radius <= 0.0 || input.width == 0 || input.height == 0 {
         return input.clone();
     }
-
-    let mut out = CpuFrame::new(input.width, input.height);
-    let texel_x = 1.0 / input.width as f32;
-    let texel_y = 1.0 / input.height as f32;
-    let r = radius.ceil().max(1.0) as i32;
+    let radius = radius.min(100.0);
+    let r = radius.ceil() as i32;
     let sigma = (radius * 0.5).max(0.5);
-    let two_sigma_sq = 2.0 * sigma * sigma;
-
-    for y in 0..input.height {
-        let v = (y as f32 + 0.5) * texel_y;
-        for x in 0..input.width {
-            let u = (x as f32 + 0.5) * texel_x;
-            let mut acc = [0.0f32; 4];
-            let mut total_weight = 0.0f32;
-
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let dist_sq = (dx * dx + dy * dy) as f32;
-                    let weight = (-dist_sq / two_sigma_sq).exp();
-                    let su = u + dx as f32 * texel_x;
-                    let sv = v + dy as f32 * texel_y;
-                    let sample = input.sample_uv(su, sv, repeat_edge);
-
-                    for c in 0..4 {
-                        acc[c] += sample[c] * weight;
-                    }
-                    total_weight += weight;
+    let mut kernel: Vec<f32> = (-r..=r)
+        .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let sum: f32 = kernel.iter().sum();
+    for weight in &mut kernel {
+        *weight /= sum;
+    }
+    let w = input.width as i32;
+    let h = input.height as i32;
+    let mut horizontal = vec![[0.0f32; 4]; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0.0; 4];
+            for (k, weight) in kernel.iter().enumerate() {
+                let sx = x + k as i32 - r;
+                if !repeat_edge && (sx < 0 || sx >= w) {
+                    continue;
+                }
+                let i = ((y * w + sx.clamp(0, w - 1)) * 4) as usize;
+                let alpha = input.rgba[i + 3] as f32 / 255.0;
+                for ch in 0..3 {
+                    acc[ch] += input.rgba[i + ch] as f32 / 255.0 * alpha * weight;
+                }
+                acc[3] += alpha * weight;
+            }
+            horizontal[(y * w + x) as usize] = acc;
+        }
+    }
+    let mut out = CpuFrame::new(input.width, input.height);
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0.0; 4];
+            for (k, weight) in kernel.iter().enumerate() {
+                let sy = y + k as i32 - r;
+                if !repeat_edge && (sy < 0 || sy >= h) {
+                    continue;
+                }
+                let pixel = horizontal[(sy.clamp(0, h - 1) * w + x) as usize];
+                for ch in 0..4 {
+                    acc[ch] += pixel[ch] * weight;
                 }
             }
-
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(acc[0] / total_weight),
-                    f32_to_u8(acc[1] / total_weight),
-                    f32_to_u8(acc[2] / total_weight),
-                    f32_to_u8(acc[3] / total_weight),
-                ],
-            );
+            let i = ((y * w + x) * 4) as usize;
+            if acc[3] > 0.000001 {
+                for ch in 0..3 {
+                    out.rgba[i + ch] = f32_to_u8(acc[ch] / acc[3]);
+                }
+            }
+            out.rgba[i + 3] = f32_to_u8(acc[3]);
         }
     }
     out
@@ -255,63 +250,28 @@ pub fn evaluate_drop_shadow(
     color: [f32; 4],
     opacity: f32,
 ) -> CpuFrame {
-    let mut out = CpuFrame::new(input.width, input.height);
-    let texel_x = 1.0 / input.width as f32;
-    let texel_y = 1.0 / input.height as f32;
-    let offset_u = offset_x * texel_x;
-    let offset_v = offset_y * texel_y;
-
+    let blurred = evaluate_blur(input, radius, false);
+    let mut out = input.clone();
     for y in 0..input.height {
-        let v = (y as f32 + 0.5) * texel_y;
         for x in 0..input.width {
-            let u = (x as f32 + 0.5) * texel_x;
-            let src = input.sample_uv(u, v, false);
-            let shadow_u = u - offset_u;
-            let shadow_v = v - offset_v;
-
-            let shadow_alpha = if radius <= 0.0 {
-                input.sample_uv(shadow_u, shadow_v, false)[3]
-            } else {
-                let r = radius.ceil().max(1.0) as i32;
-                let sigma = (radius * 0.5).max(0.5);
-                let two_sigma_sq = 2.0 * sigma * sigma;
-                let mut acc = 0.0f32;
-                let mut total_weight = 0.0f32;
-
-                for dy in -r..=r {
-                    for dx in -r..=r {
-                        let dist_sq = (dx * dx + dy * dy) as f32;
-                        let weight = (-dist_sq / two_sigma_sq).exp();
-                        let su = shadow_u + dx as f32 * texel_x;
-                        let sv = shadow_v + dy as f32 * texel_y;
-                        let sample_a = input.sample_uv(su, sv, false)[3];
-                        acc += sample_a * weight;
-                        total_weight += weight;
-                    }
-                }
-                acc / total_weight
-            };
-
-            let final_shadow_alpha = shadow_alpha * color[3] * opacity;
-            let shadow_r = color[0] * final_shadow_alpha;
-            let shadow_g = color[1] * final_shadow_alpha;
-            let shadow_b = color[2] * final_shadow_alpha;
-
-            let out_r = src[0] + shadow_r * (1.0 - src[3]);
-            let out_g = src[1] + shadow_g * (1.0 - src[3]);
-            let out_b = src[2] + shadow_b * (1.0 - src[3]);
-            let out_a = src[3] + final_shadow_alpha * (1.0 - src[3]);
-
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(out_r),
-                    f32_to_u8(out_g),
-                    f32_to_u8(out_b),
-                    f32_to_u8(out_a),
-                ],
-            );
+            let uv = [
+                (x as f32 + 0.5 - offset_x) / input.width as f32,
+                (y as f32 + 0.5 - offset_y) / input.height as f32,
+            ];
+            let shadow = blurred.sample_uv_bilinear(uv[0], uv[1], false)[3] * color[3] * opacity;
+            let i = ((y * input.width + x) * 4) as usize;
+            let alpha = input.rgba[i + 3] as f32 / 255.0;
+            let out_alpha = alpha + shadow * (1.0 - alpha);
+            for ch in 0..3 {
+                let v = if out_alpha > 0.0 {
+                    (input.rgba[i + ch] as f32 / 255.0 * alpha + color[ch] * shadow * (1.0 - alpha))
+                        / out_alpha
+                } else {
+                    0.0
+                };
+                out.rgba[i + ch] = f32_to_u8(v);
+            }
+            out.rgba[i + 3] = f32_to_u8(out_alpha);
         }
     }
     out
@@ -497,11 +457,7 @@ pub fn evaluate_vignette(
     out
 }
 
-pub fn evaluate_chromatic_aberration(
-    input: &CpuFrame,
-    amount: f32,
-    angle: f32,
-) -> CpuFrame {
+pub fn evaluate_chromatic_aberration(input: &CpuFrame, amount: f32, angle: f32) -> CpuFrame {
     if amount <= 0.0 {
         return input.clone();
     }
@@ -652,191 +608,87 @@ pub fn evaluate_directional_blur(input: &CpuFrame, length: f32, angle: f32) -> C
     out
 }
 
+/// Evaluate any registered built-in through the same public registry path as plugins.
 pub fn evaluate_effect(
     effect_id: &str,
     input: &CpuFrame,
     params: &HashMap<String, ParamValue>,
 ) -> Result<CpuFrame, CpuEvalError> {
-    match effect_id {
-        "builtin.glow" => {
-            let radius = match params.get("radius") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 12.0,
-            };
-            let intensity = match params.get("intensity") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let tint = match params.get("tint") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [1.0, 1.0, 1.0, 1.0],
-            };
-            Ok(evaluate_glow(input, radius, intensity, tint))
-        }
-        "builtin.blur" => {
-            let radius = match params.get("radius") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 10.0,
-            };
-            let repeat_edge = match params.get("repeat_edge") {
-                Some(ParamValue::Bool(b)) => *b,
-                _ => true,
-            };
-            Ok(evaluate_blur(input, radius, repeat_edge))
-        }
-        "builtin.drop_shadow" => {
-            let offset_x = match params.get("offset_x") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 10.0,
-            };
-            let offset_y = match params.get("offset_y") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 10.0,
-            };
-            let radius = match params.get("radius") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 15.0,
-            };
-            let color = match params.get("color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [0.0, 0.0, 0.0, 0.75],
-            };
-            let opacity = match params.get("opacity") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.75,
-            };
-            Ok(evaluate_drop_shadow(input, offset_x, offset_y, radius, color, opacity))
-        }
-        "builtin.color_adjust" => {
-            let brightness = match params.get("brightness") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            let contrast = match params.get("contrast") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let saturation = match params.get("saturation") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let hue_shift = match params.get("hue_shift") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            Ok(evaluate_color_adjust(input, brightness, contrast, saturation, hue_shift))
-        }
-        "builtin.transform" => {
-            let offset_x = match params.get("offset_x") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            let offset_y = match params.get("offset_y") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            let scale_x = match params.get("scale_x") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let scale_y = match params.get("scale_y") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let rotation = match params.get("rotation") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            Ok(evaluate_transform(input, offset_x, offset_y, scale_x, scale_y, rotation))
-        }
-        "builtin.vignette" => {
-            let radius = match params.get("radius") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.75,
-            };
-            let softness = match params.get("softness") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.45,
-            };
-            let intensity = match params.get("intensity") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.8,
-            };
-            let color = match params.get("color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [0.0, 0.0, 0.0, 1.0],
-            };
-            Ok(evaluate_vignette(input, radius, softness, intensity, color))
-        }
+    crate::registry::builtin_registry().evaluate(effect_id, input, params)
+}
+
+/// Algorithm dispatch is confined to the first-party plugin pack, never the engine.
+/// The registry injects defaults and validates every field before this callback.
+pub(crate) fn evaluate_builtin(
+    effect_id: &str,
+    input: &CpuFrame,
+    p: &HashMap<String, ParamValue>,
+) -> Result<CpuFrame, CpuEvalError> {
+    let f = |id: &str| match p[id] {
+        ParamValue::Float(v) => v,
+        _ => unreachable!("validated slider"),
+    };
+    let c = |id: &str| match p[id] {
+        ParamValue::Color(v) => v,
+        _ => unreachable!("validated color"),
+    };
+    let b = |id: &str| match p[id] {
+        ParamValue::Bool(v) => v,
+        _ => unreachable!("validated checkbox"),
+    };
+    Ok(match effect_id {
+        "builtin.glow" => evaluate_glow(input, f("radius"), f("intensity"), c("tint")),
+        "builtin.blur" => evaluate_blur(input, f("radius"), b("repeat_edge")),
+        "builtin.drop_shadow" => evaluate_drop_shadow(
+            input,
+            f("offset_x"),
+            f("offset_y"),
+            f("radius"),
+            c("color"),
+            f("opacity"),
+        ),
+        "builtin.color_adjust" => evaluate_color_adjust(
+            input,
+            f("brightness"),
+            f("contrast"),
+            f("saturation"),
+            f("hue_shift"),
+        ),
+        "builtin.transform" => evaluate_transform(
+            input,
+            f("offset_x"),
+            f("offset_y"),
+            f("scale_x"),
+            f("scale_y"),
+            f("rotation"),
+        ),
+        "builtin.vignette" => evaluate_vignette(
+            input,
+            f("radius"),
+            f("softness"),
+            f("intensity"),
+            c("color"),
+        ),
         "builtin.chromatic_aberration" => {
-            let amount = match params.get("amount") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 5.0,
-            };
-            let angle = match params.get("angle") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            Ok(evaluate_chromatic_aberration(input, amount, angle))
+            evaluate_chromatic_aberration(input, f("amount"), f("angle"))
         }
-        "builtin.invert" => {
-            let amount = match params.get("amount") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let invert_alpha = match params.get("invert_alpha") {
-                Some(ParamValue::Bool(b)) => *b,
-                _ => false,
-            };
-            Ok(evaluate_invert(input, amount, invert_alpha))
+        "builtin.invert" => evaluate_invert(input, f("amount"), b("invert_alpha")),
+        "builtin.tint" => evaluate_tint(input, c("black_color"), c("white_color"), f("amount")),
+        "builtin.directional_blur" => evaluate_directional_blur(input, f("length"), f("angle")),
+        "builtin.circle" => evaluate_circle(
+            input.width,
+            input.height,
+            c("color"),
+            f("radius"),
+            c("stroke_color"),
+            f("stroke_width"),
+        ),
+        "builtin.color_grade" => crate::grading::grade(input, p),
+        "builtin.gradient" => {
+            crate::grading::gradient(input, c("start_color"), c("end_color"), f("angle"))
         }
-        "builtin.tint" => {
-            let black = match params.get("black_color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [0.0, 0.0, 0.0, 1.0],
-            };
-            let white = match params.get("white_color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [1.0, 1.0, 1.0, 1.0],
-            };
-            let amount = match params.get("amount") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            Ok(evaluate_tint(input, black, white, amount))
-        }
-        "builtin.directional_blur" => {
-            let length = match params.get("length") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 20.0,
-            };
-            let angle = match params.get("angle") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            Ok(evaluate_directional_blur(input, length, angle))
-        }
-        "builtin.circle" => {
-            let color = match params.get("color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [1.0, 1.0, 1.0, 1.0],
-            };
-            let radius = match params.get("radius") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 1.0,
-            };
-            let stroke_color = match params.get("stroke_color") {
-                Some(ParamValue::Color(c)) => *c,
-                _ => [0.42, 0.54, 1.0, 1.0],
-            };
-            let stroke_width = match params.get("stroke_width") {
-                Some(ParamValue::Float(f)) => *f,
-                _ => 0.0,
-            };
-            Ok(evaluate_circle(input.width, input.height, color, radius, stroke_color, stroke_width))
-        }
-        _ => Err(CpuEvalError::UnknownEffect(effect_id.to_string())),
-    }
+        _ => return Err(CpuEvalError::UnknownEffect(effect_id.into())),
+    })
 }
 
 /// Evaluates the vector circle shape generator.
@@ -871,7 +723,8 @@ pub fn evaluate_circle(
             if stroke_width > 0.0 {
                 let sw_norm = (stroke_width * 2.0) / min_dim;
                 if dist >= r - sw_norm - edge_w {
-                    let stroke_cov = ((dist - (r - sw_norm - edge_w)) / (2.0 * edge_w)).clamp(0.0, 1.0);
+                    let stroke_cov =
+                        ((dist - (r - sw_norm - edge_w)) / (2.0 * edge_w)).clamp(0.0, 1.0);
                     for c in 0..4 {
                         final_col[c] = color[c] * (1.0 - stroke_cov) + stroke_color[c] * stroke_cov;
                     }

@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.invert"
 name = "Invert"
+category = "Color correction"
 cost = "light"
 shader = "invert.wgsl"
 inputs = ["input"]

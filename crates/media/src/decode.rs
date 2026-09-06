@@ -19,10 +19,7 @@ pub enum DecodeError {
         source: std::io::Error,
     },
     #[error("FFmpeg decode process failed for {path}: {message}")]
-    ProcessFailed {
-        path: PathBuf,
-        message: String,
-    },
+    ProcessFailed { path: PathBuf, message: String },
     #[error("Incomplete frame decoded: expected {expected} bytes ({width}x{height} RGBA), got {actual} bytes")]
     IncompleteFrame {
         expected: usize,
@@ -42,7 +39,11 @@ pub struct DecodedFrame {
 
 impl DecodedFrame {
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        Self { width, height, rgba }
+        Self {
+            width,
+            height,
+            rgba,
+        }
     }
 
     pub fn byte_len(&self) -> usize {
@@ -78,15 +79,16 @@ pub fn decode_frame(
         cmd.arg("-ss").arg(format!("{:.3}", sec));
     }
 
-    cmd.arg("-i").arg(path)
-        .arg("-frames:v").arg("1");
+    cmd.arg("-i").arg(path).arg("-frames:v").arg("1");
 
     if width > 0 && height > 0 {
         cmd.arg("-s").arg(format!("{}x{}", width, height));
     }
 
-    cmd.arg("-f").arg("rawvideo")
-        .arg("-pix_fmt").arg("rgba")
+    cmd.arg("-f")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("rgba")
         .arg("-")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

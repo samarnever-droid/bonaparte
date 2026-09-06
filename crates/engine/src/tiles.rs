@@ -1,18 +1,14 @@
-//! The tile scheduler — the heart of the 8GB memory promise.
+//! Tile grid and viewport culling utilities.
 //!
-//! A full-resolution frame never lives in RAM unless it is being displayed
-//! right now (ARCHITECTURE.md). Rendering happens per-tile: 256×256 regions
-//! evaluated on demand for the viewport only. The compositor asks this grid
-//! which tiles are visible; each tile is rendered independently, so peak
-//! memory is O(viewport), not O(comp size × passes).
+//! Unfiltered compositions can render individual 256×256 regions. Compositions
+//! containing effects use a full-frame reference render followed by a crop, so
+//! neighborhood filters do not produce tile seams. ROI/halo propagation, a shared
+//! filtered-frame cache, and bounded GPU memory scheduling remain future work.
 
 use bonaparte_model::{BlendMode, Comp, CompId, Layer, LayerKind, Project, Time};
 use serde::{Deserialize, Serialize};
 
-use crate::reference::{
-    draw_layer, Frame, MediaFrames, RenderError,
-    Affine2D,
-};
+use crate::reference::{draw_layer, Affine2D, Frame, MediaFrames, RenderError};
 
 /// Tile edge length in pixels. 256 balances upload overhead vs eviction
 /// granularity on integrated GPUs (shared memory, hard budgets).
@@ -152,13 +148,7 @@ impl TileGrid {
     /// The tiles intersecting a viewport rectangle, clamped to the comp
     /// bounds. Deterministic order: row-major, top-left first — the same
     /// order the compositor evicts from (first-requested, first-cached).
-    pub fn tiles_for_viewport(
-        &self,
-        vx: u32,
-        vy: u32,
-        vw: u32,
-        vh: u32,
-    ) -> Vec<Tile> {
+    pub fn tiles_for_viewport(&self, vx: u32, vy: u32, vw: u32, vh: u32) -> Vec<Tile> {
         if vx >= self.width || vy >= self.height {
             return Vec::new();
         }
@@ -188,8 +178,15 @@ impl TileGrid {
         }
 
         let (layer_w, layer_h) = match &layer.kind {
-            LayerKind::Solid { .. } => (comp.width as f32, comp.height as f32),
-            LayerKind::Shape { .. } => (comp.width as f32, comp.height as f32),
+            LayerKind::Adjustment {} | LayerKind::Solid { .. } => {
+                (comp.width as f32, comp.height as f32)
+            }
+            LayerKind::Shape { style, .. } => {
+                let size = style
+                    .size
+                    .unwrap_or([comp.width as f32, comp.height as f32]);
+                (size[0], size[1])
+            }
             LayerKind::Footage { media } => {
                 if let Some(view) = frames.frame_rgba(*media, time) {
                     (view.width as f32, view.height as f32)
@@ -197,10 +194,9 @@ impl TileGrid {
                     (comp.width as f32, comp.height as f32)
                 }
             }
-            LayerKind::Text { text, size } => {
-                let s = size / 8.0;
-                let tw = text.len() as f32 * 8.0 * s;
-                (tw.max(1.0), size.max(1.0))
+            LayerKind::Text { text, size, style } => {
+                let size = crate::typography::measure_text(text, *size, style.bold, style.tracking);
+                (size[0], size[1])
             }
             LayerKind::PreComp { .. } => (comp.width as f32, comp.height as f32),
         };
@@ -268,8 +264,9 @@ impl TileGrid {
 
 /// Render a single 256×256 tile of a composition at `time`.
 ///
-/// Peak memory is strictly O(1) relative to total composition size —
-/// exactly 256×256×4 bytes = 256 KB.
+/// Unfiltered scenes allocate a tile. Filtered scenes use a full-frame fallback
+/// to preserve neighborhood sampling and adjustment-layer correctness.
+/// Effect-aware region-of-interest scheduling is a future optimization.
 pub fn render_tile(
     project: &Project,
     comp_id: CompId,
@@ -277,13 +274,19 @@ pub fn render_tile(
     time: Time,
     frames: &dyn MediaFrames,
 ) -> Result<TileFrame, RenderError> {
-    let comp = project.comp(comp_id).ok_or(RenderError::CompNotFound(comp_id))?;
+    let comp = project
+        .comp(comp_id)
+        .ok_or(RenderError::CompNotFound(comp_id))?;
     let grid = TileGrid::new(comp.width, comp.height);
 
     if tile.x >= grid.grid_width() || tile.y >= grid.grid_height() {
         return Ok(TileFrame::new(tile, 0, 0));
     }
 
+    if needs_full_frame_effects(project) {
+        let frame = crate::reference::render_comp(project, comp_id, time, frames)?;
+        return Ok(crop_tile(&frame, tile));
+    }
     let rect = grid.tile_rect(tile);
     let tile_w = rect.width as u32;
     let tile_h = rect.height as u32;
@@ -340,10 +343,19 @@ pub fn render_viewport_tiles(
     time: Time,
     frames: &dyn MediaFrames,
 ) -> Result<Vec<TileFrame>, RenderError> {
-    let comp = project.comp(comp_id).ok_or(RenderError::CompNotFound(comp_id))?;
+    let comp = project
+        .comp(comp_id)
+        .ok_or(RenderError::CompNotFound(comp_id))?;
     let grid = TileGrid::new(comp.width, comp.height);
     let tiles = grid.tiles_for_viewport(vx, vy, vw, vh);
 
+    if needs_full_frame_effects(project) {
+        let frame = crate::reference::render_comp(project, comp_id, time, frames)?;
+        return Ok(tiles
+            .into_iter()
+            .map(|tile| crop_tile(&frame, tile))
+            .collect());
+    }
     let mut result = Vec::with_capacity(tiles.len());
     for tile in tiles {
         let tile_frame = render_tile(project, comp_id, tile, time, frames)?;
@@ -364,7 +376,9 @@ pub fn render_viewport(
     time: Time,
     frames: &dyn MediaFrames,
 ) -> Result<Frame, RenderError> {
-    let comp = project.comp(comp_id).ok_or(RenderError::CompNotFound(comp_id))?;
+    let comp = project
+        .comp(comp_id)
+        .ok_or(RenderError::CompNotFound(comp_id))?;
     let mut out_frame = Frame::filled(vw, vh, comp.background);
     let tiles = render_viewport_tiles(project, comp_id, vx, vy, vw, vh, time, frames)?;
 
@@ -433,7 +447,14 @@ mod tests {
         let c = p.create_comp("c", 300, 300, bonaparte_model::FrameRate::FPS_30, Time(100));
         p.comps.get_mut(&c).unwrap().background = [0.1, 0.2, 0.3, 1.0];
 
-        let mut red_layer = Layer::new("red", LayerKind::Solid { color: [1.0, 0.0, 0.0, 1.0] }, Time::ZERO, Time(100));
+        let mut red_layer = Layer::new(
+            "red",
+            LayerKind::Solid {
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            Time::ZERO,
+            Time(100),
+        );
         red_layer.transform = StaticTransform::default();
         p.insert_layer(c, red_layer);
 
@@ -444,4 +465,25 @@ mod tests {
         assert_eq!(tile0.height, 256);
         assert_eq!(tile0.pixel(10, 10), full.pixel(10, 10));
     }
+}
+
+fn needs_full_frame_effects(project: &Project) -> bool {
+    project
+        .comps
+        .values()
+        .flat_map(|c| c.layers.values())
+        .any(|l| l.effects.iter().any(|e| e.enabled))
+}
+fn crop_tile(frame: &Frame, tile: Tile) -> TileFrame {
+    let x = tile.x * TILE_SIZE;
+    let y = tile.y * TILE_SIZE;
+    let w = frame.width.saturating_sub(x).min(TILE_SIZE);
+    let h = frame.height.saturating_sub(y).min(TILE_SIZE);
+    let mut out = TileFrame::new(tile, w, h);
+    for row in 0..h {
+        let i = (((y + row) * frame.width + x) * 4) as usize;
+        let d = (row * w * 4) as usize;
+        out.rgba[d..d + w as usize * 4].copy_from_slice(&frame.rgba[i..i + w as usize * 4]);
+    }
+    out
 }

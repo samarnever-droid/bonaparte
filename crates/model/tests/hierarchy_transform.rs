@@ -2,7 +2,12 @@ use bonaparte_model::*;
 
 #[test]
 fn test_blend_mode_display_and_defaults() {
-    let default_layer = Layer::new("Test", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(100));
+    let default_layer = Layer::new(
+        "Test",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(100),
+    );
     assert_eq!(default_layer.blend_mode, BlendMode::Normal);
     assert!(default_layer.visible);
     assert!(!default_layer.locked);
@@ -22,8 +27,19 @@ fn test_blend_mode_display_and_defaults() {
 #[test]
 fn test_single_layer_effective_transform() {
     let mut p = Project::new("Single Layer Test");
-    let comp = p.create_comp("Comp", 1920, 1080, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
-    let mut layer = Layer::new("Layer", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let comp = p.create_comp(
+        "Comp",
+        1920,
+        1080,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
+    let mut layer = Layer::new(
+        "Layer",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     layer.transform.position = [100.0, 50.0];
     layer.transform.scale = [150.0, 150.0];
     layer.transform.rotation = 90.0;
@@ -50,17 +66,33 @@ fn test_single_layer_effective_transform() {
 #[test]
 fn test_parent_child_hierarchy_transform() {
     let mut p = Project::new("Hierarchy Test");
-    let comp = p.create_comp("Comp", 1920, 1080, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
+    let comp = p.create_comp(
+        "Comp",
+        1920,
+        1080,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
 
     // Parent layer at position [200.0, 100.0], scale 200%, opacity 0.5
-    let mut parent = Layer::new("Parent", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let mut parent = Layer::new(
+        "Parent",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     parent.transform.position = [200.0, 100.0];
     parent.transform.scale = [200.0, 200.0];
     parent.transform.opacity = 0.5;
     let parent_id = p.insert_layer(comp, parent);
 
     // Child layer at local position [50.0, 0.0], scale 150%, opacity 0.8, parented to Parent
-    let mut child = Layer::new("Child", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let mut child = Layer::new(
+        "Child",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     child.transform.position = [50.0, 0.0];
     child.transform.scale = [150.0, 150.0];
     child.transform.opacity = 0.8;
@@ -82,23 +114,44 @@ fn test_parent_child_hierarchy_transform() {
 #[test]
 fn test_three_level_deep_hierarchy() {
     let mut p = Project::new("Deep Hierarchy Test");
-    let comp = p.create_comp("Comp", 1920, 1080, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
+    let comp = p.create_comp(
+        "Comp",
+        1920,
+        1080,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
 
     // L1: Grandparent (translated 100, 100; rotated 45 deg)
-    let mut l1 = Layer::new("L1", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let mut l1 = Layer::new(
+        "L1",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     l1.transform.position = [100.0, 100.0];
     l1.transform.rotation = 45.0;
     let l1_id = p.insert_layer(comp, l1);
 
     // L2: Parent (local pos 50, 0; rotated 45 deg)
-    let mut l2 = Layer::new("L2", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let mut l2 = Layer::new(
+        "L2",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     l2.transform.position = [50.0, 0.0];
     l2.transform.rotation = 45.0;
     l2.parent = Some(l1_id);
     let l2_id = p.insert_layer(comp, l2);
 
     // L3: Child (local pos 0, 0; rotated 0 deg)
-    let mut l3 = Layer::new("L3", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC));
+    let mut l3 = Layer::new(
+        "L3",
+        LayerKind::Solid { color: [1.0; 4] },
+        Time::ZERO,
+        Time(10 * TICKS_PER_SEC),
+    );
     l3.transform.position = [0.0, 0.0];
     l3.parent = Some(l2_id);
     let l3_id = p.insert_layer(comp, l3);
@@ -113,11 +166,41 @@ fn test_three_level_deep_hierarchy() {
 #[test]
 fn test_cycle_detection() {
     let mut p = Project::new("Cycle Test");
-    let comp = p.create_comp("Comp", 1920, 1080, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
+    let comp = p.create_comp(
+        "Comp",
+        1920,
+        1080,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
 
-    let l1 = p.insert_layer(comp, Layer::new("L1", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC)));
-    let l2 = p.insert_layer(comp, Layer::new("L2", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC)));
-    let l3 = p.insert_layer(comp, Layer::new("L3", LayerKind::Solid { color: [1.0; 4] }, Time::ZERO, Time(10 * TICKS_PER_SEC)));
+    let l1 = p.insert_layer(
+        comp,
+        Layer::new(
+            "L1",
+            LayerKind::Solid { color: [1.0; 4] },
+            Time::ZERO,
+            Time(10 * TICKS_PER_SEC),
+        ),
+    );
+    let l2 = p.insert_layer(
+        comp,
+        Layer::new(
+            "L2",
+            LayerKind::Solid { color: [1.0; 4] },
+            Time::ZERO,
+            Time(10 * TICKS_PER_SEC),
+        ),
+    );
+    let l3 = p.insert_layer(
+        comp,
+        Layer::new(
+            "L3",
+            LayerKind::Solid { color: [1.0; 4] },
+            Time::ZERO,
+            Time(10 * TICKS_PER_SEC),
+        ),
+    );
 
     let c = p.comp_mut(comp).unwrap();
     // Self parenting cycle

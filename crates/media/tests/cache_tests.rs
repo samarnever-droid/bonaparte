@@ -27,7 +27,9 @@ fn test_cache_insert_and_get_frame() {
     assert_eq!(cache.disk_count(), 1);
 
     // Retrieve via MediaFrames trait
-    let view = cache.frame_rgba(media, time).expect("frame must be retrievable");
+    let view = cache
+        .frame_rgba(media, time)
+        .expect("frame must be retrievable");
     assert_eq!(view.width, 4);
     assert_eq!(view.height, 4);
     assert_eq!(view.rgba, &rgba[..]);
@@ -68,7 +70,9 @@ fn test_cache_flat_ram_guarantee() {
         let time = Time(i as i64 * 4000);
         let expected_val = (i % 256) as u8;
 
-        let view = cache.frame_rgba(media, time).expect("frame must be available");
+        let view = cache
+            .frame_rgba(media, time)
+            .expect("frame must be available");
         assert_eq!(view.width, 16);
         assert_eq!(view.height, 16);
         assert_eq!(view.rgba[0], expected_val);

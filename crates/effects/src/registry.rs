@@ -5,7 +5,18 @@
 //! - Dynamic filesystem scanner for third-party or local user plugin folders.
 //! - Querying and looking up manifests and WGSL shader sources.
 
-use bonaparte_model::{EffectManifest, ManifestError};
+use crate::cpu_reference::{CpuEvalError, CpuFrame, ParamValue};
+use bonaparte_model::{EffectInstance, EffectManifest, ManifestError, ParamKind, PropValue, Time};
+use std::collections::HashMap;
+
+/// Public CPU plugin callback. No engine hooks or filesystem privileges required.
+pub type CpuEvaluator =
+    fn(&str, &CpuFrame, &HashMap<String, ParamValue>) -> Result<CpuFrame, CpuEvalError>;
+
+pub fn builtin_registry() -> &'static EffectRegistry {
+    static REGISTRY: std::sync::OnceLock<EffectRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(EffectRegistry::new)
+}
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -36,9 +47,10 @@ pub struct RegisteredEffect {
     pub shader_source: String,
     pub is_builtin: bool,
     pub directory: Option<PathBuf>,
+    pub evaluator: Option<CpuEvaluator>,
 }
 
-/// Registry holding all available GPU motion graphics effect plugins.
+/// Registry of effect/generator metadata and optional CPU evaluator callbacks.
 #[derive(Debug, Clone, Default)]
 pub struct EffectRegistry {
     effects: BTreeMap<String, RegisteredEffect>,
@@ -74,8 +86,7 @@ pub const INVERT_SHADER: &str = include_str!("../packs/invert/invert.wgsl");
 pub const TINT_MANIFEST: &str = include_str!("../packs/tint/manifest.toml");
 pub const TINT_SHADER: &str = include_str!("../packs/tint/tint.wgsl");
 
-pub const DIRECTIONAL_BLUR_MANIFEST: &str =
-    include_str!("../packs/directional_blur/manifest.toml");
+pub const DIRECTIONAL_BLUR_MANIFEST: &str = include_str!("../packs/directional_blur/manifest.toml");
 pub const DIRECTIONAL_BLUR_SHADER: &str =
     include_str!("../packs/directional_blur/directional_blur.wgsl");
 
@@ -84,23 +95,10 @@ pub const CIRCLE_SHADER: &str = include_str!("../packs/circle/circle.wgsl");
 
 /// All first-party built-in manifests in canonical UI presentation order.
 pub fn builtin_manifests() -> Vec<EffectManifest> {
-    vec![
-        EffectManifest::parse(GLOW_MANIFEST).expect("builtin glow manifest must parse"),
-        EffectManifest::parse(BLUR_MANIFEST).expect("builtin blur manifest must parse"),
-        EffectManifest::parse(DROP_SHADOW_MANIFEST)
-            .expect("builtin drop_shadow manifest must parse"),
-        EffectManifest::parse(COLOR_ADJUST_MANIFEST)
-            .expect("builtin color_adjust manifest must parse"),
-        EffectManifest::parse(TRANSFORM_MANIFEST).expect("builtin transform manifest must parse"),
-        EffectManifest::parse(VIGNETTE_MANIFEST).expect("builtin vignette manifest must parse"),
-        EffectManifest::parse(CHROMATIC_ABERRATION_MANIFEST)
-            .expect("builtin chromatic_aberration manifest must parse"),
-        EffectManifest::parse(INVERT_MANIFEST).expect("builtin invert manifest must parse"),
-        EffectManifest::parse(TINT_MANIFEST).expect("builtin tint manifest must parse"),
-        EffectManifest::parse(DIRECTIONAL_BLUR_MANIFEST)
-            .expect("builtin directional_blur manifest must parse"),
-        EffectManifest::parse(CIRCLE_MANIFEST).expect("builtin circle manifest must parse"),
-    ]
+    builtin_packs()
+        .into_iter()
+        .map(|(manifest, _)| EffectManifest::parse(manifest).expect("valid embedded manifest"))
+        .collect()
 }
 
 /// All first-party (manifest, shader) pairs.
@@ -117,11 +115,19 @@ pub fn builtin_packs() -> Vec<(&'static str, &'static str)> {
         (TINT_MANIFEST, TINT_SHADER),
         (DIRECTIONAL_BLUR_MANIFEST, DIRECTIONAL_BLUR_SHADER),
         (CIRCLE_MANIFEST, CIRCLE_SHADER),
+        (
+            include_str!("../packs/color_grade/manifest.toml"),
+            include_str!("../packs/color_grade/color_grade.wgsl"),
+        ),
+        (
+            include_str!("../packs/gradient/manifest.toml"),
+            include_str!("../packs/gradient/gradient.wgsl"),
+        ),
     ]
 }
 
 impl EffectRegistry {
-    /// Create an EffectRegistry populated with all 10 core built-in effect packs.
+    /// Create a registry populated with the first-party filter and generator packs.
     pub fn new() -> Self {
         let mut registry = Self::empty();
         for (manifest_str, shader_str) in builtin_packs() {
@@ -135,6 +141,7 @@ impl EffectRegistry {
                     shader_source: shader_str.to_string(),
                     is_builtin: true,
                     directory: None,
+                    evaluator: Some(crate::cpu_reference::evaluate_builtin),
                 },
             );
         }
@@ -156,6 +163,12 @@ impl EffectRegistry {
         is_builtin: bool,
         directory: Option<PathBuf>,
     ) -> Result<(), RegistryError> {
+        manifest
+            .validate()
+            .map_err(|source| RegistryError::Manifest {
+                path: PathBuf::from("<registered>"),
+                source,
+            })?;
         let id = manifest.id.clone();
         if self.effects.contains_key(&id) {
             return Err(RegistryError::DuplicateId(id));
@@ -167,6 +180,7 @@ impl EffectRegistry {
                 shader_source,
                 is_builtin,
                 directory,
+                evaluator: None,
             },
         );
         Ok(())
@@ -213,7 +227,10 @@ impl EffectRegistry {
     }
 
     /// Load a single pack directory containing manifest.toml and its referenced shader file.
-    pub fn load_pack_from_dir(&mut self, pack_dir: impl AsRef<Path>) -> Result<String, RegistryError> {
+    pub fn load_pack_from_dir(
+        &mut self,
+        pack_dir: impl AsRef<Path>,
+    ) -> Result<String, RegistryError> {
         let pack_dir = pack_dir.as_ref().to_path_buf();
         let manifest_path = pack_dir.join("manifest.toml");
         if !manifest_path.is_file() {
@@ -244,6 +261,22 @@ impl EffectRegistry {
             });
         }
 
+        let canonical_dir =
+            std::fs::canonicalize(&pack_dir).map_err(|source| RegistryError::Io {
+                path: pack_dir.clone(),
+                source,
+            })?;
+        let canonical_shader =
+            std::fs::canonicalize(&shader_path).map_err(|source| RegistryError::Io {
+                path: shader_path.clone(),
+                source,
+            })?;
+        if !canonical_shader.starts_with(&canonical_dir) {
+            return Err(RegistryError::ShaderMissing {
+                shader: manifest.shader.clone(),
+                dir: pack_dir,
+            });
+        }
         let shader_source =
             std::fs::read_to_string(&shader_path).map_err(|e| RegistryError::Io {
                 path: shader_path,
@@ -251,6 +284,9 @@ impl EffectRegistry {
             })?;
 
         let id = manifest.id.clone();
+        if self.effects.contains_key(&id) {
+            return Err(RegistryError::DuplicateId(id));
+        }
         self.effects.insert(
             id.clone(),
             RegisteredEffect {
@@ -258,6 +294,7 @@ impl EffectRegistry {
                 shader_source,
                 is_builtin: false,
                 directory: Some(pack_dir),
+                evaluator: None,
             },
         );
 
@@ -268,7 +305,10 @@ impl EffectRegistry {
     ///
     /// Checks all immediate subdirectories for manifest.toml. Any valid pack found
     /// is parsed, validated, and registered. Returns the list of loaded effect IDs.
-    pub fn scan_directory(&mut self, root_dir: impl AsRef<Path>) -> Result<Vec<String>, RegistryError> {
+    pub fn scan_directory(
+        &mut self,
+        root_dir: impl AsRef<Path>,
+    ) -> Result<Vec<String>, RegistryError> {
         let root_dir = root_dir.as_ref().to_path_buf();
         let mut loaded = Vec::new();
 
@@ -296,5 +336,129 @@ impl EffectRegistry {
         }
 
         Ok(loaded)
+    }
+}
+
+impl EffectRegistry {
+    /// A first- or third-party CPU pack uses this exact same registration contract.
+    pub fn register_cpu(
+        &mut self,
+        manifest: EffectManifest,
+        shader: String,
+        evaluator: CpuEvaluator,
+    ) -> Result<(), RegistryError> {
+        let id = manifest.id.clone();
+        self.register(manifest, shader, false, None)?;
+        self.effects.get_mut(&id).expect("just inserted").evaluator = Some(evaluator);
+        Ok(())
+    }
+
+    fn parameters(
+        &self,
+        id: &str,
+        supplied: &HashMap<String, ParamValue>,
+    ) -> Result<HashMap<String, ParamValue>, CpuEvalError> {
+        let effect = self
+            .get(id)
+            .ok_or_else(|| CpuEvalError::UnknownEffect(id.into()))?;
+        for (key, value) in supplied {
+            let param = effect
+                .manifest
+                .params
+                .iter()
+                .find(|p| &p.id == key)
+                .ok_or_else(|| CpuEvalError::InvalidParam(key.clone()))?;
+            if !param.kind.accepts(value) {
+                return Err(CpuEvalError::InvalidParam(key.clone()));
+            }
+        }
+        Ok(effect
+            .manifest
+            .params
+            .iter()
+            .map(|p| {
+                (
+                    p.id.clone(),
+                    supplied
+                        .get(&p.id)
+                        .cloned()
+                        .unwrap_or_else(|| p.kind.default_value()),
+                )
+            })
+            .collect())
+    }
+
+    pub fn validate_instance(&self, instance: &EffectInstance) -> Result<(), CpuEvalError> {
+        let values = instance.params.clone().into_iter().collect();
+        self.parameters(&instance.effect_id, &values)?;
+        let effect = self
+            .get(&instance.effect_id)
+            .ok_or_else(|| CpuEvalError::UnknownEffect(instance.effect_id.clone()))?;
+        if instance.enabled && effect.evaluator.is_none() {
+            return Err(CpuEvalError::UnsupportedBackend(instance.effect_id.clone()));
+        }
+        for (id, track) in &instance.tracks {
+            let param = effect
+                .manifest
+                .params
+                .iter()
+                .find(|p| &p.id == id)
+                .ok_or_else(|| CpuEvalError::InvalidParam(id.clone()))?;
+            for key in &track.keys {
+                let value = match key.value {
+                    PropValue::Scalar(v) => ParamValue::Float(v),
+                    PropValue::Vec2(v) => ParamValue::Point(v),
+                };
+                if !param.kind.accepts(&value) {
+                    return Err(CpuEvalError::InvalidParam(id.clone()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn evaluate(
+        &self,
+        id: &str,
+        input: &CpuFrame,
+        supplied: &HashMap<String, ParamValue>,
+    ) -> Result<CpuFrame, CpuEvalError> {
+        let params = self.parameters(id, supplied)?;
+        let effect = self
+            .get(id)
+            .ok_or_else(|| CpuEvalError::UnknownEffect(id.into()))?;
+        let evaluator = effect
+            .evaluator
+            .ok_or_else(|| CpuEvalError::UnsupportedBackend(id.into()))?;
+        evaluator(id, input, &params)
+    }
+
+    pub fn evaluate_instance(
+        &self,
+        instance: &EffectInstance,
+        input: &CpuFrame,
+        time: Time,
+    ) -> Result<CpuFrame, CpuEvalError> {
+        if !instance.enabled {
+            return Ok(input.clone());
+        }
+        self.validate_instance(instance)?;
+        let mut params: HashMap<_, _> = instance.evaluated_params(time).into_iter().collect();
+        // Temporal Bézier overshoot is allowed; bounded effect uniforms clamp at evaluation.
+        for param in &self
+            .get(&instance.effect_id)
+            .expect("validated effect")
+            .manifest
+            .params
+        {
+            if instance.tracks.contains_key(&param.id) {
+                if let (ParamKind::Slider { min, max, .. }, Some(ParamValue::Float(v))) =
+                    (&param.kind, params.get_mut(&param.id))
+                {
+                    *v = v.clamp(*min, *max);
+                }
+            }
+        }
+        self.evaluate(&instance.effect_id, input, &params)
     }
 }

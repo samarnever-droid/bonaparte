@@ -221,7 +221,7 @@ fn test_invert_exact_roundtrip() {
 #[test]
 fn test_tint_duotone_remapping() {
     let mut frame = CpuFrame::new(2, 1);
-    frame.set_pixel_u8(0, 0, [0, 0, 0, 255]);       // Pure Black
+    frame.set_pixel_u8(0, 0, [0, 0, 0, 255]); // Pure Black
     frame.set_pixel_u8(1, 0, [255, 255, 255, 255]); // Pure White
 
     // Tint: Black -> Dark Blue [10, 20, 30, 255], White -> Gold [255, 215, 0, 255]
@@ -289,7 +289,10 @@ fn test_dynamic_evaluate_effect_all_10() {
     let empty_params = HashMap::new();
     for id in effect_ids {
         let res = evaluate_effect(id, &frame, &empty_params);
-        assert!(res.is_ok(), "Effect {id} failed to evaluate via dynamic dispatcher");
+        assert!(
+            res.is_ok(),
+            "Effect {id} failed to evaluate via dynamic dispatcher"
+        );
         let out = res.unwrap();
         assert_eq!(out.width, frame.width);
         assert_eq!(out.height, frame.height);

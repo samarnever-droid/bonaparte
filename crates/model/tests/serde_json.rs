@@ -3,7 +3,13 @@ use bonaparte_model::*;
 #[test]
 fn test_serde_all_model_entities() {
     let mut p = Project::new("Serde Test Project");
-    let comp = p.create_comp("Comp1", 1920, 1080, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
+    let comp = p.create_comp(
+        "Comp1",
+        1920,
+        1080,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
 
     let mut layer = Layer::new(
         "SolidLayer",
@@ -37,6 +43,7 @@ fn test_serde_all_model_entities() {
     let layer_id = p.insert_layer(comp, layer);
 
     let media = p.insert_media(MediaAsset {
+        embedded: None,
         id: MediaId(0),
         name: "test_image.png".into(),
         path: Some("assets/img.png".into()),
@@ -83,7 +90,10 @@ fn test_serde_all_model_entities() {
     let m = deserialized_p.media.get(&media).unwrap();
     assert_eq!(m.name, "test_image.png");
     assert_eq!(m.alias, Some("logo".into()));
-    assert_eq!(m.perception.as_ref().unwrap().role, AssetRole::LogoCandidate);
+    assert_eq!(
+        m.perception.as_ref().unwrap().role,
+        AssetRole::LogoCandidate
+    );
 }
 
 #[test]
@@ -136,6 +146,7 @@ fn test_serde_all_op_variants() {
         name: "m".into(),
         path: None,
         kind: MediaKind::Image,
+        embedded: None,
         slot: None,
         alias: None,
         perception: None,

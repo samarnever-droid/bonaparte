@@ -10,7 +10,10 @@ fn test_parse_rational_framerate() {
     );
     assert_eq!(
         parse_rational_framerate("24000/1001"),
-        Some(FrameRate { num: 24000, den: 1001 })
+        Some(FrameRate {
+            num: 24000,
+            den: 1001
+        })
     );
     assert_eq!(
         parse_rational_framerate("25/1"),
@@ -20,10 +23,7 @@ fn test_parse_rational_framerate() {
         parse_rational_framerate("60/1"),
         Some(FrameRate { num: 60, den: 1 })
     );
-    assert_eq!(
-        parse_rational_framerate("24"),
-        Some(FrameRate::FPS_24)
-    );
+    assert_eq!(parse_rational_framerate("24"), Some(FrameRate::FPS_24));
     assert_eq!(
         parse_rational_framerate("23.976"),
         Some(FrameRate::NTSC_FILM)
@@ -112,7 +112,8 @@ fn test_probe_real_video_asset() {
 
     if let Ok(st) = status {
         if st.success() {
-            let asset = probe_asset(&video_path, MediaId(42), "Test Probe").expect("probing must succeed");
+            let asset =
+                probe_asset(&video_path, MediaId(42), "Test Probe").expect("probing must succeed");
             assert_eq!(asset.id, MediaId(42));
             assert_eq!(asset.name, "Test Probe");
             assert!(matches!(asset.kind, MediaKind::Video { .. }));

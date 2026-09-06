@@ -18,8 +18,10 @@ pub struct EffectManifest {
     /// Globally unique, namespaced: "builtin.glow", "com.acme.rain".
     pub id: String,
     pub name: String,
-    /// Declared GPU cost — the engine's adaptive-quality budget uses this
-    /// (RULES §3.2: the engine decides what runs, not the effect).
+    #[serde(default)]
+    pub category: String,
+    /// Cost hint reserved for a future adaptive-quality GPU scheduler.
+    /// The current CPU host does not use this to change render quality.
     pub cost: GpuCost,
     /// WGSL shader file, relative to the manifest.
     pub shader: String,
@@ -49,6 +51,12 @@ pub struct ParamDef {
     /// What it does and when to use it. Rendered as tooltip + MCP docs.
     pub doc: String,
     pub kind: ParamKind,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub step: Option<f32>,
+    #[serde(default)]
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +110,17 @@ impl EffectManifest {
             return Err(ManifestError::UnsupportedApi(self.api_version.clone()));
         }
         if self.id.is_empty() || self.name.is_empty() || self.shader.is_empty() {
-            return Err(ManifestError::Invalid("id, name, and shader are required".into()));
+            return Err(ManifestError::Invalid(
+                "id, name, and shader are required".into(),
+            ));
+        }
+        if self.shader.starts_with('/')
+            || self.shader.contains('\\')
+            || self.shader.split('/').any(|p| p == ".." || p.contains(':'))
+        {
+            return Err(ManifestError::Invalid(
+                "shader must be a relative path inside the pack".into(),
+            ));
         }
         let mut seen = std::collections::BTreeSet::new();
         for p in &self.params {
@@ -116,6 +134,18 @@ impl EffectManifest {
                 return Err(ManifestError::Invalid(format!(
                     "duplicate param id `{}` in `{}`",
                     p.id, self.id
+                )));
+            }
+            if !p.kind.accepts(&p.kind.default_value()) {
+                return Err(ManifestError::Invalid(format!(
+                    "param `{}` has an invalid default",
+                    p.id
+                )));
+            }
+            if p.step.is_some_and(|v| !v.is_finite() || v <= 0.0) {
+                return Err(ManifestError::Invalid(format!(
+                    "param `{}` has invalid step",
+                    p.id
                 )));
             }
             if let ParamKind::Slider { min, max, .. } = &p.kind {
@@ -183,5 +213,34 @@ kind = { Slider = { min = 0.0, max = 100.0, default = 12.0 } }
             EffectManifest::parse(&bad),
             Err(ManifestError::Invalid(_))
         ));
+    }
+}
+
+impl ParamKind {
+    pub fn default_value(&self) -> crate::EffectValue {
+        use crate::EffectValue as V;
+        match self {
+            Self::Slider { default, .. } => V::Float(*default),
+            Self::Color { default } => V::Color(*default),
+            Self::Point { default } => V::Point(*default),
+            Self::Checkbox { default } => V::Bool(*default),
+            Self::Dropdown { default, .. } => V::Index(*default),
+        }
+    }
+    pub fn accepts(&self, value: &crate::EffectValue) -> bool {
+        use crate::EffectValue as V;
+        if !value.is_finite() {
+            return false;
+        }
+        match (self, value) {
+            (Self::Slider { min, max, .. }, V::Float(v)) => {
+                min.is_finite() && max.is_finite() && v >= min && v <= max
+            }
+            (Self::Color { .. }, V::Color(v)) => v.iter().all(|x| (0.0..=1.0).contains(x)),
+            (Self::Point { .. }, V::Point(v)) => v.iter().all(|x| x.abs() <= 1_000_000.0),
+            (Self::Checkbox { .. }, V::Bool(_)) => true,
+            (Self::Dropdown { options, .. }, V::Index(i)) => *i < options.len(),
+            _ => false,
+        }
     }
 }

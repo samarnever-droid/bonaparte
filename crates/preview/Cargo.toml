@@ -1,0 +1,9 @@
+[package]
+name = "bonaparte-preview"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-runtime = { path = "../runtime" }
+serde_json = { workspace = true }
+tiny_http = "0.12" # minimal development-only HTTP transport for the real Rust runtime

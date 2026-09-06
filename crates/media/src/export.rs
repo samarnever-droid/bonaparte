@@ -1,10 +1,10 @@
 //! Streaming direct compositor-to-FFmpeg MP4 video export.
 //!
-//! Architectural guarantees:
-//! - Strictly O(1) memory consumption: frames are rendered one at a time and streamed
-//!   directly into the stdin pipe of the FFmpeg encoder child process.
-//! - Crash-isolated: FFmpeg executes as an unprivileged child process; no LGPL code is linked.
-//! - High-compatibility MP4 output: H.264 High Profile, YUV420p pixel format, faststart flag.
+//! Frames are produced one at a time and written to an FFmpeg child process.
+//! This avoids retaining the entire sequence, but does not bound allocations
+//! inside the render callback or encoder. FFmpeg runs with the caller's OS
+//! privileges; a separate process is not a security sandbox. Output uses libx264,
+//! YUV420p and faststart; codec profile selection is left to the encoder.
 
 use bonaparte_model::{FrameRate, Time};
 use std::io::Write;
@@ -100,7 +100,20 @@ where
         })?;
     }
 
-    let fps_f64 = config.fps.as_f64();
+    if config.width == 0
+        || config.height == 0
+        || config.width % 2 != 0
+        || config.height % 2 != 0
+        || config.width > 8192
+        || config.height > 8192
+        || config.fps.num == 0
+        || config.fps.den == 0
+        || config.total_frames == 0
+    {
+        return Err(ExportError::EncodingFailed(
+            "Invalid dimensions, duration or frame rate".into(),
+        ));
+    }
     let expected_frame_bytes = (config.width * config.height * 4) as usize;
 
     let mut child = Command::new("ffmpeg")
@@ -114,7 +127,7 @@ where
         .arg("-s")
         .arg(format!("{}x{}", config.width, config.height))
         .arg("-r")
-        .arg(format!("{:.3}", fps_f64))
+        .arg(format!("{}/{}", config.fps.num, config.fps.den))
         .arg("-i")
         .arg("-")
         .arg("-c:v")
@@ -138,17 +151,36 @@ where
         })?;
 
     let mut child_stdin = child.stdin.take().expect("stdin must be piped");
+    // Reap FFmpeg on every early return (bad frames, render failures, broken pipes).
+    let mut process = ExportChild(Some(child));
+    let child = process.0.as_mut().expect("running process");
+    // Drain stderr concurrently; never let a full stderr pipe block an encoder.
+    let stderr = child.stderr.take();
+    let stderr_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut saved = Vec::new();
+        if let Some(mut stream) = stderr {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(65536usize.saturating_sub(saved.len()));
+                saved.extend_from_slice(&buf[..keep]);
+            }
+        }
+        saved
+    });
     let mut bytes_streamed = 0u64;
 
     for frame_idx in 0..config.total_frames {
         let time = config.fps.from_frame(frame_idx as i64);
-        let frame_rgba = render_frame(frame_idx, time).map_err(|msg| {
-            ExportError::RenderCallbackFailed {
+        let frame_rgba =
+            render_frame(frame_idx, time).map_err(|msg| ExportError::RenderCallbackFailed {
                 frame_idx,
                 time,
                 message: msg,
-            }
-        })?;
+            })?;
 
         if frame_rgba.len() != expected_frame_bytes {
             return Err(ExportError::EncodingFailed(format!(
@@ -159,23 +191,31 @@ where
             )));
         }
 
-        child_stdin.write_all(&frame_rgba).map_err(|e| ExportError::Io {
-            path: config.output_path.clone(),
-            source: e,
-        })?;
+        child_stdin
+            .write_all(&frame_rgba)
+            .map_err(|e| ExportError::Io {
+                path: config.output_path.clone(),
+                source: e,
+            })?;
 
         bytes_streamed += frame_rgba.len() as u64;
     }
 
     drop(child_stdin);
 
-    let output = child.wait_with_output().map_err(|e| ExportError::Io {
-        path: config.output_path.clone(),
-        source: e,
-    })?;
+    let output = process
+        .0
+        .take()
+        .expect("running process")
+        .wait_with_output()
+        .map_err(|e| ExportError::Io {
+            path: config.output_path.clone(),
+            source: e,
+        })?;
 
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         return Err(ExportError::EncodingFailed(stderr.into_owned()));
     }
 
@@ -194,4 +234,14 @@ where
         output_file_size: meta.len(),
         output_path: config.output_path.clone(),
     })
+}
+
+struct ExportChild(Option<std::process::Child>);
+impl Drop for ExportChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }

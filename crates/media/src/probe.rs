@@ -20,10 +20,7 @@ pub enum ProbeError {
         source: std::io::Error,
     },
     #[error("ffprobe execution failed for {path}: {message}")]
-    ProcessFailed {
-        path: PathBuf,
-        message: String,
-    },
+    ProcessFailed { path: PathBuf, message: String },
     #[error("JSON metadata parse error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("No video or audio stream found in {0}")]
@@ -358,7 +355,11 @@ pub fn probe_asset(
             Err(e) => {
                 // Fallback minimal perception card
                 Some(PerceptionCard {
-                    role: if is_video { AssetRole::Video } else { AssetRole::Graphic },
+                    role: if is_video {
+                        AssetRole::Video
+                    } else {
+                        AssetRole::Graphic
+                    },
                     width,
                     height,
                     palette: Vec::new(),
@@ -378,6 +379,7 @@ pub fn probe_asset(
         name: name.into(),
         path: Some(path.to_string_lossy().into_owned()),
         kind,
+        embedded: None,
         slot: None,
         alias: None,
         perception,

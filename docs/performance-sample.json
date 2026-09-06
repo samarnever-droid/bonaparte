@@ -1,0 +1,20 @@
+{
+  "date": "2026-09-06",
+  "width": 960,
+  "height": 540,
+  "project": "examples/orbit.bonaparte.json",
+  "sampleCount": 8,
+  "samplesMs": [
+    105.95,
+    103.18,
+    103.74,
+    110.02,
+    102.75,
+    102.06,
+    101.67,
+    103.28
+  ],
+  "medianMs": 103.23,
+  "machine": "2-vCPU Linux x86_64 sandbox (Intel Xeon 2.60GHz as reported by lscpu)",
+  "method": "Discard one warm-up; request times 148000..176000 in 4000-tick increments through localhost:4317/api/render_frame_raw. Includes HTTP/raw transfer; does not include browser painting. Dev profile with engine/effects/font optimizations. No frame cache. This is not a real-time or portable hardware benchmark."
+}

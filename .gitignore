@@ -11,3 +11,6 @@ Thumbs.db
 .env.*
 !.env.example
 
+.cache/
+ui/test-results/
+ui/playwright-report/

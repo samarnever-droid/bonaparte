@@ -1,0 +1,115 @@
+api_version = "1.0"
+id = "builtin.color_grade"
+name = "Color Grade"
+category = "Color correction"
+cost = "light"
+shader = "color_grade.wgsl"
+inputs = ["input"]
+
+[[params]]
+id = "temperature"
+name = "Temperature"
+doc = "Relative warm/cool white balance; positive values warm the image."
+group = "White balance"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "tint"
+name = "Tint"
+doc = "Relative green/magenta balance; positive values shift toward magenta."
+group = "White balance"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "exposure"
+name = "Exposure"
+doc = "Exposure compensation in stops, applied in linear-light RGB."
+group = "Light"
+step = 0.05
+unit = "EV"
+kind = { Slider = { min = -5.0, max = 5.0, default = 0.0 } }
+
+[[params]]
+id = "contrast"
+name = "Contrast"
+doc = "Display-referred contrast around middle gray."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.0, max = 2.0, default = 1.0 } }
+
+[[params]]
+id = "highlights"
+name = "Highlights"
+doc = "Recover or lift the upper tonal range."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "shadows"
+name = "Shadows"
+doc = "Lift or deepen the lower tonal range."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "whites"
+name = "Whites"
+doc = "Adjust the brightest values without shifting the midpoint."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "blacks"
+name = "Blacks"
+doc = "Adjust the darkest values without shifting the midpoint."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "saturation"
+name = "Saturation"
+doc = "Luma-preserving saturation; zero produces a monochrome image."
+group = "Color"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.0, max = 2.0, default = 1.0 } }
+
+[[params]]
+id = "vibrance"
+name = "Vibrance"
+doc = "Selectively adjust less-saturated colors."
+group = "Color"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "gamma"
+name = "Gamma"
+doc = "Adjust midtones; values above one lighten the image."
+group = "Color"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.1, max = 3.0, default = 1.0 } }
+
+[[params]]
+id = "fade"
+name = "Fade"
+doc = "Lift the black floor for a faded print look."
+group = "Color"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.0, max = 1.0, default = 0.0 } }

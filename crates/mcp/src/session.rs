@@ -47,9 +47,7 @@ impl McpSession {
     pub fn target_comp(&self, requested: Option<u64>) -> Option<CompId> {
         if let Some(id) = requested {
             let cid = CompId(id);
-            if self.project.comps.contains_key(&cid) {
-                return Some(cid);
-            }
+            return self.project.comps.contains_key(&cid).then_some(cid);
         }
         if let Some(active) = self.active_comp {
             if self.project.comps.contains_key(&active) {

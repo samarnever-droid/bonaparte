@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.tint"
 name = "Tint"
+category = "Color correction"
 cost = "light"
 shader = "tint.wgsl"
 inputs = ["input"]

@@ -11,3 +11,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 miniz_oxide = "0.8"
 crc32fast = "1.4"
+bonaparte-runtime = { path = "../runtime" } # shared persistence, validation and export service
+bonaparte-effects = { path = "../effects" } # manifest discovery for automation

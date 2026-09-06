@@ -71,9 +71,9 @@ mod tests {
         let width = 2;
         let height = 2;
         let rgba = vec![
-            255, 0, 0, 255,   // red
-            0, 255, 0, 255,   // green
-            0, 0, 255, 255,   // blue
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
             255, 255, 0, 255, // yellow
         ];
         let png = encode_png(width, height, &rgba).expect("PNG encoding failed");

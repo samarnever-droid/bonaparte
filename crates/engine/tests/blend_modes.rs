@@ -80,7 +80,11 @@ fn test_render_comp_with_all_blend_modes() {
         // All blend results must be bounded in [0.0, 1.0] and non-NaN
         for (ch, &val) in px.iter().enumerate() {
             assert!(!val.is_nan(), "Channel {ch} is NaN for mode {:?}", mode);
-            assert!((0.0..=1.0).contains(&val), "Channel {ch} out of bounds for mode {:?}", mode);
+            assert!(
+                (0.0..=1.0).contains(&val),
+                "Channel {ch} out of bounds for mode {:?}",
+                mode
+            );
         }
     }
 }

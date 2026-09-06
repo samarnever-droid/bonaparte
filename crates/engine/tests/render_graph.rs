@@ -41,10 +41,23 @@ fn test_build_from_comp_with_complex_hierarchy() {
     let c = p.create_comp("main", 1920, 1080, FrameRate::FPS_30, Time(100));
 
     // L1: Base background
-    let l1 = p.insert_layer(c, Layer::new("bg", LayerKind::Solid { color: [0.1; 4] }, Time::ZERO, Time(100)));
+    let l1 = p.insert_layer(
+        c,
+        Layer::new(
+            "bg",
+            LayerKind::Solid { color: [0.1; 4] },
+            Time::ZERO,
+            Time(100),
+        ),
+    );
 
     // L2: Parent layer
-    let mut l2 = Layer::new("parent", LayerKind::Solid { color: [0.5; 4] }, Time::ZERO, Time(100));
+    let mut l2 = Layer::new(
+        "parent",
+        LayerKind::Solid { color: [0.5; 4] },
+        Time::ZERO,
+        Time(100),
+    );
     l2.blend_mode = BlendMode::Screen;
     let l2_id = p.insert_layer(c, l2);
 

@@ -1,362 +1,356 @@
 <script lang="ts">
-  import { editor, activeComp, play, pause, undoOp, redoOp, scrub, applyOp } from "../store.svelte";
+  import Icon from "./Icon.svelte";
   import {
-    fpsAsNumber,
-    formatFps,
-    ticksPerFrame,
-    TICKS_PER_SEC,
-    type Layer,
-    type LayerKind,
-  } from "../model";
-
-  interface Props {
-    onTogglePresets?: () => void;
-    presetsOpen?: boolean;
-  }
-
-  let { onTogglePresets, presetsOpen = false }: Props = $props();
-
-  let addMenuOpen = $state(false);
-
+    editor,
+    activeComp,
+    selectedLayer,
+    applyOp,
+    saveProject,
+    openProject,
+    undoOp,
+    redoOp,
+    addLayer,
+    duplicateSelected,
+    deleteSelected,
+    setWorkspace,
+  } from "../store.svelte";
+  let menu = $state<"file" | "layer" | null>(null);
   const comp = $derived(activeComp());
-  const isPlaying = $derived(editor.playing);
-  const fpsNum = $derived(fpsAsNumber(comp?.fps) || 30);
-  const formattedFps = $derived(comp ? formatFps(comp.fps) : "30 fps");
-
-  async function createLayer(type: "circle" | "rect" | "text" | "solid") {
-    if (!comp) return;
-    addMenuOpen = false;
-
-    let kind: LayerKind;
-    let name: string;
-    const count = comp.layer_order.length + 1;
-
-    if (type === "circle") {
-      name = `Circle ${count}`;
-      kind = {
-        Shape: {
-          color: [0.95, 0.35, 0.35, 1.0],
-          generator: "builtin.circle",
-        },
-      };
-    } else if (type === "rect") {
-      name = `Rectangle ${count}`;
-      kind = {
-        Shape: {
-          color: [0.42, 0.54, 1.0, 1.0],
-        },
-      };
-    } else if (type === "text") {
-      name = `Text ${count}`;
-      kind = {
-        Text: {
-          text: "Text Layer",
-          size: 48,
-        },
-      };
-    } else {
-      name = `Solid ${count}`;
-      kind = {
-        Solid: {
-          color: [0.15, 0.18, 0.25, 1.0],
-        },
-      };
-    }
-
-    const newLayer: Layer = {
-      id: 0,
-      name,
-      kind,
-      start: 0,
-      duration: comp.duration,
-      transform: {
-        position: [0, 0],
-        scale: type === "circle" ? [100, 100] : [120, 80],
-        rotation: 0,
-        opacity: 1,
-        anchor_point: [0, 0],
-      },
-      tracks: {},
-      visible: true,
-      locked: false,
-    };
-
-    await applyOp({
-      type: "addLayer",
-      comp: comp.id,
-      layer: newLayer,
-    });
-
-    const updated = activeComp();
-    if (updated && updated.layer_order.length > 0) {
-      editor.selected = updated.layer_order[updated.layer_order.length - 1];
-    }
+  function run(action: () => unknown) {
+    menu = null;
+    action();
   }
-
-  // Step duration in timeline units (ticks if duration > 1000, seconds otherwise)
-  const isTicks = $derived(Boolean(comp && comp.duration > 1000));
-  const frameStep = $derived(() => {
-    if (!comp) return 1 / 30;
-    if (isTicks) {
-      return ticksPerFrame(comp.fps);
-    }
-    return 1 / fpsNum;
-  });
-
-  function stepFrame(delta: number) {
-    if (!comp) return;
-    const step = frameStep();
-    const duration = comp.duration;
-    const nextTime = Math.min(duration, Math.max(0, editor.currentTime + delta * step));
-    scrub(nextTime);
-  }
-
-  /** Formats time into SMPTE timecode string HH:MM:SS:FF. */
-  function formatTimecode(time: number): string {
-    if (!comp) return "00:00:00:00";
-    const fps = fpsNum > 0 ? fpsNum : 30;
-    let totalFrames: number;
-    if (isTicks) {
-      totalFrames = Math.floor((time * fps) / TICKS_PER_SEC);
-    } else {
-      totalFrames = Math.floor(time * fps + 1e-4);
-    }
-
-    const isNeg = totalFrames < 0;
-    const absFrames = Math.abs(totalFrames);
-    const nomFps = Math.max(1, Math.round(fps));
-
-    const ff = absFrames % nomFps;
-    const totalSec = Math.floor(absFrames / nomFps);
-    const ss = totalSec % 60;
-    const totalMin = Math.floor(totalSec / 60);
-    const mm = totalMin % 60;
-    const hh = Math.floor(totalMin / 60);
-
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const prefix = isNeg ? "-" : "";
-    return `${prefix}${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`;
-  }
-
-  const currentTimecode = $derived(formatTimecode(editor.currentTime));
-  const durationTimecode = $derived(comp ? formatTimecode(comp.duration) : "00:00:00:00");
-  const currentFrame = $derived(() => {
-    if (!comp) return 0;
-    const fps = fpsNum > 0 ? fpsNum : 30;
-    if (isTicks) {
-      return Math.floor((editor.currentTime * fps) / TICKS_PER_SEC);
-    }
-    return Math.floor(editor.currentTime * fps + 1e-4);
-  });
 </script>
 
-<header class="flex h-12 select-none items-center justify-between border-b border-[var(--border)] bg-[var(--bg-panel)] px-4">
-  <!-- Brand & Composition Info -->
-  <div class="flex items-center gap-3">
-    <div class="flex items-baseline gap-2">
-      <span class="bg-gradient-to-r from-[var(--accent)] to-[#9bb2ff] bg-clip-text text-[15px] font-extrabold tracking-wider text-transparent">
-        BONAPARTE
-      </span>
-      <span class="rounded bg-[var(--bg-raised)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-[var(--text-dim)]">
-        v0.1
-      </span>
-    </div>
-
-    {#if comp}
-      <div class="hidden items-center gap-2 border-l border-[var(--border)] pl-3 text-xs text-[var(--text-dim)] sm:flex">
-        <span class="font-medium text-[var(--text)]">{comp.name}</span>
-        <span>·</span>
-        <span>{comp.width}×{comp.height}</span>
-        <span>·</span>
-        <!-- FPS Indicator badge -->
-        <span
-          class="flex items-center gap-1 rounded bg-[var(--bg-raised)] px-1.5 py-0.5 font-mono text-[11px] font-medium text-[var(--accent)]"
-          title={`Composition frame rate: ${formattedFps}`}
-        >
-          <span class="inline-block h-1.5 w-1.5 rounded-full bg-[var(--accent)]"></span>
-          {formattedFps}
-        </span>
-      </div>
-    {/if}
+<header class="topbar">
+  <div class="brand">
+    <svg width="23" height="25" viewBox="0 0 23 25" fill="none" aria-label="Bonaparte"
+      ><path
+        d="M3 2h10c8 0 9 10 2 11 9 1 7 10-1 10H3V2Z"
+        stroke="currentColor"
+        stroke-width="2.6"
+      /><path d="M8 7v11m0-6h5" stroke="currentColor" stroke-width="2.4" /></svg
+    >
+    <span>bonaparte<span class="brand-dot">.</span></span>
   </div>
-
-  <!-- Center Playback & Timecode Controls -->
-  <div class="flex items-center gap-2">
-    <!-- Step Backward 1 Frame -->
+  <span class="header-divider"></span>
+  <Icon name="folder" size={14} class="dim" />
+  <input
+    class="project-name"
+    aria-label="Project name"
+    value={editor.project?.name ?? "Untitled project"}
+    onchange={(e) => void applyOp({ type: "renameProject", name: e.currentTarget.value })}
+  />
+  <span class="save-state"
+    ><i class:dirty={editor.dirty}></i>{editor.dirty ? "Unsaved changes" : "Project ready"}</span
+  >
+  <div class="spacer"></div>
+  <div class="row history-actions">
     <button
-      type="button"
-      class="flex h-8 w-8 items-center justify-center rounded-md text-xs text-[var(--text-dim)] transition-colors hover:bg-[var(--bg-raised)] hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-30"
-      title="Step Backward 1 Frame (Left Arrow)"
-      disabled={!comp}
-      onclick={() => stepFrame(-1)}
+      class="icon-button"
+      title="Undo (Ctrl/⌘ Z)"
+      aria-label="Undo"
+      disabled={!editor.canUndo || editor.pending > 0}
+      onclick={() => void undoOp()}><Icon name="undo" size={16} /></button
     >
-      ⏮
-    </button>
-
-    <!-- Play / Pause Button -->
     <button
-      type="button"
-      class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-md px-3 text-xs font-semibold transition-all disabled:pointer-events-none disabled:opacity-30 {isPlaying
-        ? 'bg-[var(--accent)] text-white shadow-[0_0_12px_rgba(107,138,253,0.4)]'
-        : 'bg-[var(--bg-raised)] text-[var(--text)] hover:bg-[var(--bg-hover)]'}"
-      title={isPlaying ? "Pause (Space)" : "Play (Space)"}
-      disabled={!comp}
-      onclick={() => (isPlaying ? pause() : play())}
+      class="icon-button"
+      title="Redo (Ctrl/⌘ Shift Z)"
+      aria-label="Redo"
+      disabled={!editor.canRedo || editor.pending > 0}
+      onclick={() => void redoOp()}><Icon name="redo" size={16} /></button
     >
-      <span class="text-sm">{isPlaying ? "⏸" : "▶"}</span>
-      <span class="hidden text-[11px] sm:inline">{isPlaying ? "Pause" : "Play"}</span>
-    </button>
-
-    <!-- Step Forward 1 Frame -->
+    <span class="divider"></span>
+    <button class="btn ghost" onclick={() => void saveProject()} title="Save project (Ctrl/⌘ S)"
+      ><Icon name="save" size={14} />Save</button
+    >
     <button
-      type="button"
-      class="flex h-8 w-8 items-center justify-center rounded-md text-xs text-[var(--text-dim)] transition-colors hover:bg-[var(--bg-raised)] hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-30"
-      title="Step Forward 1 Frame (Right Arrow)"
+      class="btn primary export-button"
+      onclick={() => (editor.dialog = { kind: "export" })}
       disabled={!comp}
-      onclick={() => stepFrame(1)}
+      ><Icon name="download" size={14} />Export<Icon name="right" size={12} /></button
     >
-      ⏭
-    </button>
-
-    <!-- Timecode Display: HH:MM:SS:FF / Duration -->
-    <div
-      class="flex items-baseline gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-base)] px-2.5 py-1 font-mono text-xs shadow-inner"
-      title={`Current frame: ${currentFrame()}`}
-    >
-      <span class="font-bold tracking-wider text-[var(--text)]">
-        {currentTimecode}
-      </span>
-      <span class="text-[10px] text-[var(--text-muted)]">/</span>
-      <span class="text-[11px] tracking-wider text-[var(--text-dim)]">
-        {durationTimecode}
-      </span>
-    </div>
   </div>
+</header>
 
-  <!-- Right Controls: Add Layer, Presets Toggle, Undo, Redo -->
-  <div class="flex items-center gap-2">
-    <!-- Add Layer Dropdown -->
-    <div class="relative">
+<nav class="workflow-bar" aria-label="Editor workspace">
+  <div class="menus">
+    <div class="menu-anchor">
       <button
-        type="button"
-        class="flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-raised)] px-2.5 text-xs font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)] disabled:pointer-events-none disabled:opacity-30"
-        title="Add a new layer to composition"
-        disabled={!comp}
-        onclick={() => (addMenuOpen = !addMenuOpen)}
+        class="menu-trigger"
+        class:active={menu === "file"}
+        onclick={() => (menu = menu === "file" ? null : "file")}
+        >File<Icon name="down" size={11} /></button
       >
-        <span class="text-sm font-bold text-[var(--accent)]">+</span>
-        <span class="hidden sm:inline">Add Layer</span>
-        <span class="text-[9px] text-[var(--text-dim)]">▼</span>
-      </button>
-
-      {#if addMenuOpen}
-        <!-- Click outside to dismiss -->
-        <div
-          class="fixed inset-0 z-40"
-          onclick={() => (addMenuOpen = false)}
-          role="presentation"
-        ></div>
-
-        <div
-          class="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-1.5 shadow-xl select-none"
-        >
-          <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]">
-            Plugin Generators & Shapes
-          </div>
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-[var(--text)] transition-colors hover:bg-[var(--bg-raised)]"
-            onclick={() => void createLayer("circle")}
+      {#if menu === "file"}
+        <div class="menu">
+          <button onclick={() => run(() => (editor.dialog = { kind: "new-project" }))}
+            ><Icon name="plus" />New project</button
           >
-            <span class="text-base leading-none text-[#ff6b6b]">⭕</span>
-            <div class="flex flex-col">
-              <span class="font-medium">Circle Shape</span>
-              <span class="text-[10px] text-[var(--accent)] font-mono">builtin.circle plugin</span>
-            </div>
-          </button>
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-[var(--text)] transition-colors hover:bg-[var(--bg-raised)]"
-            onclick={() => void createLayer("rect")}
+          <button onclick={() => run(openProject)}
+            ><Icon name="folder" />Open project…<kbd>⌘ O</kbd></button
           >
-            <span class="text-base leading-none text-[#6b8afd]">⬛</span>
-            <div class="flex flex-col">
-              <span class="font-medium">Rectangle Shape</span>
-              <span class="text-[10px] text-[var(--text-dim)]">Vector shape primitive</span>
-            </div>
-          </button>
-
-          <div class="my-1 border-t border-[var(--border)]"></div>
-
-          <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]">
-            Standard Layers
-          </div>
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-[var(--text)] transition-colors hover:bg-[var(--bg-raised)]"
-            onclick={() => void createLayer("text")}
+          <button onclick={() => run(saveProject)}
+            ><Icon name="save" />Save project…<kbd>⌘ S</kbd></button
           >
-            <span class="text-base leading-none text-[#ffe066]">📝</span>
-            <div class="flex flex-col">
-              <span class="font-medium">Text Layer</span>
-              <span class="text-[10px] text-[var(--text-dim)]">Vector typography</span>
-            </div>
-          </button>
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-[var(--text)] transition-colors hover:bg-[var(--bg-raised)]"
-            onclick={() => void createLayer("solid")}
+          <hr />
+          <button onclick={() => run(() => (editor.dialog = { kind: "composition", compId: null }))}
+            ><Icon name="film" />New composition…</button
           >
-            <span class="text-base leading-none text-[#51cf66]">🎨</span>
-            <div class="flex flex-col">
-              <span class="font-medium">Solid Color Layer</span>
-              <span class="text-[10px] text-[var(--text-dim)]">Canvas backdrop fill</span>
-            </div>
-          </button>
+          <button
+            disabled={!comp}
+            onclick={() => run(() => (editor.dialog = { kind: "composition", compId: comp!.id }))}
+            ><Icon name="settings" />Composition settings…</button
+          >
+          <hr />
+          <button onclick={() => run(() => (editor.dialog = { kind: "export" }))}
+            ><Icon name="download" />Export…</button
+          >
         </div>
       {/if}
     </div>
-
-    <!-- Preset Browser Toggle -->
-    <button
-      type="button"
-      class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-all disabled:pointer-events-none disabled:opacity-30 {presetsOpen
-        ? 'border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] shadow-sm'
-        : 'border border-transparent bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]'}"
-      title="Toggle Animation Presets Browser (P)"
-      disabled={!comp}
-      onclick={() => onTogglePresets?.()}
+    <div class="menu-anchor">
+      <button
+        class="menu-trigger"
+        class:active={menu === "layer"}
+        onclick={() => (menu = menu === "layer" ? null : "layer")}
+        >Layer<Icon name="down" size={11} /></button
+      >
+      {#if menu === "layer"}
+        <div class="menu">
+          <button onclick={() => run(() => addLayer("text"))}><Icon name="type" />Text layer</button
+          >
+          <button onclick={() => run(() => addLayer("rectangle"))}
+            ><Icon name="square" />Rectangle</button
+          >
+          <button onclick={() => run(() => addLayer("circle"))}
+            ><Icon name="circle" />Ellipse</button
+          >
+          <button onclick={() => run(() => addLayer("solid"))}
+            ><Icon name="square" />Solid color</button
+          >
+          <button onclick={() => run(() => addLayer("adjustment"))}
+            ><Icon name="adjust" />Adjustment layer</button
+          >
+          <hr />
+          <button
+            disabled={!selectedLayer() || selectedLayer()?.locked}
+            onclick={() => run(duplicateSelected)}
+            ><Icon name="copy" />Duplicate<kbd>⌘ D</kbd></button
+          >
+          <button
+            disabled={!selectedLayer() || selectedLayer()?.locked}
+            onclick={() => run(deleteSelected)}><Icon name="trash" />Delete<kbd>⌫</kbd></button
+          >
+        </div>
+      {/if}
+    </div>
+    <button class="menu-trigger" onclick={() => (editor.dialog = { kind: "shortcuts" })}
+      >Help</button
     >
-      <span class="text-xs">✨</span>
-      <span class="hidden sm:inline">Presets</span>
-    </button>
-
-    <div class="h-4 w-[1px] bg-[var(--border)]"></div>
-
-    <!-- Undo -->
-    <button
-      type="button"
-      class="flex h-8 w-8 items-center justify-center rounded-md text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-raised)] hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-30"
-      title="Undo (Ctrl+Z)"
-      disabled={!editor.project}
-      onclick={() => void undoOp()}
-    >
-      ↺
-    </button>
-
-    <!-- Redo -->
-    <button
-      type="button"
-      class="flex h-8 w-8 items-center justify-center rounded-md text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-raised)] hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-30"
-      title="Redo (Ctrl+Shift+Z)"
-      disabled={!editor.project}
-      onclick={() => void redoOp()}
-    >
-      ↻
-    </button>
   </div>
-</header>
+  <div class="workspace-tabs">
+    {#each [{ name: "Design", icon: "layers" }, { name: "Color", icon: "palette" }, { name: "Animate", icon: "graph" }] as item}
+      <button
+        class:active={editor.workspace === item.name}
+        onclick={() => setWorkspace(item.name as typeof editor.workspace)}
+        ><Icon name={item.icon} size={13} />{item.name}</button
+      >
+    {/each}
+  </div>
+  <div
+    class="engine-tag"
+    title="The project currently uses the deterministic Rust CPU renderer. The GPU backend is not implemented yet."
+  >
+    <span></span>Rust compositor<span class="cpu-badge">CPU</span>
+  </div>
+</nav>
+{#if menu}<button class="menu-overlay" aria-label="Close menu" onclick={() => (menu = null)}
+  ></button>{/if}
+
+<style>
+  .topbar {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 17px;
+    background: #212221;
+    border-bottom: 1px solid #111211;
+  }
+  .brand {
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    color: #e6e7e5;
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.8px;
+    min-width: 182px;
+  }
+  .brand svg {
+    color: var(--accent);
+  }
+  .brand-dot {
+    color: var(--accent);
+  }
+  .header-divider {
+    height: 21px;
+    width: 1px;
+    background: var(--border);
+    margin: 0 8px 0 1px;
+  }
+  .project-name {
+    max-width: 260px;
+    width: 230px;
+    border: 0;
+    background: transparent;
+    outline: 0;
+    font-size: 11px;
+    color: #c5c6c4;
+    text-overflow: ellipsis;
+    padding: 4px;
+    border-radius: 3px;
+  }
+  .project-name:focus {
+    background: #353734;
+  }
+  .save-state {
+    font-size: 9px;
+    color: #848683;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .save-state i {
+    width: 4px;
+    height: 4px;
+    background: #a7ada4;
+    border-radius: 50%;
+  }
+  .save-state i.dirty {
+    background: #b2ada2;
+  }
+  .history-actions {
+    gap: 2px;
+  }
+  .export-button {
+    margin-left: 10px;
+    gap: 9px;
+    padding: 7px 11px;
+  }
+  .workflow-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #252524;
+    border-bottom: 1px solid var(--border);
+    height: 38px;
+    padding: 0 14px;
+    position: relative;
+    z-index: 61;
+  }
+  .menus {
+    display: flex;
+    gap: 2px;
+    width: 220px;
+  }
+  .menu-anchor {
+    position: relative;
+  }
+  .menu-trigger {
+    height: 25px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-dim);
+    font-size: 10px;
+    border-radius: 3px;
+  }
+  .menu-trigger:hover,
+  .menu-trigger.active {
+    background: #363735;
+    color: var(--text);
+  }
+  .workspace-tabs {
+    display: flex;
+    gap: 3px;
+    height: 100%;
+    align-items: center;
+  }
+  .workspace-tabs button {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    height: 26px;
+    min-width: 88px;
+    justify-content: center;
+    font-size: 10px;
+    color: #91928f;
+    border-radius: 4px;
+  }
+  .workspace-tabs button.active {
+    color: var(--accent);
+    background: #393b37;
+    box-shadow: inset 0 0 0 1px #50534e;
+  }
+  .engine-tag {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 220px;
+    justify-content: flex-end;
+    color: #8e908d;
+    font-size: 9px;
+  }
+  .engine-tag > span:first-child {
+    width: 4px;
+    height: 4px;
+    background: #969d93;
+    border-radius: 50%;
+  }
+  .cpu-badge {
+    font: 8px monospace;
+    border: 1px solid #4e504d;
+    border-radius: 2px;
+    padding: 2px 3px;
+    margin-left: 4px;
+  }
+  @media (max-width: 1150px) {
+    .save-state {
+      display: none;
+    }
+    .brand {
+      min-width: 168px;
+    }
+    .project-name {
+      width: 200px;
+    }
+    .engine-tag {
+      width: 170px;
+    }
+  }
+  @media (max-width: 900px) {
+    .brand {
+      min-width: 140px;
+      font-size: 18px;
+    }
+    .project-name {
+      width: 150px;
+    }
+    .engine-tag {
+      display: none;
+    }
+    .workspace-tabs {
+      margin-left: auto;
+    }
+    .menus {
+      width: 170px;
+    }
+    .header-divider {
+      display: none;
+    }
+  }
+</style>

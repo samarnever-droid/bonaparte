@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.circle"
 name = "Circle Shape"
+category = "Generators"
 cost = "light"
 shader = "circle.wgsl"
 inputs = []

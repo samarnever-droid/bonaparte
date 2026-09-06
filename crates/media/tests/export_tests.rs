@@ -58,6 +58,9 @@ fn test_export_invalid_frame_buffer_length_fails() {
         Ok(vec![0u8; 10])
     });
 
-    assert!(res.is_err(), "invalid buffer size must cause export failure");
+    assert!(
+        res.is_err(),
+        "invalid buffer size must cause export failure"
+    );
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

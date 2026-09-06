@@ -8,12 +8,14 @@
 //! Must never depend on: engine internals or UI.
 
 pub mod cpu_reference;
+pub mod grading;
 pub mod registry;
 
 pub use cpu_reference::{
     evaluate_blur, evaluate_chromatic_aberration, evaluate_circle, evaluate_color_adjust,
-    evaluate_directional_blur, evaluate_drop_shadow, evaluate_effect, evaluate_glow, evaluate_invert,
-    evaluate_tint, evaluate_transform, evaluate_vignette, CpuEvalError, CpuFrame, ParamValue,
+    evaluate_directional_blur, evaluate_drop_shadow, evaluate_effect, evaluate_glow,
+    evaluate_invert, evaluate_tint, evaluate_transform, evaluate_vignette, CpuEvalError, CpuFrame,
+    ParamValue,
 };
 pub use registry::{
     builtin_manifests, builtin_packs, EffectRegistry, RegisteredEffect, RegistryError,
@@ -33,7 +35,11 @@ mod tests {
     #[test]
     fn every_builtin_is_a_valid_public_api_plugin() {
         let manifests = builtin_manifests();
-        assert_eq!(manifests.len(), 11, "must have all 11 core built-in packs");
+        assert_eq!(
+            manifests.len(),
+            bonaparte_effects_count(),
+            "must have all 11 core built-in packs"
+        );
         for m in &manifests {
             m.validate().expect("builtin packs must validate");
             assert!(
@@ -46,7 +52,7 @@ mod tests {
     #[test]
     fn effect_registry_contains_all_11_builtins() {
         let registry = EffectRegistry::new();
-        assert_eq!(registry.len(), 11);
+        assert_eq!(registry.len(), bonaparte_effects_count());
         let expected_ids = [
             "builtin.glow",
             "builtin.blur",
@@ -66,4 +72,9 @@ mod tests {
             assert!(registry.get_shader(id).is_some());
         }
     }
+}
+
+#[cfg(test)]
+fn bonaparte_effects_count() -> usize {
+    registry::builtin_packs().len()
 }

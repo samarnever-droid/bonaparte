@@ -25,6 +25,7 @@ fn create_base_project() -> (Project, CompId, LayerId, MediaId) {
         name: "logo.png".into(),
         path: Some("assets/logo.png".into()),
         kind: MediaKind::Image,
+        embedded: None,
         slot: None,
         alias: Some("logo".into()),
         perception: None,
@@ -57,7 +58,10 @@ fn test_roundtrip_create_comp() {
     };
 
     history.commit(&mut p, op).unwrap();
-    assert_ne!(serde_json::to_string(&p).unwrap(), serde_json::to_string(&p0).unwrap());
+    assert_ne!(
+        serde_json::to_string(&p).unwrap(),
+        serde_json::to_string(&p0).unwrap()
+    );
 
     history.undo(&mut p).unwrap();
     assert_projects_equal(&p, &p0);
@@ -130,6 +134,7 @@ fn test_roundtrip_add_layer() {
         layer: Layer::new(
             "TextLayer",
             LayerKind::Text {
+                style: Default::default(),
                 text: "Hello Bonaparte".into(),
                 size: 48.0,
             },
@@ -211,7 +216,10 @@ fn test_roundtrip_set_layer_time() {
 
     history.commit(&mut p, op).unwrap();
     assert_eq!(p.layer(comp, layer).unwrap().start, Time(TICKS_PER_SEC));
-    assert_eq!(p.layer(comp, layer).unwrap().duration, Time(2 * TICKS_PER_SEC));
+    assert_eq!(
+        p.layer(comp, layer).unwrap().duration,
+        Time(2 * TICKS_PER_SEC)
+    );
 
     history.undo(&mut p).unwrap();
     assert_projects_equal(&p, &p0);
@@ -365,11 +373,20 @@ fn test_roundtrip_set_value_all_properties() {
         history.commit(&mut p, op).unwrap();
     }
 
-    assert_eq!(p.layer(comp, layer).unwrap().transform.position, [500.0, -300.0]);
-    assert_eq!(p.layer(comp, layer).unwrap().transform.scale, [200.0, 150.0]);
+    assert_eq!(
+        p.layer(comp, layer).unwrap().transform.position,
+        [500.0, -300.0]
+    );
+    assert_eq!(
+        p.layer(comp, layer).unwrap().transform.scale,
+        [200.0, 150.0]
+    );
     assert_eq!(p.layer(comp, layer).unwrap().transform.rotation, 45.0);
     assert_eq!(p.layer(comp, layer).unwrap().transform.opacity, 0.75);
-    assert_eq!(p.layer(comp, layer).unwrap().transform.anchor_point, [50.0, 50.0]);
+    assert_eq!(
+        p.layer(comp, layer).unwrap().transform.anchor_point,
+        [50.0, 50.0]
+    );
 
     for _ in 0..5 {
         history.undo(&mut p).unwrap();
@@ -417,7 +434,12 @@ fn test_roundtrip_keyframe_ops() {
         )
         .unwrap();
 
-    assert_eq!(p.layer(comp, layer).unwrap().tracks[&Property::Opacity].keys.len(), 2);
+    assert_eq!(
+        p.layer(comp, layer).unwrap().tracks[&Property::Opacity]
+            .keys
+            .len(),
+        2
+    );
 
     // Replace keyframe at t=1s with new value
     history
@@ -494,14 +516,26 @@ fn test_roundtrip_keyframe_ops() {
             },
         )
         .unwrap();
-    assert_eq!(p.layer(comp, layer).unwrap().tracks[&Property::Opacity].keys.len(), 1);
+    assert_eq!(
+        p.layer(comp, layer).unwrap().tracks[&Property::Opacity]
+            .keys
+            .len(),
+        1
+    );
 
     // Undo all remaining ops back to clean p0
     while history.can_undo() {
         history.undo(&mut p).unwrap();
     }
     // Tracks map might be empty or missing Property::Opacity
-    p.comps.get_mut(&comp).unwrap().layers.get_mut(&layer).unwrap().tracks.retain(|_, t| !t.keys.is_empty());
+    p.comps
+        .get_mut(&comp)
+        .unwrap()
+        .layers
+        .get_mut(&layer)
+        .unwrap()
+        .tracks
+        .retain(|_, t| !t.keys.is_empty());
     assert_projects_equal(&p, &p0);
 }
 
@@ -535,7 +569,10 @@ fn test_roundtrip_reorder_layer() {
     let p0 = p.clone();
 
     // Initial order: [1, 2, 3]
-    assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer1, layer2, layer3]);
+    assert_eq!(
+        p.comp(comp).unwrap().layer_order,
+        vec![layer1, layer2, layer3]
+    );
 
     // Move layer 3 to index 0: [3, 1, 2]
     history
@@ -548,13 +585,19 @@ fn test_roundtrip_reorder_layer() {
             },
         )
         .unwrap();
-    assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer3, layer1, layer2]);
+    assert_eq!(
+        p.comp(comp).unwrap().layer_order,
+        vec![layer3, layer1, layer2]
+    );
 
     history.undo(&mut p).unwrap();
     assert_projects_equal(&p, &p0);
 
     history.redo(&mut p).unwrap();
-    assert_eq!(p.comp(comp).unwrap().layer_order, vec![layer3, layer1, layer2]);
+    assert_eq!(
+        p.comp(comp).unwrap().layer_order,
+        vec![layer3, layer1, layer2]
+    );
 
     history.undo(&mut p).unwrap();
     assert_projects_equal(&p, &p0);

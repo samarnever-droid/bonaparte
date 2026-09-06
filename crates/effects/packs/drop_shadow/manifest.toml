@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.drop_shadow"
 name = "Drop Shadow"
+category = "Light & stylize"
 cost = "medium"
 shader = "drop_shadow.wgsl"
 inputs = ["input"]

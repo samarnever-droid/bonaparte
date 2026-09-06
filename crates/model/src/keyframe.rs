@@ -29,10 +29,9 @@ impl PropValue {
     pub fn lerp(a: &PropValue, b: &PropValue, t: f32) -> PropValue {
         match (a, b) {
             (PropValue::Scalar(x), PropValue::Scalar(y)) => PropValue::Scalar(x + (y - x) * t),
-            (PropValue::Vec2(x), PropValue::Vec2(y)) => PropValue::Vec2([
-                x[0] + (y[0] - x[0]) * t,
-                x[1] + (y[1] - x[1]) * t,
-            ]),
+            (PropValue::Vec2(x), PropValue::Vec2(y)) => {
+                PropValue::Vec2([x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t])
+            }
             // Callers type-check via Property::value_kind before reaching here;
             // mixed kinds at this point would be a model bug.
             _ => *a,
@@ -187,10 +186,19 @@ mod tests {
         let mut t = Track::new();
         t.set_key(k(0, 0.0));
         t.set_key(k(1, 100.0));
-        assert_eq!(t.evaluate(Time(TICKS_PER_SEC / 2)), Some(PropValue::Scalar(50.0)));
+        assert_eq!(
+            t.evaluate(Time(TICKS_PER_SEC / 2)),
+            Some(PropValue::Scalar(50.0))
+        );
         // Holds outside the key range.
-        assert_eq!(t.evaluate(Time(-TICKS_PER_SEC)), Some(PropValue::Scalar(0.0)));
-        assert_eq!(t.evaluate(Time(2 * TICKS_PER_SEC)), Some(PropValue::Scalar(100.0)));
+        assert_eq!(
+            t.evaluate(Time(-TICKS_PER_SEC)),
+            Some(PropValue::Scalar(0.0))
+        );
+        assert_eq!(
+            t.evaluate(Time(2 * TICKS_PER_SEC)),
+            Some(PropValue::Scalar(100.0))
+        );
     }
 
     #[test]
@@ -227,9 +235,6 @@ mod tests {
     fn vec2_lerp() {
         let a = PropValue::Vec2([0.0, 0.0]);
         let b = PropValue::Vec2([100.0, 200.0]);
-        assert_eq!(
-            PropValue::lerp(&a, &b, 0.25),
-            PropValue::Vec2([25.0, 50.0])
-        );
+        assert_eq!(PropValue::lerp(&a, &b, 0.25), PropValue::Vec2([25.0, 50.0]));
     }
 }

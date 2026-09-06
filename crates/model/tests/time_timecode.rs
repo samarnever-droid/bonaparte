@@ -59,8 +59,22 @@ fn test_framerate_display_and_ticks() {
         (FrameRate::FPS_30, "30 fps", 4000),
         (FrameRate::FPS_60, "60 fps", 2000),
         (FrameRate::NTSC_FILM, "23.976 fps", 5005),
-        (FrameRate { num: 30000, den: 1001 }, "29.97 fps", 4004),
-        (FrameRate { num: 60000, den: 1001 }, "59.94 fps", 2002),
+        (
+            FrameRate {
+                num: 30000,
+                den: 1001,
+            },
+            "29.97 fps",
+            4004,
+        ),
+        (
+            FrameRate {
+                num: 60000,
+                den: 1001,
+            },
+            "59.94 fps",
+            2002,
+        ),
     ];
 
     for (rate, display_str, expected_tpf) in rates {
@@ -85,15 +99,24 @@ fn test_smpte_timecode_conversions() {
 
     // Frame 1 -> 5000 ticks
     assert_eq!(Time(5000).to_timecode(fps24), "00:00:00:01");
-    assert_eq!(Time::from_timecode("00:00:00:01", fps24).unwrap(), Time(5000));
+    assert_eq!(
+        Time::from_timecode("00:00:00:01", fps24).unwrap(),
+        Time(5000)
+    );
 
     // Frame 23 (last frame of second 0) -> 115000 ticks
     assert_eq!(Time(115000).to_timecode(fps24), "00:00:00:23");
-    assert_eq!(Time::from_timecode("00:00:00:23", fps24).unwrap(), Time(115000));
+    assert_eq!(
+        Time::from_timecode("00:00:00:23", fps24).unwrap(),
+        Time(115000)
+    );
 
     // Frame 24 (1 second) -> 120000 ticks
     assert_eq!(Time(120000).to_timecode(fps24), "00:00:01:00");
-    assert_eq!(Time::from_timecode("00:00:01:00", fps24).unwrap(), Time(120000));
+    assert_eq!(
+        Time::from_timecode("00:00:01:00", fps24).unwrap(),
+        Time(120000)
+    );
 
     // 1 hour, 23 minutes, 45 seconds, 12 frames
     let total_frames = ((60 + 23) * 60 + 45) * 24 + 12;

@@ -14,18 +14,24 @@
 //! automation all trustworthy.
 
 pub mod document;
+pub mod effect;
 pub mod ids;
 pub mod keyframe;
 pub mod manifest;
 pub mod ops;
 pub mod time;
+pub mod validation;
 
 pub use document::{
-    AssetRole, BlendMode, Comp, EffectiveTransform, Layer, LayerKind, MediaAsset, MediaKind,
-    PerceptionCard, Project, Property, SlotDef, StaticTransform,
+    AssetRole, BlendMode, Comp, EffectiveTransform, EmbeddedImage, Layer, LayerKind, MediaAsset,
+    MediaKind, PerceptionCard, Project, Property, ShapeStyle, SlotDef, StaticTransform, TextStyle,
 };
 pub use ids::{CompId, LayerId, MediaId};
 pub use keyframe::{Easing, Keyframe, PropValue, Track};
-pub use manifest::{EffectManifest, GpuCost, ManifestError, ParamDef, ParamKind, SUPPORTED_API_MAJOR};
+pub use manifest::{
+    EffectManifest, GpuCost, ManifestError, ParamDef, ParamKind, SUPPORTED_API_MAJOR,
+};
 pub use ops::{History, ModelError, Op};
 pub use time::{FrameRate, Time, TimecodeError, TICKS_PER_SEC};
+
+pub use effect::{EffectInstance, EffectValue};

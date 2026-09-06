@@ -1,0 +1,4 @@
+    Checking bonaparte-model v0.2.0 (/home/user/bonaparte/crates/model)
+    Checking bonaparte-effects v0.2.0 (/home/user/bonaparte/crates/effects)
+    Checking bonaparte-engine v0.2.0 (/home/user/bonaparte/crates/engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.39s

@@ -1,4 +1,4 @@
-﻿use bonaparte_engine::{
+use bonaparte_engine::{
     render_comp, render_tile, render_viewport, Affine2D, NoMedia, RenderGraph, Tile, TileGrid,
 };
 use bonaparte_model::{BlendMode, FrameRate, Layer, LayerKind, Project, StaticTransform, Time};
@@ -9,7 +9,14 @@ fn test_engine_pure_in_memory_execution() {
     let mut p = Project::new("Pure In-Memory");
     let c = p.create_comp("pure", 256, 256, FrameRate::FPS_30, Time(100));
 
-    let mut l = Layer::new("solid", LayerKind::Solid { color: [0.5, 0.5, 0.5, 1.0] }, Time::ZERO, Time(100));
+    let mut l = Layer::new(
+        "solid",
+        LayerKind::Solid {
+            color: [0.5, 0.5, 0.5, 1.0],
+        },
+        Time::ZERO,
+        Time(100),
+    );
     l.transform = StaticTransform::default();
     l.blend_mode = BlendMode::Normal;
     p.insert_layer(c, l);

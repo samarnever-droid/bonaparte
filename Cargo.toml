@@ -5,7 +5,7 @@ members = ["crates/*", "ui/src-tauri"]
 # Dependency rule (RULES.md §1.2): every workspace dep needs a one-line reason.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -19,3 +19,12 @@ glam = { version = "0.29", features = ["serde"] }  # math for engine
 [profile.dev.package.bonaparte-engine]
 opt-level = 3
 
+
+[profile.dev.package.bonaparte-effects]
+opt-level = 3
+
+[profile.dev.package.fontdue]
+opt-level = 3
+
+[profile.dev.package.ttf-parser]
+opt-level = 3

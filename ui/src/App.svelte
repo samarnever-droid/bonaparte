@@ -1,168 +1,492 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import {
-    editor,
-    init,
-    undoOp,
-    redoOp,
-    play,
-    pause,
-    scrub,
-    activeComp,
-    selectedLayer,
-    applyOp,
-    toggleKeyframeAtPlayhead,
-  } from "./lib/store.svelte";
-  import { fpsAsNumber, ticksPerFrame, type Property } from "./lib/model";
   import TopBar from "./lib/components/TopBar.svelte";
-  import PresetBrowser from "./lib/components/PresetBrowser.svelte";
+  import Sidebar from "./lib/components/Sidebar.svelte";
   import Viewport from "./lib/components/Viewport.svelte";
   import Properties from "./lib/components/Properties.svelte";
   import Timeline from "./lib/components/Timeline.svelte";
-
-  let showPresets = $state(false);
-
-  function handleKeyDown(e: KeyboardEvent) {
+  import Dialogs from "./lib/components/Dialogs.svelte";
+  import Icon from "./lib/components/Icon.svelte";
+  import {
+    editor,
+    init,
+    activeComp,
+    selectedLayer,
+    undoOp,
+    redoOp,
+    saveProject,
+    openProject,
+    duplicateSelected,
+    deleteSelected,
+    play,
+    pause,
+    scrub,
+    toggleKeyframeAtPlayhead,
+    setWorkspace,
+    importImage,
+    openProjectFile,
+    notify,
+  } from "./lib/store.svelte";
+  import { ticksPerFrame } from "./lib/model";
+  let timelineHeight = $state(252),
+    draggingFiles = $state(false);
+  let dragDepth = 0,
+    resizeOrigin = 0,
+    resizeStart = 0;
+  function resizeMove(e: PointerEvent) {
+    timelineHeight = Math.max(
+      180,
+      Math.min(window.innerHeight * 0.65, resizeStart + resizeOrigin - e.clientY),
+    );
+  }
+  function resizeEnd() {
+    window.removeEventListener("pointermove", resizeMove);
+    window.removeEventListener("pointerup", resizeEnd);
+    window.removeEventListener("pointercancel", resizeEnd);
+    document.body.style.cursor = "";
+  }
+  function resizeBegin(e: PointerEvent) {
+    e.preventDefault();
+    resizeOrigin = e.clientY;
+    resizeStart = timelineHeight;
+    document.body.style.cursor = "row-resize";
+    window.addEventListener("pointermove", resizeMove);
+    window.addEventListener("pointerup", resizeEnd);
+    window.addEventListener("pointercancel", resizeEnd);
+  }
+  function keyboard(e: KeyboardEvent) {
+    if (e.defaultPrevented || e.isComposing || editor.dialog || editor.loading) return;
     const target = e.target as HTMLElement | null;
-    const isInput =
-      target &&
-      (target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.tagName === "SELECT" ||
-        target.isContentEditable);
-
-    // 1. Undo / Redo (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y)
-    if (e.ctrlKey && e.key.toLowerCase() === "z") {
+    const typing = !!target?.closest('textarea,[contenteditable="true"],input,select');
+    const mod = e.ctrlKey || e.metaKey,
+      key = e.key.toLowerCase();
+    if (mod && key === "s") {
+      e.preventDefault();
+      target?.blur();
+      void saveProject();
+      return;
+    }
+    if (mod && key === "o") {
+      e.preventDefault();
+      target?.blur();
+      void openProject();
+      return;
+    }
+    if (typing) return;
+    if (mod && key === "z") {
       e.preventDefault();
       if (e.shiftKey) void redoOp();
       else void undoOp();
       return;
     }
-    if (e.ctrlKey && e.key.toLowerCase() === "y") {
+    if (mod && key === "y") {
       e.preventDefault();
       void redoOp();
       return;
     }
-
-    // Do not intercept editing keys if user is typing inside an input element
-    if (isInput) return;
-
-    // 2. Play / Pause (Space)
-    if (e.code === "Space" || e.key === " ") {
+    if (mod && key === "d") {
       e.preventDefault();
-      if (editor.playing) pause();
-      else play();
+      void duplicateSelected();
       return;
     }
-
-    // 3. Toggle Keyframe at playhead (K)
-    if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (mod) return;
+    if (e.code === "Space") {
       e.preventDefault();
-      const comp = activeComp();
-      const layer = selectedLayer();
-      if (comp && layer) {
-        const animatedTracks = Object.keys(layer.tracks) as Property[];
-        if (animatedTracks.length > 0) {
-          for (const prop of animatedTracks) {
-            void toggleKeyframeAtPlayhead(layer.id, prop);
-          }
-        } else {
-          // Default to Position track if layer has no animated tracks yet
-          void toggleKeyframeAtPlayhead(layer.id, "Position");
-        }
+      if (!e.repeat) {
+        if (editor.playing) pause();
+        else play();
       }
       return;
     }
-
-    // 4. Delete / Backspace (Remove selected layer)
-    if ((e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    const comp = activeComp();
+    if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && comp) {
       e.preventDefault();
-      const comp = activeComp();
-      const layer = selectedLayer();
-      if (comp && layer) {
-        const layerId = layer.id;
-        editor.selected = null;
-        void applyOp({
-          type: "removeLayer",
-          comp: comp.id,
-          layer: layerId,
-        });
-      }
+      pause();
+      scrub(
+        editor.currentTime +
+          (e.key === "ArrowLeft" ? -1 : 1) * ticksPerFrame(comp.fps) * (e.shiftKey ? 10 : 1),
+      );
       return;
     }
-
-    // 5. Arrow keys (Step 1 frame, or 10 frames with Shift)
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    if (e.key === "Home") {
       e.preventDefault();
-      const comp = activeComp();
-      if (comp) {
-        const fps = fpsAsNumber(comp.fps) || 30;
-        const isTicks = comp.duration > 1000;
-        const frameStep = isTicks ? ticksPerFrame(comp.fps) : 1 / fps;
-        const multiplier = e.shiftKey ? 10 : 1;
-        const delta = (e.key === "ArrowRight" ? 1 : -1) * frameStep * multiplier;
-        const nextTime = Math.min(comp.duration, Math.max(0, editor.currentTime + delta));
-        scrub(nextTime);
-      }
-      return;
-    }
-
-    // 6. Home / End (Jump to start or end of timeline)
-    if (e.key === "Home" && !e.ctrlKey && !e.altKey) {
-      e.preventDefault();
+      pause();
       scrub(0);
       return;
     }
-    if (e.key === "End" && !e.ctrlKey && !e.altKey) {
+    if (e.key === "End" && comp) {
       e.preventDefault();
-      const comp = activeComp();
-      if (comp) scrub(comp.duration);
+      pause();
+      scrub(comp.duration);
       return;
     }
-
-    // 7. Toggle Preset Browser (P)
-    if (e.key.toLowerCase() === "p" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (key === "k") {
       e.preventDefault();
-      showPresets = !showPresets;
+      const layer = selectedLayer();
+      if (layer) void toggleKeyframeAtPlayhead(layer.id, editor.graphProperty ?? "Position");
       return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      void deleteSelected();
+      return;
+    }
+    if (key === "v") editor.tool = "select";
+    if (key === "h") editor.tool = "hand";
+    if (key === "g") editor.showGuides = !editor.showGuides;
+    if (key === "1") setWorkspace("Design");
+    if (key === "2") setWorkspace("Color");
+    if (key === "3") setWorkspace("Animate");
+    if (e.key === "?") editor.dialog = { kind: "shortcuts" };
+  }
+  function dragEnter(e: DragEvent) {
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+      dragDepth++;
+      draggingFiles = true;
     }
   }
-
+  function dragLeave() {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) draggingFiles = false;
+  }
+  async function drop(e: DragEvent) {
+    e.preventDefault();
+    draggingFiles = false;
+    dragDepth = 0;
+    const file = e.dataTransfer?.files[0];
+    if (!file) return;
+    if (/\.(bonaparte|json)$/i.test(file.name)) {
+      if (
+        editor.dirty &&
+        !confirm("Replace the current session? Save a project file first to keep your changes.")
+      )
+        return;
+      await openProjectFile(file);
+    } else if (file.type.startsWith("image/")) await importImage(file);
+    else notify("This import supports PNG, JPEG, WebP, and .bonaparte project files.", true);
+  }
+  function beforeUnload(e: BeforeUnloadEvent) {
+    if (editor.dirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  }
   onMount(() => {
     void init();
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("beforeunload", beforeUnload);
   });
-
   onDestroy(() => {
-    window.removeEventListener("keydown", handleKeyDown);
+    pause();
+    resizeEnd();
+    window.removeEventListener("beforeunload", beforeUnload);
   });
 </script>
 
-<div class="grid h-screen w-screen grid-rows-[48px_1fr_240px] overflow-hidden bg-[var(--bg-base)] text-[var(--text)]">
-  <!-- Top Navigation Bar -->
-  <TopBar
-    onTogglePresets={() => (showPresets = !showPresets)}
-    presetsOpen={showPresets}
-  />
+<svelte:window
+  onkeydown={keyboard}
+  ondragenter={dragEnter}
+  ondragover={(e) => {
+    if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+  }}
+  ondragleave={dragLeave}
+  ondrop={drop}
+/>
 
-  <!-- Main Workspace Row: Optional Preset Browser + Viewport + Properties -->
-  <div class="grid min-h-0 {showPresets ? 'grid-cols-[280px_1fr_280px]' : 'grid-cols-[1fr_280px]'}">
-    {#if showPresets}
-      <PresetBrowser onClose={() => (showPresets = false)} />
-    {/if}
-    <Viewport />
-    <Properties />
+<div class="shell" style={`--timeline-height:${timelineHeight}px`}>
+  <TopBar />
+  <main class="workspace"><Sidebar /><Viewport /><Properties /></main>
+  <div class="timeline-region">
+    <button
+      type="button"
+      class="timeline-resizer"
+      aria-label="Resize timeline"
+      onpointerdown={resizeBegin}
+      onkeydown={(e) => {
+        if (e.key === "ArrowUp") {
+          timelineHeight = Math.min(window.innerHeight * 0.65, timelineHeight + 20);
+          e.stopPropagation();
+        }
+        if (e.key === "ArrowDown") {
+          timelineHeight = Math.max(180, timelineHeight - 20);
+          e.stopPropagation();
+        }
+      }}
+    ></button><Timeline />
   </div>
-
-  <!-- Timeline Panel -->
-  <Timeline />
+  <footer class="statusbar">
+    <span class="connection-dot" class:error={!!editor.renderError || !!editor.initError}
+    ></span><span
+      >{editor.renderError
+        ? "Renderer needs attention"
+        : editor.pending
+          ? "Applying changes…"
+          : editor.project
+            ? "Rust engine connected"
+            : "Connecting to engine…"}</span
+    ><span class="status-separator">/</span><span class="mono"
+      >{editor.frameMs > 0 ? `${Math.round(editor.frameMs)} ms / frame` : "CPU reference"}</span
+    ><span class="spacer"></span><span class="recovery-status"
+      ><Icon name="check" size={9} />{editor.recovery}</span
+    ><span class="status-separator">/</span><button
+      onclick={() => (editor.dialog = { kind: "shortcuts" })}
+      title="Keyboard shortcuts"><Icon name="help" size={10} /><span>Shortcuts</span></button
+    >
+  </footer>
 </div>
-
-{#if !editor.project}
-  <div class="fixed inset-0 z-50 grid place-items-center bg-[var(--bg-base)] text-sm text-[var(--text-dim)]">
-    <div class="flex flex-col items-center gap-2">
-      <div class="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent"></div>
-      <span>Loading Bonaparte project…</span>
-    </div>
+{#if editor.loading || editor.initError}
+  <div class="loading-screen">
+    <div class="loader-brand">bonaparte<span>.</span></div>
+    {#if editor.initError}<strong>The editor couldn’t connect.</strong>
+      <p>{editor.initError}</p>
+      <p class="loading-hint">
+        For the browser version, run the Rust service and Vite together.<br />Use
+        <code>npm run studio</code> from the ui directory.
+      </p>
+      <button class="btn primary" onclick={() => void init()}
+        >Try again<Icon name="rotate" size={13} /></button
+      >{:else}<div class="loading-track"><span></span></div>
+      <p>Preparing your creative space…</p>{/if}
   </div>
 {/if}
+{#if editor.dialog}<Dialogs />{/if}
+{#if editor.toast}<div
+    class="toast"
+    class:error={editor.toast.error}
+    role={editor.toast.error ? "alert" : "status"}
+  >
+    <span class="toast-symbol"><Icon name={editor.toast.error ? "info" : "check"} size={15} /></span
+    ><span>{editor.toast.message}</span><button
+      class="icon-button small"
+      aria-label="Dismiss notification"
+      onclick={() => (editor.toast = null)}><Icon name="x" size={12} /></button
+    >
+  </div>{/if}
+{#if draggingFiles}<div class="drop-overlay">
+    <Icon name="upload" size={34} /><strong>Bring it into the picture.</strong><span
+      >Drop an image or a Bonaparte project.</span
+    >
+  </div>{/if}
+
+<style>
+  .shell {
+    height: 100dvh;
+    display: grid;
+    grid-template-rows: 52px 38px minmax(160px, 1fr) var(--timeline-height) 24px;
+    overflow: hidden;
+    background: #1a1b1a;
+  }
+  .workspace {
+    display: grid;
+    grid-template-columns: 236px minmax(240px, 1fr) 304px;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .timeline-region {
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .timeline-region > :global(.timeline) {
+    flex: 1;
+  }
+  .timeline-resizer {
+    position: absolute;
+    top: -4px;
+    left: 0;
+    right: 0;
+    height: 7px;
+    z-index: 45;
+    cursor: row-resize;
+    background: transparent;
+    touch-action: none;
+  }
+  .timeline-resizer:hover {
+    background: #cbd2c740;
+  }
+  .statusbar {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 13px;
+    background: #232421;
+    border-top: 1px solid #393c37;
+    font-size: 8px;
+    color: #7f837b;
+    letter-spacing: 0.1px;
+  }
+  .connection-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #acb1a7;
+  }
+  .connection-dot.error {
+    background: #aea49d;
+  }
+  .status-separator {
+    color: #4a4e47;
+    margin: 0 4px;
+  }
+  .statusbar button,
+  .recovery-status {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    font-size: 8px;
+  }
+  .statusbar .mono {
+    font-size: 7px;
+  }
+  .statusbar button:hover {
+    color: var(--accent);
+  }
+  .loading-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: #1d1f1d;
+    color: #a3a89f;
+    text-align: center;
+    padding: 30px;
+  }
+  .loader-brand {
+    font-size: 39px;
+    color: #e1e4df;
+    letter-spacing: -1.7px;
+    font-weight: 600;
+    margin-bottom: 5px;
+  }
+  .loader-brand span {
+    color: var(--accent);
+  }
+  .loading-screen p {
+    font-size: 11px;
+    line-height: 1.8;
+    max-width: 520px;
+    margin: 0;
+  }
+  .loading-screen strong {
+    font-size: 15px;
+    font-weight: 400;
+  }
+  .loading-hint {
+    color: #82867e;
+  }
+  .loading-track {
+    width: 110px;
+    height: 2px;
+    background: #424640;
+    overflow: hidden;
+  }
+  .loading-track span {
+    display: block;
+    height: 100%;
+    width: 40%;
+    background: var(--accent);
+    animation: load 1.4s ease-in-out infinite;
+  }
+  @keyframes load {
+    from {
+      transform: translateX(-110%);
+    }
+    to {
+      transform: translateX(360%);
+    }
+  }
+  .toast {
+    position: fixed;
+    bottom: 39px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 220;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #393c38;
+    border: 1px solid #777b73;
+    border-radius: 6px;
+    box-shadow: 0 10px 40px #0006;
+    color: #d4d8d1;
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 10px 11px;
+    max-width: min(580px, 90vw);
+  }
+  .toast.error {
+    border-color: #736d67;
+    background: #34322f;
+    color: #cbc6bf;
+  }
+  .toast-symbol {
+    height: 23px;
+    width: 23px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    color: var(--accent);
+    background: #61665c30;
+    border-radius: 50%;
+  }
+  .toast.error .toast-symbol {
+    color: #beb7ad;
+    background: #80756e20;
+  }
+  .toast > .icon-button {
+    margin-left: 6px;
+  }
+  .drop-overlay {
+    position: fixed;
+    inset: 14px;
+    z-index: 300;
+    border: 2px dashed #c0c5bb;
+    border-radius: 12px;
+    background: #282a26ea;
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 19px;
+    color: #c3c8bf;
+  }
+  .drop-overlay strong {
+    font-size: 25px;
+    letter-spacing: -0.5px;
+    font-weight: 500;
+  }
+  .drop-overlay span {
+    font-size: 12px;
+    color: #959a91;
+  }
+  @media (max-width: 1150px) {
+    .workspace {
+      grid-template-columns: 210px minmax(220px, 1fr) 282px;
+    }
+  }
+  @media (max-width: 900px) {
+    .workspace {
+      grid-template-columns: 180px minmax(220px, 1fr) 260px;
+    }
+  }
+  @media (max-width: 780px) {
+    .workspace {
+      grid-template-columns: minmax(220px, 1fr) 260px;
+    }
+    .workspace > :global(.sidebar) {
+      display: none;
+    }
+    .recovery-status {
+      display: none;
+    }
+  }
+</style>

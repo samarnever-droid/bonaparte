@@ -1,0 +1,18 @@
+
+> bonaparte-ui@0.2.0 test:e2e
+> playwright test
+
+[WebServer]     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+[WebServer] Bonaparte Rust render service on 0.0.0.0:4318 (development only)
+
+Running 7 tests using 1 worker
+
+  ✓  1 tests/editor.spec.ts:108:1 › composition creation and background are one undoable transaction (1.9s)
+  ✓  2 tests/editor.spec.ts:138:1 › text, shape content, canvas gestures, lock and duplicate update Rust state (1.5s)
+  ✓  3 tests/editor.spec.ts:183:1 › color grading changes real pixels, supports bypass, order, and parameter keys (1.6s)
+  ✓  4 tests/editor.spec.ts:235:1 › image import, project file round trip, invalid open, PNG and MP4 downloads (1.6s)
+  ✓  5 tests/editor.spec.ts:304:1 › motion recipes, key seeking and dragging, easing editor and playback (1.6s)
+  ✓  6 tests/editor.spec.ts:356:1 › layer bars trim and retime transform keys in one undoable gesture (980ms)
+  ✓  7 tests/editor.spec.ts:400:1 › editable Orbit example uses the same renderer in all three workspaces (1.2s)
+
+  7 passed (13.8s)

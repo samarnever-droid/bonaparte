@@ -1,27 +1,17 @@
-/// TypeScript mirror of `bonaparte-model` — the generated-specta types will
-/// REPLACE this file at the typegen milestone; keep field names identical to
-/// the Rust serde output (snake_case structs, tagged camelCase ops).
-
+/// Wire types matching bonaparte-model. Struct fields are snake_case; Op fields camelCase.
 export const TICKS_PER_SEC = 120_000;
-
+export type Color = [number, number, number, number];
 export type Property = "Position" | "Scale" | "Rotation" | "Opacity" | "AnchorPoint";
-
 export type PropValue = { Scalar: number } | { Vec2: [number, number] };
-
-export type Easing =
-  | "Linear"
-  | { Bezier: { p1: [number, number]; p2: [number, number] } };
-
+export type Easing = "Linear" | { Bezier: { p1: [number, number]; p2: [number, number] } };
 export interface Keyframe {
-  time: number; // integer ticks Time(i64)
+  time: number;
   value: PropValue;
   easing: Easing;
 }
-
 export interface Track {
   keys: Keyframe[];
 }
-
 export interface StaticTransform {
   position: [number, number];
   scale: [number, number];
@@ -29,84 +19,138 @@ export interface StaticTransform {
   opacity: number;
   anchor_point: [number, number];
 }
-
 export type BlendMode =
-  | "Normal"
-  | "Multiply"
-  | "Screen"
-  | "Overlay"
-  | "Add"
-  | "Darken"
-  | "Lighten"
-  | "Difference";
-
-export type ShapeGeometry = "rectangle" | "circle" | "star";
-
+  "Normal" | "Multiply" | "Screen" | "Overlay" | "Add" | "Darken" | "Lighten" | "Difference";
+export const BLEND_MODES: BlendMode[] = [
+  "Normal",
+  "Multiply",
+  "Screen",
+  "Overlay",
+  "Add",
+  "Darken",
+  "Lighten",
+  "Difference",
+];
+export interface ShapeStyle {
+  size: [number, number] | null;
+  corner_radius: number;
+  stroke_width: number;
+  stroke_color: Color;
+}
+export interface TextStyle {
+  color: Color;
+  bold: boolean;
+  tracking: number;
+}
 export type LayerKind =
-  | { Solid: { color: [number, number, number, number] } }
-  | {
-      Shape: {
-        geometry?: ShapeGeometry;
-        color: [number, number, number, number];
-        stroke_color?: [number, number, number, number];
-        stroke_width?: number;
-        corner_radius?: number;
-      };
-    }
-  | { Text: { text: string; size: number } }
+  | { Solid: { color: Color } }
+  | { Shape: { color: Color; generator: string | null; style: ShapeStyle } }
+  | { Text: { text: string; size: number; style: TextStyle } }
   | { Footage: { media: number } }
-  | { PreComp: { comp: number } };
-
+  | { PreComp: { comp: number } }
+  | { Adjustment: Record<string, never> };
+export type EffectValue =
+  | { Float: number }
+  | { Color: Color }
+  | { Point: [number, number] }
+  | { Bool: boolean }
+  | { Index: number };
+export type ParamKind =
+  | { Slider: { min: number; max: number; default: number } }
+  | { Color: { default: Color } }
+  | { Point: { default: [number, number] } }
+  | { Checkbox: { default: boolean } }
+  | { Dropdown: { options: string[]; default: number } };
+export interface ParamDef {
+  id: string;
+  name: string;
+  doc: string;
+  kind: ParamKind;
+  group: string;
+  step: number | null;
+  unit: string;
+}
+export interface EffectManifest {
+  api_version: string;
+  id: string;
+  name: string;
+  category: string;
+  cost: "light" | "medium" | "heavy";
+  shader: string;
+  inputs: string[];
+  params: ParamDef[];
+}
+export interface EffectInstance {
+  id: string;
+  effect_id: string;
+  enabled: boolean;
+  params: Record<string, EffectValue>;
+  tracks: Record<string, Track>;
+}
 export interface Layer {
   id: number;
   name: string;
   kind: LayerKind;
-  start: number; // integer ticks Time(i64)
-  duration: number; // integer ticks Time(i64)
+  start: number;
+  duration: number;
   transform: StaticTransform;
-  /// Keyed by Property; mirrors serde's BTreeMap<Property, Track>.
   tracks: Partial<Record<Property, Track>>;
-  parent?: number | null;
-  blend_mode?: BlendMode;
-  visible?: boolean;
-  locked?: boolean;
+  parent: number | null;
+  blend_mode: BlendMode;
+  visible: boolean;
+  locked: boolean;
+  effects: EffectInstance[];
 }
-
 export interface FrameRate {
   num: number;
   den: number;
 }
-
-export const FPS_24: FrameRate = { num: 24, den: 1 };
-export const FPS_25: FrameRate = { num: 25, den: 1 };
-export const FPS_30: FrameRate = { num: 30, den: 1 };
-export const FPS_60: FrameRate = { num: 60, den: 1 };
-export const NTSC_FILM: FrameRate = { num: 24000, den: 1001 };
-export const NTSC_30: FrameRate = { num: 30000, den: 1001 };
-
+export const FPS_24 = { num: 24, den: 1 };
+export const FPS_25 = { num: 25, den: 1 };
+export const FPS_30 = { num: 30, den: 1 };
+export const FPS_60 = { num: 60, den: 1 };
+export const NTSC_FILM = { num: 24000, den: 1001 };
+export const NTSC_30 = { num: 30000, den: 1001 };
 export interface Comp {
   id: number;
   name: string;
   width: number;
   height: number;
-  fps: FrameRate | number;
-  duration: number; // integer ticks Time(i64)
-  background: [number, number, number, number];
-  /// Bottom-to-top render order.
+  fps: FrameRate;
+  duration: number;
+  background: Color;
   layer_order: number[];
   layers: Record<string, Layer>;
 }
-
+export interface MediaAsset {
+  id: number;
+  name: string;
+  path: string | null;
+  kind: "Image" | { Video: { fps: FrameRate; duration: number } } | { Audio: { duration: number } };
+  embedded?: { width: number; height: number; rgba_base64: string };
+  slot: unknown;
+  alias: string | null;
+  perception: unknown;
+}
 export interface Project {
   name: string;
   comps: Record<string, Comp>;
-  media: Record<string, unknown>;
+  media: Record<string, MediaAsset>;
   next_comp: number;
   next_layer: number;
   next_media: number;
 }
-
+export interface Snapshot {
+  project: Project;
+  canUndo: boolean;
+  canRedo: boolean;
+  history: string[];
+  revision: number;
+}
 export type Op =
+  | { type: "batch"; label: string; ops: Op[] }
+  | { type: "renameProject"; name: string }
+  | { type: "shiftLayer"; comp: number; layer: number; delta: number }
   | {
       type: "createComp";
       name: string;
@@ -125,69 +169,22 @@ export type Op =
       height: number;
       fps: FrameRate;
       duration: number;
-      background: [number, number, number, number];
+      background: Color;
     }
   | { type: "addLayer"; comp: number; layer: Layer }
-  | {
-      type: "restoreLayer";
-      comp: number;
-      layer: Layer;
-      index: number;
-    }
+  | { type: "restoreLayer"; comp: number; layer: Layer; index: number }
   | { type: "removeLayer"; comp: number; layer: number }
   | { type: "renameLayer"; comp: number; layer: number; name: string }
-  | {
-      type: "setLayerTime";
-      comp: number;
-      layer: number;
-      start: number;
-      duration: number;
-    }
-  | {
-      type: "setLayerParent";
-      comp: number;
-      layer: number;
-      parent: number | null;
-    }
-  | {
-      type: "setLayerBlendMode";
-      comp: number;
-      layer: number;
-      blendMode: BlendMode;
-    }
-  | {
-      type: "setLayerVisible";
-      comp: number;
-      layer: number;
-      visible: boolean;
-    }
-  | {
-      type: "setLayerLocked";
-      comp: number;
-      layer: number;
-      locked: boolean;
-    }
-  | {
-      type: "setValue";
-      comp: number;
-      layer: number;
-      property: Property;
-      value: PropValue;
-    }
-  | {
-      type: "addKeyframe";
-      comp: number;
-      layer: number;
-      property: Property;
-      key: Keyframe;
-    }
-  | {
-      type: "removeKeyframe";
-      comp: number;
-      layer: number;
-      property: Property;
-      time: number;
-    }
+  | { type: "setLayerContent"; comp: number; layer: number; kind: LayerKind }
+  | { type: "setLayerEffects"; comp: number; layer: number; effects: EffectInstance[] }
+  | { type: "setLayerTime"; comp: number; layer: number; start: number; duration: number }
+  | { type: "setLayerParent"; comp: number; layer: number; parent: number | null }
+  | { type: "setLayerBlendMode"; comp: number; layer: number; blendMode: BlendMode }
+  | { type: "setLayerVisible"; comp: number; layer: number; visible: boolean }
+  | { type: "setLayerLocked"; comp: number; layer: number; locked: boolean }
+  | { type: "setValue"; comp: number; layer: number; property: Property; value: PropValue }
+  | { type: "addKeyframe"; comp: number; layer: number; property: Property; key: Keyframe }
+  | { type: "removeKeyframe"; comp: number; layer: number; property: Property; time: number }
   | {
       type: "moveKeyframe";
       comp: number;
@@ -205,8 +202,8 @@ export type Op =
       easing: Easing;
     }
   | { type: "reorderLayer"; comp: number; layer: number; newIndex: number }
-  | { type: "addMedia"; asset: unknown }
-  | { type: "restoreMedia"; asset: unknown }
+  | { type: "addMedia"; asset: MediaAsset }
+  | { type: "restoreMedia"; asset: MediaAsset }
   | { type: "removeMedia"; media: number };
 
 export const DEFAULT_EASING: Easing = {
@@ -285,9 +282,7 @@ export function findKeyframeAtTime(
   const tpf = ticksPerFrame(fps);
   const halfFrame = tpf > 0 ? tpf / 2 : 1;
   const snapped = snapToFrame(time, fps);
-  return (
-    track.keys.find((k) => k.time === snapped || Math.abs(k.time - time) < halfFrame) ?? null
-  );
+  return track.keys.find((k) => k.time === snapped || Math.abs(k.time - time) < halfFrame) ?? null;
 }
 
 /** Convert integer ticks to SMPTE timecode string (HH:MM:SS:FF). */
@@ -312,7 +307,10 @@ export function timeToTimecode(time: number, fps: FrameRate | number | undefined
 }
 
 /** Parse an SMPTE timecode string (`HH:MM:SS:FF` or `HH:MM:SS;FF`) into integer ticks Time(i64). */
-export function timecodeToTime(tc: string, fps: FrameRate | number | undefined | null): number | null {
+export function timecodeToTime(
+  tc: string,
+  fps: FrameRate | number | undefined | null,
+): number | null {
   const trimmed = tc.trim();
   const isNeg = trimmed.startsWith("-");
   const s = isNeg ? trimmed.slice(1) : trimmed;

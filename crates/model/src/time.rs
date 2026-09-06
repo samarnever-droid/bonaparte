@@ -98,7 +98,8 @@ impl Time {
             return Err(TimecodeError::FrameOutOfRange(ff, nom_fps));
         }
 
-        let total_frames = ((hh as i64 * 60 + mm as i64) * 60 + ss as i64) * nom_fps as i64 + ff as i64;
+        let total_frames =
+            ((hh as i64 * 60 + mm as i64) * 60 + ss as i64) * nom_fps as i64 + ff as i64;
         let signed_frames = if is_neg { -total_frames } else { total_frames };
 
         Ok(fps.from_frame(signed_frames))
@@ -259,7 +260,10 @@ impl FrameRate {
     pub const FPS_25: FrameRate = FrameRate { num: 25, den: 1 };
     pub const FPS_30: FrameRate = FrameRate { num: 30, den: 1 };
     pub const FPS_60: FrameRate = FrameRate { num: 60, den: 1 };
-    pub const NTSC_FILM: FrameRate = FrameRate { num: 24000, den: 1001 };
+    pub const NTSC_FILM: FrameRate = FrameRate {
+        num: 24000,
+        den: 1001,
+    };
 
     /// Exact ticks in one frame — always an integer by construction of
     /// TICKS_PER_SEC (documented invariants: 24k/1001 divides 120000·1001).
@@ -363,7 +367,10 @@ mod tests {
         assert_eq!(FrameRate::FPS_24.to_string(), "24 fps");
         assert_eq!(FrameRate::FPS_30.to_string(), "30 fps");
         assert_eq!(FrameRate::NTSC_FILM.to_string(), "23.976 fps");
-        let ntsc_30 = FrameRate { num: 30000, den: 1001 };
+        let ntsc_30 = FrameRate {
+            num: 30000,
+            den: 1001,
+        };
         assert_eq!(ntsc_30.to_string(), "29.97 fps");
 
         let fps = FrameRate::FPS_24;

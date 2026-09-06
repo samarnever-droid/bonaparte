@@ -5,7 +5,11 @@ use std::path::Path;
 #[test]
 fn test_all_10_builtin_manifests_are_valid() {
     let manifests = builtin_manifests();
-    assert_eq!(manifests.len(), 11, "Must have exactly 11 first-party manifests");
+    assert_eq!(
+        manifests.len(),
+        bonaparte_effects_count(),
+        "Must have exactly 11 first-party manifests"
+    );
 
     let expected_ids = [
         "builtin.glow",
@@ -78,18 +82,24 @@ fn test_all_10_builtin_manifests_are_valid() {
 #[test]
 fn test_dynamic_pack_directory_scanner() {
     let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
-    assert!(packs_dir.is_dir(), "packs dir must exist at {:?}", packs_dir);
+    assert!(
+        packs_dir.is_dir(),
+        "packs dir must exist at {:?}",
+        packs_dir
+    );
 
     let mut registry = EffectRegistry::empty();
     let loaded_ids = registry
         .scan_directory(&packs_dir)
         .expect("scan_directory must succeed");
 
-    assert_eq!(loaded_ids.len(), 11);
-    assert_eq!(registry.len(), 11);
+    assert_eq!(loaded_ids.len(), bonaparte_effects_count());
+    assert_eq!(registry.len(), bonaparte_effects_count());
 
     for id in loaded_ids {
-        let effect = registry.get(&id).expect("effect must be present in registry");
+        let effect = registry
+            .get(&id)
+            .expect("effect must be present in registry");
         assert!(!effect.shader_source.is_empty());
         assert!(!effect.is_builtin);
         assert!(effect.directory.is_some());
@@ -102,4 +112,8 @@ fn test_scanner_rejects_invalid_manifest() {
 
     let res = EffectManifest::parse(bad_toml);
     assert!(res.is_err(), "unsupported API version must be rejected");
+}
+
+fn bonaparte_effects_count() -> usize {
+    bonaparte_effects::builtin_packs().len()
 }

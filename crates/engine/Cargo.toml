@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 bonaparte-model = { path = "../model" }
+bonaparte-effects = { path = "../effects" } # public registry/evaluator contract, no private plugin hooks
+fontdue = "0.9" # pure-Rust rasterization of the bundled, licensed typefaces
 glam = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true } # graph + tiles serialize into preview state

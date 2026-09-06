@@ -5,7 +5,13 @@ use bonaparte_model::{
 
 fn create_test_project() -> (Project, CompId) {
     let mut p = Project::new("Affine Tests");
-    let c = p.create_comp("main", 100, 100, FrameRate::FPS_30, Time(10 * TICKS_PER_SEC));
+    let c = p.create_comp(
+        "main",
+        100,
+        100,
+        FrameRate::FPS_30,
+        Time(10 * TICKS_PER_SEC),
+    );
     p.comps.get_mut(&c).unwrap().background = [0.0, 0.0, 0.0, 1.0];
     (p, c)
 }
@@ -37,12 +43,7 @@ fn test_affine_identity_and_inversion() {
 #[test]
 fn test_affine_translation_moves_layer() {
     let (mut p, c) = create_test_project();
-    let mut layer = Layer::new_rect(
-        "red_box",
-        [1.0, 0.0, 0.0, 1.0],
-        Time::ZERO,
-        Time(100),
-    );
+    let mut layer = Layer::new_rect("red_box", [1.0, 0.0, 0.0, 1.0], Time::ZERO, Time(100));
     layer.transform = StaticTransform {
         position: [20.0, 20.0],
         scale: [40.0, 40.0],
@@ -59,18 +60,16 @@ fn test_affine_translation_moves_layer() {
     assert!(center_px[0] > 0.9, "Pixel at (70, 70) should be red");
 
     let outside_px = frame.pixel(10, 10);
-    assert!(outside_px[0] < 0.1, "Pixel at (10, 10) should be background black");
+    assert!(
+        outside_px[0] < 0.1,
+        "Pixel at (10, 10) should be background black"
+    );
 }
 
 #[test]
 fn test_affine_rotation_90_degrees() {
     let (mut p, c) = create_test_project();
-    let mut layer = Layer::new_rect(
-        "rect",
-        [0.0, 1.0, 0.0, 1.0],
-        Time::ZERO,
-        Time(100),
-    );
+    let mut layer = Layer::new_rect("rect", [0.0, 1.0, 0.0, 1.0], Time::ZERO, Time(100));
     // Non-uniform aspect ratio: 80% width, 20% height
     layer.transform = StaticTransform {
         position: [0.0, 0.0],
@@ -88,11 +87,17 @@ fn test_affine_rotation_90_degrees() {
     // and horizontal extent is 20 (spanning x from 40 to 60).
     // So (50, 20) should be green!
     let v_px = frame.pixel(50, 20);
-    assert!(v_px[1] > 0.9, "Pixel at (50, 20) along vertical axis should be green");
+    assert!(
+        v_px[1] > 0.9,
+        "Pixel at (50, 20) along vertical axis should be green"
+    );
 
     // But (80, 50) is along horizontal axis outside the rotated 20px width -> should be black!
     let h_px = frame.pixel(80, 50);
-    assert!(h_px[1] < 0.1, "Pixel at (80, 50) along horizontal axis should be black");
+    assert!(
+        h_px[1] < 0.1,
+        "Pixel at (80, 50) along horizontal axis should be black"
+    );
 }
 
 #[test]
@@ -117,12 +122,7 @@ fn test_affine_parent_hierarchy_transform() {
     let parent_id = p.insert_layer(c, parent);
 
     // Child parented to parent at (+10, +10) local, scale 50%
-    let mut child = Layer::new_rect(
-        "child",
-        [1.0, 0.0, 0.0, 1.0],
-        Time::ZERO,
-        Time(100),
-    );
+    let mut child = Layer::new_rect("child", [1.0, 0.0, 0.0, 1.0], Time::ZERO, Time(100));
     child.parent = Some(parent_id);
     child.transform = StaticTransform {
         position: [10.0, 10.0],
@@ -138,5 +138,8 @@ fn test_affine_parent_hierarchy_transform() {
     // In comp coords: (50 + 15, 50 + 15) = (65, 65).
     let child_center = frame.pixel(65, 65);
     // Opacity combined: 0.5 * 0.8 = 0.4 red over background.
-    assert!(child_center[0] > 0.1, "Child red component should be visible at effective location");
+    assert!(
+        child_center[0] > 0.1,
+        "Child red component should be visible at effective location"
+    );
 }

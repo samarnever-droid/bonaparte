@@ -1,0 +1,1170 @@
+{
+  "name": "Orbit \u2014 Studio ident",
+  "comps": {
+    "1": {
+      "id": 1,
+      "name": "Studio ident",
+      "width": 960,
+      "height": 540,
+      "fps": {
+        "num": 30,
+        "den": 1
+      },
+      "duration": 960000,
+      "background": [
+        0.008568125618069307,
+        0.010960094006488246,
+        0.00972121732023785,
+        1
+      ],
+      "layer_order": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "layers": {
+        "11": {
+          "id": 11,
+          "name": "Charcoal backdrop",
+          "kind": {
+            "Solid": {
+              "color": [
+                0.008568125618069307,
+                0.010960094006488246,
+                0.00972121732023785,
+                1
+              ]
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": true,
+          "effects": []
+        },
+        "12": {
+          "id": 12,
+          "name": "Orbital form",
+          "kind": {
+            "PreComp": {
+              "comp": 2
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              235,
+              -5
+            ],
+            "scale": [
+              83,
+              83
+            ],
+            "rotation": -12,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {
+            "Rotation": {
+              "keys": [
+                {
+                  "time": 0,
+                  "value": {
+                    "Scalar": -12
+                  },
+                  "easing": "Linear"
+                },
+                {
+                  "time": 960000,
+                  "value": {
+                    "Scalar": 28
+                  },
+                  "easing": "Linear"
+                }
+              ]
+            },
+            "Scale": {
+              "keys": [
+                {
+                  "time": 0,
+                  "value": {
+                    "Vec2": [
+                      68,
+                      68
+                    ]
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                },
+                {
+                  "time": 180000,
+                  "value": {
+                    "Vec2": [
+                      83,
+                      83
+                    ]
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "13": {
+          "id": 13,
+          "name": "Make some motion.",
+          "kind": {
+            "Text": {
+              "text": "Make some\nmotion.",
+              "size": 64,
+              "style": {
+                "color": [
+                  0.83879901174074,
+                  0.8713671191987972,
+                  0.8148465722161012,
+                  1
+                ],
+                "bold": true,
+                "tracking": 0
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              -226,
+              -25
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {
+            "Position": {
+              "keys": [
+                {
+                  "time": 0,
+                  "value": {
+                    "Vec2": [
+                      -226,
+                      10
+                    ]
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                },
+                {
+                  "time": 144000,
+                  "value": {
+                    "Vec2": [
+                      -226,
+                      -25
+                    ]
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "Opacity": {
+              "keys": [
+                {
+                  "time": 0,
+                  "value": {
+                    "Scalar": 0
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                },
+                {
+                  "time": 96000,
+                  "value": {
+                    "Scalar": 1
+                  },
+                  "easing": {
+                    "Bezier": {
+                      "p1": [
+                        0.16,
+                        1
+                      ],
+                      "p2": [
+                        0.3,
+                        1
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "14": {
+          "id": 14,
+          "name": "Studio label",
+          "kind": {
+            "Text": {
+              "text": "BONAPARTE  /  MOTION LAB",
+              "size": 11,
+              "style": {
+                "color": [
+                  0.83879901174074,
+                  0.8713671191987972,
+                  0.8148465722161012,
+                  1
+                ],
+                "bold": false,
+                "tracking": 2
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              -270,
+              -191
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "15": {
+          "id": 15,
+          "name": "Supporting line",
+          "kind": {
+            "Text": {
+              "text": "A little curiosity. Infinite possibilities.",
+              "size": 14,
+              "style": {
+                "color": [
+                  0.3712376804741491,
+                  0.4178850708481375,
+                  0.3662525955988395,
+                  1
+                ],
+                "bold": false,
+                "tracking": 0
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              -259,
+              101
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "16": {
+          "id": 16,
+          "name": "Baseline rule",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.06124605423161761,
+                0.08021982031446832,
+                0.05780543019106723,
+                1
+              ],
+              "generator": null,
+              "style": {
+                "size": [
+                  842,
+                  1
+                ],
+                "corner_radius": 0,
+                "stroke_width": 0,
+                "stroke_color": [
+                  0.5520114015120001,
+                  0.8631572134541023,
+                  0.4620769996544071,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              186
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "17": {
+          "id": 17,
+          "name": "Edition label",
+          "kind": {
+            "Text": {
+              "text": "EXPLORATIONS IN SHAPE & TIME",
+              "size": 10,
+              "style": {
+                "color": [
+                  0.31854677812509186,
+                  0.386429433787049,
+                  0.2874408377269175,
+                  1
+                ],
+                "bold": false,
+                "tracking": 1
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              -281,
+              216
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "18": {
+          "id": 18,
+          "name": "Series number",
+          "kind": {
+            "Text": {
+              "text": "001  \u2014  ORBIT",
+              "size": 10,
+              "style": {
+                "color": [
+                  0.4969329950608704,
+                  0.5840784178911641,
+                  0.45641102318040466,
+                  1
+                ],
+                "bold": false,
+                "tracking": 1
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              340,
+              216
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "19": {
+          "id": 19,
+          "name": "Finishing grade",
+          "kind": {
+            "Adjustment": {}
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": [
+            {
+              "id": "fx-19-0",
+              "effect_id": "builtin.color_grade",
+              "enabled": true,
+              "params": {
+                "contrast": {
+                  "Float": 1.03
+                },
+                "vibrance": {
+                  "Float": 0.08
+                }
+              },
+              "tracks": {}
+            }
+          ]
+        }
+      }
+    },
+    "2": {
+      "id": 2,
+      "name": "Orbital form",
+      "width": 500,
+      "height": 500,
+      "fps": {
+        "num": 30,
+        "den": 1
+      },
+      "duration": 960000,
+      "background": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "layer_order": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "layers": {
+        "1": {
+          "id": 1,
+          "name": "Inner sphere",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                1
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  270,
+                  270
+                ],
+                "corner_radius": 0,
+                "stroke_width": 0,
+                "stroke_color": [
+                  0.5520114015120001,
+                  0.8631572134541023,
+                  0.4620769996544071,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": [
+            {
+              "id": "fx-1-0",
+              "effect_id": "builtin.gradient",
+              "enabled": true,
+              "params": {
+                "start_color": {
+                  "Color": [
+                    0.79,
+                    0.96,
+                    0.66,
+                    1
+                  ]
+                },
+                "end_color": {
+                  "Color": [
+                    0.1,
+                    0.24,
+                    0.17,
+                    1
+                  ]
+                },
+                "angle": {
+                  "Float": 115
+                }
+              },
+              "tracks": {}
+            }
+          ]
+        },
+        "2": {
+          "id": 2,
+          "name": "Orbit contour 1",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": -60,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "3": {
+          "id": 3,
+          "name": "Orbit contour 2",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": -40,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "4": {
+          "id": 4,
+          "name": "Orbit contour 3",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": -20,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "5": {
+          "id": 5,
+          "name": "Orbit contour 4",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "6": {
+          "id": 6,
+          "name": "Orbit contour 5",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 20,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "7": {
+          "id": 7,
+          "name": "Orbit contour 6",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 40,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "8": {
+          "id": 8,
+          "name": "Orbit contour 7",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  175
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.8,
+                "stroke_color": [
+                  0.45641102318040466,
+                  0.7835377915261935,
+                  0.33716361504833037,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 60,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "9": {
+          "id": 9,
+          "name": "Outer contour",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.3712376804741491,
+                0.6795424696330938,
+                0.3049873140698863,
+                0
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  420,
+                  420
+                ],
+                "corner_radius": 0,
+                "stroke_width": 1.2,
+                "stroke_color": [
+                  0.26635560480286247,
+                  0.4620769996544071,
+                  0.18782077230067787,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              0,
+              0
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        },
+        "10": {
+          "id": 10,
+          "name": "Satellite",
+          "kind": {
+            "Shape": {
+              "color": [
+                0.7379104087727308,
+                0.846873231509858,
+                0.4793201831008268,
+                1
+              ],
+              "generator": "builtin.circle",
+              "style": {
+                "size": [
+                  15,
+                  15
+                ],
+                "corner_radius": 0,
+                "stroke_width": 0,
+                "stroke_color": [
+                  0.5520114015120001,
+                  0.8631572134541023,
+                  0.4620769996544071,
+                  1
+                ]
+              }
+            }
+          },
+          "start": 0,
+          "duration": 960000,
+          "transform": {
+            "position": [
+              188,
+              -88
+            ],
+            "scale": [
+              100,
+              100
+            ],
+            "rotation": 0,
+            "opacity": 1,
+            "anchor_point": [
+              0,
+              0
+            ]
+          },
+          "tracks": {},
+          "parent": null,
+          "blend_mode": "Normal",
+          "visible": true,
+          "locked": false,
+          "effects": []
+        }
+      }
+    }
+  },
+  "media": {},
+  "next_comp": 3,
+  "next_layer": 20,
+  "next_media": 1
+}

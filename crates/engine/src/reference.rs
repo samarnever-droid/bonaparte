@@ -1,25 +1,27 @@
 //! The CPU reference renderer — the golden-frame contract made executable.
 //!
-//! Purpose: a *deterministic, slow, simple* compositor that produces the
-//! same pixels the GPU path must produce. Golden-frame tests (RULES §3.5)
-//! compare against this; when a GPU pass and the reference disagree, one of
-//! them is wrong and CI says which. It also gives us a working renderer
-//! before the GPU backend exists.
+//! Executed by the editor today and covered by pixel/behavior regression tests.
+//! The future GPU renderer should be compared against this implementation; no
+//! GPU execution or CPU/GPU parity testing is claimed by this milestone.
 //!
 //! Purity (RULES §1.4): decoded media pixels are INJECTED via the
 //! [`MediaFrames`] trait — the engine never touches the filesystem.
 
-use bonaparte_model::{
-    BlendMode, Comp, CompId, Layer, LayerKind, MediaId, Project, Property, Time,
-};
+use bonaparte_model::{BlendMode, Comp, CompId, Layer, LayerKind, MediaId, Project, Time};
 
-use crate::font::sample_glyph_subpixel;
+use crate::typography::{measure_text, rasterize_text};
+use bonaparte_effects::registry::builtin_registry;
+use bonaparte_effects::{CpuFrame, EffectRegistry};
 
 /// Maximum allowed recursion depth for nested PreComp rendering.
 pub const MAX_PRECOMP_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum RenderError {
+    #[error("{0}")]
+    Invalid(String),
+    #[error("Effect evaluation failed: {0}")]
+    Effect(String),
     #[error("composition {0} not found")]
     CompNotFound(CompId),
     #[error("layer {0} uses a kind the reference renderer does not draw yet")]
@@ -76,7 +78,7 @@ impl Frame {
         let r = linear_to_srgb_byte(color[0]);
         let g = linear_to_srgb_byte(color[1]);
         let b = linear_to_srgb_byte(color[2]);
-        let a = linear_to_srgb_byte(color[3]);
+        let a = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
         let pixel_count = width as usize * height as usize;
         let mut rgba = Vec::with_capacity(pixel_count * 4);
         for _ in 0..pixel_count {
@@ -102,7 +104,7 @@ impl Frame {
             srgb_byte_to_linear(self.rgba[i]),
             srgb_byte_to_linear(self.rgba[i + 1]),
             srgb_byte_to_linear(self.rgba[i + 2]),
-            srgb_byte_to_linear(self.rgba[i + 3]),
+            self.rgba[i + 3] as f32 / 255.0,
         ]
     }
 
@@ -115,12 +117,56 @@ impl Frame {
         self.rgba[i] = linear_to_srgb_byte(color[0]);
         self.rgba[i + 1] = linear_to_srgb_byte(color[1]);
         self.rgba[i + 2] = linear_to_srgb_byte(color[2]);
-        self.rgba[i + 3] = linear_to_srgb_byte(color[3]);
+        self.rgba[i + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+
+    pub fn sample_bilinear(&self, u: f32, v: f32) -> [f32; 4] {
+        if self.width == 0 || self.height == 0 {
+            return [0.0; 4];
+        }
+        let fx = (u * self.width as f32 - 0.5).clamp(0.0, self.width.saturating_sub(1) as f32);
+        let fy = (v * self.height as f32 - 0.5).clamp(0.0, self.height.saturating_sub(1) as f32);
+        let x0 = fx.floor() as u32;
+        let y0 = fy.floor() as u32;
+        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
+        let y1 = (y0 + 1).min(self.height.saturating_sub(1));
+        let tx = fx - x0 as f32;
+        let ty = fy - y0 as f32;
+        let mut out = [0.0f32; 4];
+        for (x, y, weight) in [
+            (x0, y0, (1.0 - tx) * (1.0 - ty)),
+            (x1, y0, tx * (1.0 - ty)),
+            (x0, y1, (1.0 - tx) * ty),
+            (x1, y1, tx * ty),
+        ] {
+            let i = ((y * self.width + x) * 4) as usize;
+            let alpha_weight = self.rgba[i + 3] as f32 / 255.0 * weight;
+            if alpha_weight <= 0.0 {
+                continue;
+            }
+            for c in 0..3 {
+                out[c] += srgb_byte_to_linear(self.rgba[i + c]) * alpha_weight;
+            }
+            out[3] += alpha_weight;
+        }
+        if out[3] > 0.000001 {
+            for c in 0..3 {
+                out[c] /= out[3];
+            }
+        }
+        out
     }
 
     /// Blend source pixel onto destination using the specified BlendMode.
     pub fn blend_pixel(&mut self, x: u32, y: u32, src: [f32; 4], mode: BlendMode) {
         if x >= self.width || y >= self.height {
+            return;
+        }
+        if src[3] <= 0.0 {
+            return;
+        }
+        if src[3] >= 1.0 && mode == BlendMode::Normal {
+            self.set_pixel(x, y, src);
             return;
         }
         let dst = self.pixel(x, y);
@@ -132,14 +178,14 @@ impl Frame {
 static SRGB_TO_LINEAR_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
     let mut lut = [0.0f32; 256];
     for i in 0..256 {
-        lut[i] = (i as f32 / 255.0).powf(2.2);
+        lut[i] = bonaparte_effects::grading::srgb_to_linear(i as f32 / 255.0);
     }
     lut
 });
 
 #[inline(always)]
 pub fn linear_to_srgb_byte(c: f32) -> u8 {
-    (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8
+    (bonaparte_effects::grading::linear_to_srgb(c.clamp(0.0, 1.0)) * 255.0).round() as u8
 }
 
 #[inline(always)]
@@ -187,10 +233,8 @@ pub fn blend_pixel_colors(mode: BlendMode, src: [f32; 4], dst: [f32; 4]) -> [f32
         let d = dst[c];
         let b = blend_channel(mode, s, d);
         // Formula: (src_a * (1 - dst_a) * s + dst_a * (1 - src_a) * d + src_a * dst_a * b) / out_a
-        let blended_color = (src_a * (1.0 - dst_a) * s
-            + dst_a * (1.0 - src_a) * d
-            + src_a * dst_a * b)
-            / out_a;
+        let blended_color =
+            (src_a * (1.0 - dst_a) * s + dst_a * (1.0 - src_a) * d + src_a * dst_a * b) / out_a;
         out[c] = blended_color.clamp(0.0, 1.0);
     }
     out[3] = out_a;
@@ -277,6 +321,17 @@ pub fn render_comp(
     render_comp_internal(project, comp_id, time, frames, &mut active_comps, 0)
 }
 
+/// Render with a caller-owned registry, including third-party CPU plugins.
+pub fn render_comp_with_registry(
+    project: &Project,
+    comp_id: CompId,
+    time: Time,
+    frames: &dyn MediaFrames,
+    registry: &EffectRegistry,
+) -> Result<Frame, RenderError> {
+    render_comp_registered(project, comp_id, time, frames, &mut Vec::new(), 0, registry)
+}
+
 pub fn render_comp_internal(
     project: &Project,
     comp_id: CompId,
@@ -285,18 +340,50 @@ pub fn render_comp_internal(
     active_comps: &mut Vec<CompId>,
     depth: usize,
 ) -> Result<Frame, RenderError> {
-    let comp = project.comp(comp_id).ok_or(RenderError::CompNotFound(comp_id))?;
+    render_comp_registered(
+        project,
+        comp_id,
+        time,
+        frames,
+        active_comps,
+        depth,
+        builtin_registry(),
+    )
+}
+
+fn render_comp_registered(
+    project: &Project,
+    comp_id: CompId,
+    time: Time,
+    frames: &dyn MediaFrames,
+    active_comps: &mut Vec<CompId>,
+    depth: usize,
+    registry: &EffectRegistry,
+) -> Result<Frame, RenderError> {
+    let comp = project
+        .comp(comp_id)
+        .ok_or(RenderError::CompNotFound(comp_id))?;
+    bonaparte_model::validation::validate_comp_size(
+        comp.width,
+        comp.height,
+        comp.fps,
+        comp.duration,
+    )
+    .map_err(RenderError::Invalid)?;
     let mut frame = Frame::filled(comp.width, comp.height, comp.background);
 
     active_comps.push(comp_id);
 
     // Render in bottom-to-top order (layer_order[0] is bottom).
     for &layer_id in &comp.layer_order {
-        let layer = &comp.layers[&layer_id];
+        let layer = comp
+            .layers
+            .get(&layer_id)
+            .ok_or_else(|| RenderError::Invalid("Missing layer in render order".into()))?;
         if !layer.visible_at(time) {
             continue;
         }
-        draw_layer(
+        draw_layer_registered(
             &mut frame,
             project,
             comp,
@@ -311,6 +398,7 @@ pub fn render_comp_internal(
             comp.height,
             0,
             0,
+            registry,
         )?;
     }
 
@@ -318,7 +406,7 @@ pub fn render_comp_internal(
     Ok(frame)
 }
 
-/// Draw a single layer within a sub-rectangle of the canvas (used by both full frame and tile rendering).
+/// Draw a layer with built-in plugins. Custom registries use render_comp_with_registry.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_layer(
     frame: &mut Frame,
@@ -336,9 +424,190 @@ pub fn draw_layer(
     offset_x: u32,
     offset_y: u32,
 ) -> Result<(), RenderError> {
-    let opacity = match layer.evaluate(Property::Opacity, time) {
-        bonaparte_model::PropValue::Scalar(v) => v.clamp(0.0, 1.0),
-        _ => 1.0,
+    draw_layer_registered(
+        frame,
+        project,
+        comp,
+        layer,
+        time,
+        frames,
+        active_comps,
+        depth,
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
+        offset_x,
+        offset_y,
+        builtin_registry(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_layer_registered(
+    frame: &mut Frame,
+    project: &Project,
+    comp: &Comp,
+    layer: &Layer,
+    time: Time,
+    frames: &dyn MediaFrames,
+    active_comps: &mut Vec<CompId>,
+    depth: usize,
+    clip_x: u32,
+    clip_y: u32,
+    clip_w: u32,
+    clip_h: u32,
+    offset_x: u32,
+    offset_y: u32,
+    registry: &EffectRegistry,
+) -> Result<(), RenderError> {
+    let adjustment = matches!(layer.kind, LayerKind::Adjustment {});
+    if !layer.effects.iter().any(|e| e.enabled) {
+        if adjustment {
+            return Ok(());
+        }
+        return draw_layer_pixels(
+            frame,
+            project,
+            comp,
+            layer,
+            time,
+            frames,
+            active_comps,
+            depth,
+            clip_x,
+            clip_y,
+            clip_w,
+            clip_h,
+            offset_x,
+            offset_y,
+            registry,
+            false,
+        );
+    }
+    let opacity = comp
+        .effective_transform(layer.id, time)
+        .map(|t| t.opacity.clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+    if opacity <= 0.00001 {
+        return Ok(());
+    }
+    // Correctness-first full-frame intermediates avoid seams in neighborhood filters.
+    // The tile API explicitly falls back to this path until effect ROI propagation lands.
+    let mut source = if adjustment {
+        frame.clone()
+    } else {
+        Frame::new(comp.width, comp.height)
+    };
+    if !adjustment {
+        draw_layer_pixels(
+            &mut source,
+            project,
+            comp,
+            layer,
+            time,
+            frames,
+            active_comps,
+            depth,
+            0,
+            0,
+            comp.width,
+            comp.height,
+            0,
+            0,
+            registry,
+            true,
+        )?;
+    }
+    let mut filtered = CpuFrame::from_rgba(source.width, source.height, source.rgba);
+    for instance in &layer.effects {
+        if !instance.enabled {
+            continue;
+        }
+        filtered = registry
+            .evaluate_instance(instance, &filtered, time)
+            .map_err(|e| RenderError::Effect(e.to_string()))?;
+    }
+    let filtered = Frame {
+        width: filtered.width,
+        height: filtered.height,
+        rgba: filtered.rgba,
+    };
+    // A full-strength adjustment replaces the backdrop byte-for-byte. Avoid
+    // an unnecessary decode/encode pass (and preserve RGB under zero alpha).
+    if adjustment
+        && opacity == 1.0
+        && offset_x == 0
+        && offset_y == 0
+        && frame.width == filtered.width
+        && frame.height == filtered.height
+    {
+        frame.rgba = filtered.rgba;
+        return Ok(());
+    }
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            if !adjustment && layer.blend_mode == BlendMode::Normal {
+                let i = (((y + offset_y) * filtered.width + x + offset_x) * 4) as usize;
+                if filtered.rgba[i + 3] == 0 {
+                    continue;
+                }
+                if opacity == 1.0 && filtered.rgba[i + 3] == 255 {
+                    let dest = ((y * frame.width + x) * 4) as usize;
+                    frame.rgba[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
+                    continue;
+                }
+            }
+            let mut pixel = filtered.pixel(x + offset_x, y + offset_y);
+            if adjustment {
+                let original = frame.pixel(x, y);
+                let alpha = original[3] * (1.0 - opacity) + pixel[3] * opacity;
+                for c in 0..3 {
+                    pixel[c] = if alpha > 0.000001 {
+                        (original[c] * original[3] * (1.0 - opacity)
+                            + pixel[c] * pixel[3] * opacity)
+                            / alpha
+                    } else {
+                        0.0
+                    };
+                }
+                pixel[3] = alpha;
+                frame.set_pixel(x, y, pixel);
+            } else {
+                pixel[3] *= opacity;
+                frame.blend_pixel(x, y, pixel, layer.blend_mode);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Draw a single layer within a sub-rectangle of the canvas (used by both full frame and tile rendering).
+#[allow(clippy::too_many_arguments)]
+fn draw_layer_pixels(
+    frame: &mut Frame,
+    project: &Project,
+    comp: &Comp,
+    layer: &Layer,
+    time: Time,
+    frames: &dyn MediaFrames,
+    active_comps: &mut Vec<CompId>,
+    depth: usize,
+    clip_x: u32,
+    clip_y: u32,
+    clip_w: u32,
+    clip_h: u32,
+    offset_x: u32,
+    offset_y: u32,
+    registry: &EffectRegistry,
+    source_only: bool,
+) -> Result<(), RenderError> {
+    let opacity = if source_only {
+        1.0
+    } else {
+        comp.effective_transform(layer.id, time)
+            .map(|t| t.opacity.clamp(0.0, 1.0))
+            .unwrap_or(1.0)
     };
     if opacity <= 1e-5 {
         return Ok(());
@@ -346,8 +615,15 @@ pub fn draw_layer(
 
     // Determine the natural dimensions (width, height) of the layer in local space.
     let (layer_w, layer_h) = match &layer.kind {
-        LayerKind::Solid { .. } => (comp.width as f32, comp.height as f32),
-        LayerKind::Shape { .. } => (comp.width as f32, comp.height as f32),
+        LayerKind::Adjustment {} | LayerKind::Solid { .. } => {
+            (comp.width as f32, comp.height as f32)
+        }
+        LayerKind::Shape { style, .. } => {
+            let size = style
+                .size
+                .unwrap_or([comp.width as f32, comp.height as f32]);
+            (size[0], size[1])
+        }
         LayerKind::Footage { media } => {
             if let Some(view) = frames.frame_rgba(*media, time) {
                 (view.width as f32, view.height as f32)
@@ -355,14 +631,14 @@ pub fn draw_layer(
                 return Err(RenderError::MediaUnavailable(*media));
             }
         }
-        LayerKind::Text { text, size } => {
-            let s = size / 8.0;
-            let tw = text.len() as f32 * 8.0 * s;
-            let th = *size;
-            (tw.max(1.0), th.max(1.0))
+        LayerKind::Text { text, size, style } => {
+            let bounds = measure_text(text, *size, style.bold, style.tracking);
+            (bounds[0], bounds[1])
         }
         LayerKind::PreComp { comp: child_id } => {
-            let child = project.comp(*child_id).ok_or(RenderError::CompNotFound(*child_id))?;
+            let child = project
+                .comp(*child_id)
+                .ok_or(RenderError::CompNotFound(*child_id))?;
             (child.width as f32, child.height as f32)
         }
     };
@@ -420,24 +696,92 @@ pub fn draw_layer(
             return Err(RenderError::PreCompDepthLimit(*child_id));
         }
         let child_time = time - layer.start;
-        Some(render_comp_internal(
+        Some(render_comp_registered(
             project,
             *child_id,
             child_time,
             frames,
             active_comps,
             depth + 1,
+            registry,
         )?)
     } else {
         None
     };
 
-    let text_chars: Option<Vec<char>> = if let LayerKind::Text { text, .. } = &layer.kind {
-        Some(text.chars().collect())
+    let text_bitmap = if let LayerKind::Text { text, size, style } = &layer.kind {
+        Some(
+            rasterize_text(text, *size, style.bold, style.tracking)
+                .map_err(RenderError::Invalid)?,
+        )
     } else {
         None
     };
 
+    // Shape generators use the public registry, never an engine-side plugin-ID switch.
+    let generated_shape = if let LayerKind::Shape {
+        color,
+        generator: Some(id),
+        style,
+    } = &layer.kind
+    {
+        let manifest = registry
+            .get_manifest(id)
+            .ok_or_else(|| RenderError::Effect(format!("Unknown shape generator {id}")))?;
+        if !manifest.inputs.is_empty() {
+            return Err(RenderError::Effect(format!(
+                "{id} is a filter, not a shape generator"
+            )));
+        }
+        let mut params = std::collections::HashMap::new();
+        for p in &manifest.params {
+            let value = match p.id.as_str() {
+                "color" => Some(bonaparte_model::EffectValue::Color([
+                    bonaparte_effects::grading::linear_to_srgb(color[0]),
+                    bonaparte_effects::grading::linear_to_srgb(color[1]),
+                    bonaparte_effects::grading::linear_to_srgb(color[2]),
+                    color[3],
+                ])),
+                "stroke_color" => Some(bonaparte_model::EffectValue::Color([
+                    bonaparte_effects::grading::linear_to_srgb(style.stroke_color[0]),
+                    bonaparte_effects::grading::linear_to_srgb(style.stroke_color[1]),
+                    bonaparte_effects::grading::linear_to_srgb(style.stroke_color[2]),
+                    style.stroke_color[3],
+                ])),
+                "stroke_width" => Some(bonaparte_model::EffectValue::Float(style.stroke_width)),
+                _ => None,
+            };
+            if let Some(value) = value {
+                params.insert(p.id.clone(), value);
+            }
+        }
+        let source = CpuFrame::new(layer_w.ceil() as u32, layer_h.ceil() as u32);
+        let generated = registry
+            .evaluate(id, &source, &params)
+            .map_err(|e| RenderError::Effect(e.to_string()))?;
+        Some(Frame {
+            width: generated.width,
+            height: generated.height,
+            rgba: generated.rgba,
+        })
+    } else {
+        None
+    };
+
+    let flat_opaque = match &layer.kind {
+        LayerKind::Solid { color }
+            if color[3] * opacity >= 1.0
+                && (source_only || layer.blend_mode == BlendMode::Normal) =>
+        {
+            Some([
+                linear_to_srgb_byte(color[0]),
+                linear_to_srgb_byte(color[1]),
+                linear_to_srgb_byte(color[2]),
+                255,
+            ])
+        }
+        _ => None,
+    };
     // Evaluate pixels across the intersected bounding box.
     for py in start_y..end_y {
         let dest_y = py.saturating_sub(offset_y);
@@ -461,40 +805,40 @@ pub fn draw_layer(
                 continue;
             }
 
+            if let Some(color) = flat_opaque {
+                let i = ((dest_y * frame.width + dest_x) * 4) as usize;
+                frame.rgba[i..i + 4].copy_from_slice(&color);
+                continue;
+            }
             let src_color = match &layer.kind {
-                LayerKind::Solid { color } => {
-                    [color[0], color[1], color[2], color[3] * opacity]
-                }
-                LayerKind::Shape { color, generator } => {
-                    let mut cov = 1.0f32;
-
-                    if let Some(gen) = generator {
-                        if gen == "builtin.circle" {
-                            let norm_x = lx / hw;
-                            let norm_y = ly / hh;
-                            let dist = (norm_x * norm_x + norm_y * norm_y).sqrt();
-
-                            let min_dim = hw.min(hh);
-                            let edge_w = if min_dim > 1e-3 { 1.0 / min_dim } else { 0.05 };
-
-                            if dist > 1.0 + edge_w {
-                                continue;
-                            } else if dist > 1.0 - edge_w {
-                                cov = ((1.0 + edge_w - dist) / (2.0 * edge_w)).clamp(0.0, 1.0);
-                            }
+                LayerKind::Solid { color } => [color[0], color[1], color[2], color[3] * opacity],
+                LayerKind::Shape { color, style, .. } => {
+                    if let Some(generated) = &generated_shape {
+                        let p = generated.sample_bilinear(u, v);
+                        [p[0], p[1], p[2], p[3] * opacity]
+                    } else {
+                        let r = style.corner_radius.min(hw.min(hh));
+                        let qx = lx.abs() - hw + r;
+                        let qy = ly.abs() - hh + r;
+                        let distance = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt()
+                            + qx.max(qy).min(0.0)
+                            - r;
+                        let aa = (inv_affine.a.hypot(inv_affine.b))
+                            .max(inv_affine.c.hypot(inv_affine.d))
+                            .max(0.01);
+                        let coverage = (0.5 - distance / aa).clamp(0.0, 1.0);
+                        let stroke = if style.stroke_width > 0.0 {
+                            (0.5 + (distance + style.stroke_width) / aa).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let mut out = [0.0; 4];
+                        for ch in 0..4 {
+                            out[ch] = color[ch] * (1.0 - stroke) + style.stroke_color[ch] * stroke;
                         }
+                        out[3] *= coverage * opacity;
+                        out
                     }
-
-                    if cov <= 1e-4 {
-                        continue;
-                    }
-
-                    [
-                        color[0],
-                        color[1],
-                        color[2],
-                        color[3] * opacity * cov,
-                    ]
                 }
                 LayerKind::Footage { media } => {
                     let view = frames
@@ -507,39 +851,36 @@ pub fn draw_layer(
                         srgb_byte_to_linear(view.rgba[idx]),
                         srgb_byte_to_linear(view.rgba[idx + 1]),
                         srgb_byte_to_linear(view.rgba[idx + 2]),
-                        srgb_byte_to_linear(view.rgba[idx + 3]) * opacity,
+                        view.rgba[idx + 3] as f32 / 255.0 * opacity,
                     ]
                 }
-                LayerKind::Text { size, .. } => {
-                    let s = size / 8.0;
-                    let local_x = u * layer_w;
-                    let local_y = v * layer_h;
-                    let char_w = 8.0 * s;
-                    let char_idx = (local_x / char_w) as usize;
-                    let chars = text_chars.as_ref().unwrap();
-                    if char_idx < chars.len() {
-                        let c = chars[char_idx];
-                        let gx = (local_x - char_idx as f32 * char_w) / s;
-                        let gy = local_y / s;
-                        let cov = sample_glyph_subpixel(c, gx, gy);
-                        if cov <= 1e-4 {
-                            continue;
-                        }
-                        [1.0, 1.0, 1.0, opacity * cov]
-                    } else {
-                        continue;
-                    }
+                LayerKind::Text { style, .. } => {
+                    let coverage = text_bitmap.as_ref().expect("text bitmap").sample(u, v);
+                    [
+                        style.color[0],
+                        style.color[1],
+                        style.color[2],
+                        style.color[3] * opacity * coverage,
+                    ]
                 }
+                LayerKind::Adjustment {} => continue,
                 LayerKind::PreComp { .. } => {
                     let pf = precomp_frame.as_ref().unwrap();
-                    let sx = ((u * pf.width as f32) as u32).min(pf.width.saturating_sub(1));
-                    let sy = ((v * pf.height as f32) as u32).min(pf.height.saturating_sub(1));
-                    let p = pf.pixel(sx, sy);
+                    let p = pf.sample_bilinear(u, v);
                     [p[0], p[1], p[2], p[3] * opacity]
                 }
             };
 
-            frame.blend_pixel(dest_x, dest_y, src_color, layer.blend_mode);
+            frame.blend_pixel(
+                dest_x,
+                dest_y,
+                src_color,
+                if source_only {
+                    BlendMode::Normal
+                } else {
+                    layer.blend_mode
+                },
+            );
         }
     }
 
@@ -549,15 +890,24 @@ pub fn draw_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bonaparte_model::{Easing, History, Keyframe, Op, StaticTransform, Track};
+    use bonaparte_model::{Easing, History, Keyframe, Op, Property, StaticTransform, Track};
 
     fn solid(color: [f32; 4]) -> Layer {
-        let mut l = Layer::new("solid", LayerKind::Solid { color }, Time::ZERO, Time(10 * bonaparte_model::TICKS_PER_SEC));
+        let mut l = Layer::new(
+            "solid",
+            LayerKind::Solid { color },
+            Time::ZERO,
+            Time(10 * bonaparte_model::TICKS_PER_SEC),
+        );
         l.transform = StaticTransform::default();
         l
     }
 
-    fn commit_layer(p: &mut Project, c: bonaparte_model::CompId, layer: Layer) -> bonaparte_model::LayerId {
+    fn commit_layer(
+        p: &mut Project,
+        c: bonaparte_model::CompId,
+        layer: Layer,
+    ) -> bonaparte_model::LayerId {
         let mut h = History::new();
         h.commit(p, Op::AddLayer { comp: c, layer }).unwrap();
         bonaparte_model::LayerId(p.next_layer.0 - 1)
@@ -566,7 +916,13 @@ mod tests {
     #[test]
     fn renders_background_and_layering_is_bottom_to_top() {
         let mut p = Project::new("t");
-        let c = p.create_comp("main", 4, 4, bonaparte_model::FrameRate::FPS_30, Time(10 * bonaparte_model::TICKS_PER_SEC));
+        let c = p.create_comp(
+            "main",
+            4,
+            4,
+            bonaparte_model::FrameRate::FPS_30,
+            Time(10 * bonaparte_model::TICKS_PER_SEC),
+        );
         p.comps.get_mut(&c).unwrap().background = [0.0, 0.0, 0.0, 1.0];
         commit_layer(&mut p, c, solid([1.0, 0.0, 0.0, 1.0])); // red on top
         let f = render_comp(&p, c, Time::ZERO, &NoMedia).unwrap();
@@ -605,7 +961,10 @@ mod tests {
 
         let f0 = render_comp(&p, c, Time::ZERO, &NoMedia).unwrap();
         let f1 = render_comp(&p, c, Time(bonaparte_model::TICKS_PER_SEC / 2), &NoMedia).unwrap();
-        assert!(f0.pixel(0, 0)[0] < 0.05, "opacity 0 at t=0 must show background");
+        assert!(
+            f0.pixel(0, 0)[0] < 0.05,
+            "opacity 0 at t=0 must show background"
+        );
         let mid = f1.pixel(0, 0);
         assert!(mid[0] > 0.4 && mid[0] < 0.6, "half-faded red at t=0.5s");
     }
@@ -616,7 +975,9 @@ mod tests {
             Some(FrameView {
                 width: 2,
                 height: 2,
-                rgba: &[255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
+                rgba: &[
+                    255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+                ],
             })
         }
     }
@@ -631,6 +992,16 @@ mod tests {
             bonaparte_model::FrameRate::FPS_30,
             Time(10 * bonaparte_model::TICKS_PER_SEC),
         );
+        p.insert_media(bonaparte_model::MediaAsset {
+            id: MediaId(0),
+            name: "Injected fixture".into(),
+            path: None,
+            kind: bonaparte_model::MediaKind::Image,
+            embedded: None,
+            slot: None,
+            alias: None,
+            perception: None,
+        });
         let mut layer = Layer::new(
             "img",
             LayerKind::Footage {
@@ -655,8 +1026,18 @@ mod tests {
         let c1 = p.create_comp("C1", 10, 10, bonaparte_model::FrameRate::FPS_30, Time(100));
         let c2 = p.create_comp("C2", 10, 10, bonaparte_model::FrameRate::FPS_30, Time(100));
 
-        let l1 = Layer::new("pre1", LayerKind::PreComp { comp: c2 }, Time::ZERO, Time(100));
-        let l2 = Layer::new("pre2", LayerKind::PreComp { comp: c1 }, Time::ZERO, Time(100));
+        let l1 = Layer::new(
+            "pre1",
+            LayerKind::PreComp { comp: c2 },
+            Time::ZERO,
+            Time(100),
+        );
+        let l2 = Layer::new(
+            "pre2",
+            LayerKind::PreComp { comp: c1 },
+            Time::ZERO,
+            Time(100),
+        );
         p.insert_layer(c1, l1);
         p.insert_layer(c2, l2);
 

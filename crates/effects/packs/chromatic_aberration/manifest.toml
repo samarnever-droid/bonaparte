@@ -1,6 +1,7 @@
 api_version = "1.0"
 id = "builtin.chromatic_aberration"
 name = "Chromatic Aberration"
+category = "Distort"
 cost = "light"
 shader = "chromatic_aberration.wgsl"
 inputs = ["input"]

@@ -1,0 +1,15 @@
+[package]
+name = "bonaparte-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bonaparte-model = { path = "../model" }
+bonaparte-engine = { path = "../engine" }
+bonaparte-effects = { path = "../effects" }
+bonaparte-media = { path = "../media" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22" # portable embedded images and binary exports over native JSON IPC
+png = "0.18" # lossless still-frame export without FFmpeg
+tempfile = "3" # atomic media export preserves an existing file if rendering fails
