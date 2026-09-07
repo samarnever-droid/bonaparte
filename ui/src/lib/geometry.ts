@@ -1,5 +1,13 @@
 /// Affine geometry matching the Rust compositor, including parenting and anchors.
-import { evaluate, type Comp, type Layer, type Project } from "./model";
+import {
+  evaluate,
+  DEFAULT_CAMERA,
+  DEFAULT_TURNTABLE,
+  type Camera3D,
+  type Comp,
+  type Layer,
+  type Project,
+} from "./model";
 export type Matrix = [number, number, number, number, number, number];
 export const identity: Matrix = [1, 0, 0, 1, 0, 0];
 export function multiply(a: Matrix, b: Matrix): Matrix {
@@ -54,10 +62,66 @@ export function worldMatrix(
   if (visited.has(layer.id)) return identity;
   visited.add(layer.id);
   const parent = layer.parent === null ? null : comp.layers[String(layer.parent)];
-  return multiply(
+  const world = multiply(
     parent ? worldMatrix(comp, parent, time, visited) : identity,
     localMatrix(layer, time),
   );
+  // Mirror the Rust 3D camera projection (billboard-exact): a uniform
+  // perspective scale around the camera axis, using the compounded chain
+  // depth. fov <= 0 = off.
+  const cam = cameraAt(comp, time);
+  if (cam.fov <= 0) return world;
+  const z = effectiveDepth(comp, layer, time);
+  const s = cam.fov / Math.max(cam.fov + (z - cam.z), cam.fov * 0.05);
+  return [
+    world[0] * s,
+    world[1] * s,
+    world[2] * s,
+    world[3] * s,
+    (world[4] - cam.position[0]) * s,
+    (world[5] - cam.position[1]) * s,
+  ];
+}
+
+/** Compounded depth: the sum of Z along the parent chain (target included),
+ * mirroring Comp::effective_depth in the Rust model. */
+export function effectiveDepth(comp: Comp, layer: Layer, time: number): number {
+  let depth = 0;
+  let current: Layer | undefined = layer;
+  const visited = new Set<number>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const zRaw = evaluate(current, "Z", time);
+    depth += "Scalar" in zRaw ? zRaw.Scalar : 0;
+    current = current.parent === null ? undefined : comp.layers[String(current.parent)];
+  }
+  return depth;
+}
+
+/** Paint order at `time`: bottom-to-top by composition, or far-to-near when
+ * the 3D camera is active (stable sort keeps ties in composed order). */
+export function drawOrder(comp: Comp, time: number): Layer[] {
+  const all = comp.layer_order
+    .map((id) => comp.layers[String(id)])
+    .filter((l): l is Layer => !!l);
+  const cam = cameraAt(comp, time);
+  if (cam.fov <= 0) return all;
+  return all
+    .map((l, i) => ({ l, i, d: effectiveDepth(comp, l, time) - cam.z }))
+    .sort((a, b) => a.d - b.d || a.i - b.i)
+    .map(({ l }) => l);
+}
+
+/** The comp camera at `time` — orbiting when the turntable is enabled. */
+export function cameraAt(comp: Comp, time: number): Camera3D {
+  const cam = { ...DEFAULT_CAMERA, ...(comp.camera ?? {}) };
+  const turn = { ...DEFAULT_TURNTABLE, ...(comp.turntable ?? {}) };
+  if (turn.enabled && cam.fov > 0) {
+    const theta = ((2 * Math.PI) / Math.max(turn.period, 0.5)) * (time / 120000);
+    const r = Math.hypot(cam.position[0], cam.position[1]) || comp.width * 0.25;
+    cam.position = [r * Math.cos(theta), r * Math.sin(theta)];
+  }
+  return cam;
 }
 let context: CanvasRenderingContext2D | null;
 const textSizes = new Map<string, [number, number]>();
@@ -128,8 +192,9 @@ export function hitTest(
   y: number,
   time: number,
 ): Layer | null {
-  for (const id of [...comp.layer_order].reverse()) {
-    const layer = comp.layers[String(id)];
+  const paintOrder = drawOrder(comp, time);
+  for (let index = paintOrder.length - 1; index >= 0; index--) {
+    const layer = paintOrder[index];
     if (
       !layer ||
       layer.locked ||

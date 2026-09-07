@@ -80,6 +80,47 @@ unit = ""
 kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
 
 [[params]]
+id = "lift"
+name = "Lift"
+doc = "Raise or crush everything after contrast; classic lift wheel."
+group = "Light"
+step = 0.005
+unit = ""
+kind = { Slider = { min = -0.25, max = 0.25, default = 0.0 } }
+
+[[params]]
+id = "gain"
+name = "Gain"
+doc = "Multiplicative linear-light gain on top of exposure."
+group = "Light"
+step = 0.01
+unit = "×"
+kind = { Slider = { min = 0.5, max = 1.5, default = 1.0 } }
+
+[[params]]
+id = "lift_color"
+name = "Lift tint"
+doc = "Chromatic lift wheel: pushes shadows toward this color. Center gray is neutral."
+group = "Light"
+kind = { Color = { default = [0.5, 0.5, 0.5, 1.0] } }
+
+[[params]]
+id = "gain_color"
+name = "Gain tint"
+doc = "Chromatic gain wheel: multiplies each channel in linear light, up to one stop from center gray."
+group = "Light"
+kind = { Color = { default = [0.5, 0.5, 0.5, 1.0] } }
+
+[[params]]
+id = "filmic"
+name = "Filmic rolloff"
+doc = "Blend toward an ACES-fitted tonemap so highlights roll off instead of clipping."
+group = "Light"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.0, max = 1.0, default = 0.0 } }
+
+[[params]]
 id = "saturation"
 name = "Saturation"
 doc = "Luma-preserving saturation; zero produces a monochrome image."
@@ -111,6 +152,42 @@ id = "fade"
 name = "Fade"
 doc = "Lift the black floor for a faded print look."
 group = "Color"
+step = 0.01
+unit = ""
+kind = { Slider = { min = 0.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "split_shadow_hue"
+name = "Split shadow hue"
+doc = "Hue tinted into the shadows by split strength, in degrees."
+group = "Split toning"
+step = 1.0
+unit = "°"
+kind = { Slider = { min = 0.0, max = 360.0, default = 220.0 } }
+
+[[params]]
+id = "split_highlight_hue"
+name = "Split highlight hue"
+doc = "Hue tinted into the highlights by split strength, in degrees."
+group = "Split toning"
+step = 1.0
+unit = "°"
+kind = { Slider = { min = 0.0, max = 360.0, default = 45.0 } }
+
+[[params]]
+id = "split_balance"
+name = "Split balance"
+doc = "Shifts the shadow/highlight crossover; negative protects highlights, positive protects shadows."
+group = "Split toning"
+step = 0.01
+unit = ""
+kind = { Slider = { min = -1.0, max = 1.0, default = 0.0 } }
+
+[[params]]
+id = "split_strength"
+name = "Split strength"
+doc = "How strongly the shadow/highlight hues tint the image; zero disables split toning."
+group = "Split toning"
 step = 0.01
 unit = ""
 kind = { Slider = { min = 0.0, max = 1.0, default = 0.0 } }

@@ -22,7 +22,15 @@
     seconds = $state(30),
     background = $state<Color>([0, 0, 0, 1]);
   let format = $state<"png" | "mp4">("mp4");
+  let bitDepth = $state<8 | 16>(8);
+  let outputSpace = $state<"srgb" | "display-p3" | "rec2020" | "linear">("srgb");
   let submitting = $state(false);
+  const spaces = [
+    { id: "srgb", label: "sRGB", note: "standard screens" },
+    { id: "display-p3", label: "Display P3", note: "wide gamut, modern displays" },
+    { id: "rec2020", label: "Rec. 2020", note: "ultra-wide gamut masters" },
+    { id: "linear", label: "Linear", note: "no transfer curve, for compositing" },
+  ] as const;
   const resolutions = [
     { name: "Full HD", width: 1920, height: 1080 },
     { name: "Vertical", width: 1080, height: 1920 },
@@ -304,6 +312,20 @@
           ><span class="radio"></span></button
         >
       </div>
+      {#if format === "png"}<div class="export-deep">
+          <label
+            >Bit depth<select bind:value={bitDepth} disabled={editor.exporting}>
+              <option value={8}>8-bit — classic, small files</option>
+              <option value={16}>16-bit — deep color, no banding</option>
+            </select></label
+          ><label
+            >Color space<select bind:value={outputSpace} disabled={editor.exporting}>
+              {#each spaces as space}<option value={space.id}
+                  >{space.label} — {space.note}</option
+                >{/each}</select
+            ></label
+          >
+        </div>{/if}
       <div class="export-facts">
         <span>Render engine</span><strong>Rust CPU reference</strong><span
           >{format === "mp4" ? "Frame range" : "Frame"}</span
@@ -314,7 +336,9 @@
               ? Math.floor(editor.currentTime / ticksPerFrame(comp.fps))
               : 0}</strong
         ><span>{format === "mp4" ? "Encoding quality" : "Color format"}</span><strong
-          >{format === "mp4" ? "CRF 18 · veryfast" : "8-bit sRGB + alpha"}</strong
+          >{format === "mp4"
+            ? "CRF 18 · veryfast"
+            : `${bitDepth}-bit ${spaces.find((space) => space.id === outputSpace)?.label} + alpha`}</strong
         >
       </div>
       {#if format === "mp4"}<p class="modal-note">
@@ -346,12 +370,49 @@
           disabled={editor.exporting ||
             !comp ||
             (format === "mp4" && (!editor.ffmpeg || !!(comp.width % 2) || !!(comp.height % 2)))}
-          onclick={() => void exportFile(format)}
+          onclick={() =>
+            void exportFile(format, { bitDepth, outputSpace })}
           ><Icon name="download" size={14} />{editor.exporting
             ? "Exporting…"
             : `Export ${format.toUpperCase()}`}</button
         >
       </div>
+    {:else if editor.dialog?.kind === "rename-layer"}
+      <h2 id="dialog-title">Rename this layer.</h2>
+      <p class="dialog-subtitle">A clear name keeps the timeline readable.</p>
+      <form
+        class="rename-form"
+        onsubmit={(e) => {
+          e.preventDefault();
+          const dialog = editor.dialog;
+          if (dialog?.kind !== "rename-layer") return;
+          const name = dialog.name.trim();
+          if (name)
+            void applyOp({
+              type: "renameLayer",
+              comp: dialog.compId,
+              layer: dialog.layerId,
+              name,
+            });
+          close();
+        }}
+      >
+        <input
+          class="field"
+          aria-label="Layer name"
+          maxlength="120"
+          value={editor.dialog.kind === "rename-layer" ? editor.dialog.name : ""}
+          oninput={(e) => {
+            if (editor.dialog?.kind === "rename-layer") editor.dialog.name = e.currentTarget.value;
+          }}
+        />
+        <div class="dialog-actions">
+          <button type="button" class="btn ghost" onclick={close}>Cancel</button><button
+            type="submit"
+            class="btn primary">Rename<Icon name="right" size={13} /></button
+          >
+        </div>
+      </form>
     {:else if editor.dialog?.kind === "shortcuts"}
       <h2 id="dialog-title">Keep your flow.</h2>
       <p class="dialog-subtitle">A few shortcuts between an idea and a frame.</p>
@@ -631,6 +692,29 @@
     box-shadow: inset 0 0 0 3px #393c36;
     border-color: var(--accent);
   }
+  .export-deep {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .export-deep label {
+    display: grid;
+    gap: 4px;
+    font-size: 11px;
+    color: #8a9583;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .export-deep select {
+    background: #1d2318;
+    color: #e6ecdd;
+    border: 1px solid #3a4232;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13px;
+  }
+
   .export-facts {
     display: grid;
     grid-template-columns: 1fr auto;

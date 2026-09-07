@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 bonaparte-runtime = { path = "../runtime" }
+bonaparte-model = { path = "../model" }
+bonaparte-effects = { path = "../effects" }
+bonaparte-mcp = { path = "../mcp" } # unified: MCP tools drive the live editor session
 serde_json = { workspace = true }
 tiny_http = "0.12" # minimal development-only HTTP transport for the real Rust runtime
 

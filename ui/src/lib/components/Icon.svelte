@@ -5,6 +5,10 @@
     class: className = "",
   }: { name: string; size?: number; class?: string } = $props();
   const icons: Record<string, string[]> = {
+    cube: ["M12 2 21 7v10l-9 5-9-5V7l9-5", "M3 7l9 5 9-5M12 12v10"],
+    camera: ["M4 8h3l2-3h6l2 3h3v12H4z", "M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8"],
+    target: ["M12 12m-8 0a8 8 0 1 0 16 0 8 8 0 1 0-16 0", "M12 12m-3 0a3 3 0 1 0 6 0 3 3 0 1 0-6 0", "M12 2v3M12 19v3M2 12h3M19 12h3"],
+    turntable: ["M12 12m-3 0a3 3 0 1 0 6 0 3 3 0 1 0-6 0", "M20 12a8 8 0 1 1-2.3-5.6", "M18 3v4h-4"],
     wave: ["M2 10v4M6 6v12M10 3v18M14 7v10M18 5v14M22 10v4"],
     scissors: [
       "M6 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6M6 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6M8 7l13 14M8 17 21 3",

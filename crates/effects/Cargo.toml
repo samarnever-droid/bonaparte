@@ -9,5 +9,9 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Row-parallel CPU kernels need threads; the wasm check target stays single-threaded.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = { workspace = true }
+
 [dev-dependencies]
 naga = { version = "24", features = ["wgsl-in"] } # validate bundled WGSL syntax/types; does not implement a GPU runtime

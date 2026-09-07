@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { editor, selectedLayer, updateEffects, addEffect } from "../store.svelte";
+  import {
+    editor,
+    selectedLayer,
+    updateEffects,
+    addEffect,
+    activeComp,
+    download,
+    notify,
+  } from "../store.svelte";
+  import { binary } from "../bridge";
   import Icon from "./Icon.svelte";
   import ParamControl from "./ParamControl.svelte";
   let expanded = $state<Record<string, boolean>>({});
@@ -172,7 +181,30 @@
     >
     <p class="stack-note">
       Evaluated from top to bottom.<br />◇ Animate a parameter at the playhead.
-    </p>{/if}
+    </p>
+    {#if layer.effects.length}
+      <button
+        class="lut-export"
+        disabled={editor.exporting}
+        onclick={() =>
+          binary("export_lut", {
+            compId: activeComp()?.id,
+            layerId: layer.id,
+            size: 33,
+          })
+            .then((data) => {
+              download(new Blob([data], { type: "text/plain" }), `${layer.name}.cube`);
+              notify("LUT exported.");
+            })
+            .catch((error) =>
+              notify(
+                error instanceof Error ? error.message : String(error ?? "LUT export failed"),
+                true,
+              ),
+            )}
+        ><Icon name="download" size={12} />Export grade as .cube LUT</button
+      >
+    {/if}{/if}
 {:else}
   <div class="empty">
     Select a layer to edit its effects.<button
@@ -185,6 +217,23 @@
 {/if}
 
 <style>
+  .lut-export {
+    margin: 0 16px 13px;
+    width: calc(100% - 32px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-2);
+    border-radius: 7px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .lut-export:hover:not(:disabled) { background: #26291f; }
   .scopes {
     padding: 17px 16px 13px;
     border-bottom: 1px solid var(--border);

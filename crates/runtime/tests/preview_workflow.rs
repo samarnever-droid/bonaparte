@@ -217,21 +217,34 @@ fn gpu_requests_report_real_submissions_and_unsupported_effects_fall_back() {
     let frame = session.preview_input(req()).unwrap().render().unwrap();
     assert!(frame.metadata.backend.starts_with("gpu"));
     assert!(session.preview.status().gpu.submitted_frames > 0);
-    let effect = EffectInstance::new("blur", "builtin.blur");
+    // Glow and drop shadow now execute natively as multi-pass GPU programs:
+    // stacking them must stay on the GPU with no fallback reason at all.
+    let glow = EffectInstance::new("glow", "builtin.glow");
+    let shadow = EffectInstance::new("shadow", "builtin.drop_shadow");
+    let shadow_params = |mut effect: EffectInstance, color: [f32; 4]| {
+        for (id, value) in [
+            ("offset_x", 3.0),
+            ("offset_y", 2.0),
+            ("radius", 5.0),
+            ("opacity", 0.8),
+        ] {
+            effect.params.insert(id.into(), EffectValue::Float(value));
+        }
+        effect
+            .params
+            .insert("color".into(), EffectValue::Color(color));
+        effect
+    };
+    let shadow = shadow_params(shadow, [0.0, 0.0, 0.1, 0.9]);
     session
         .command(
             "apply",
-            json!({"op":Op::SetLayerEffects{comp:CompId(1),layer:LayerId(1),effects:vec![effect]}}),
+            json!({"op":Op::SetLayerEffects{comp:CompId(1),layer:LayerId(1),effects:vec![glow, shadow]}}),
         )
         .unwrap();
     let frame = session.preview_input(req()).unwrap().render().unwrap();
-    assert_eq!(frame.metadata.backend, "cpu");
-    assert!(frame
-        .metadata
-        .fallback_reason
-        .as_deref()
-        .unwrap()
-        .contains("Gaussian Blur"));
+    assert!(frame.metadata.backend.starts_with("gpu"));
+    assert_eq!(frame.metadata.fallback_reason.as_deref(), None);
     session.command("undo", json!({})).unwrap();
     assert!(session
         .preview_input(req())

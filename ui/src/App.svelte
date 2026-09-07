@@ -5,9 +5,10 @@
   import Viewport from "./lib/components/Viewport.svelte";
   import Properties from "./lib/components/Properties.svelte";
   import AudioInspector from "./lib/components/AudioInspector.svelte";
-  import { importAudio, deleteAudio, duplicateAudio, splitAudio } from "./lib/audio/actions";
+  import { deleteAudio, duplicateAudio, splitAudio } from "./lib/audio/actions";
   import Timeline from "./lib/components/Timeline.svelte";
   import Dialogs from "./lib/components/Dialogs.svelte";
+  import ContextMenu from "./lib/components/ContextMenu.svelte";
   import Icon from "./lib/components/Icon.svelte";
   import {
     editor,
@@ -25,7 +26,7 @@
     scrub,
     toggleKeyframeAtPlayhead,
     setWorkspace,
-    importImage,
+    importAnyFile,
     openProjectFile,
     notify,
   } from "./lib/store.svelte";
@@ -148,6 +149,7 @@
     if (key === "v") editor.tool = "select";
     if (key === "h") editor.tool = "hand";
     if (key === "r") editor.tool = "rotate";
+    if (key === "o") editor.tool = editor.tool === "orbit" ? "select" : "orbit";
     if (key === "g") editor.showGuides = !editor.showGuides;
     if (key === "1") setWorkspace("Design");
     if (key === "2") setWorkspace("Color");
@@ -178,13 +180,7 @@
       )
         return;
       await openProjectFile(file);
-    } else if (
-      file.type.startsWith("audio/") ||
-      /\.(wav|mp3|flac|ogg|oga|aif|aiff|m4a|aac)$/i.test(file.name)
-    )
-      await importAudio(file);
-    else if (file.type.startsWith("image/")) await importImage(file);
-    else notify("Import an image, audio file, or .bonaparte project.", true);
+    } else await importAnyFile(file);
   }
   function beforeUnload(e: BeforeUnloadEvent) {
     if (editor.dirty) {
@@ -276,6 +272,7 @@
   </div>
 {/if}
 {#if editor.dialog}<Dialogs />{/if}
+<ContextMenu />
 {#if editor.toast}<div
     class="toast"
     class:error={editor.toast.error}

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { applyOp, editor } from "../store.svelte";
+  import {
+    applyOp,
+    editor,
+    keyframeClipboard,
+    opSettled,
+    type CopiedKeys,
+  } from "../store.svelte";
   import { timeToSecs, type Comp, type Layer, type Property, type Easing } from "../model";
   import Icon from "./Icon.svelte";
   let {
@@ -13,7 +19,8 @@
   let activeTime = $state<number | null>(null),
     p1 = $state<[number, number]>([0.42, 0]),
     p2 = $state<[number, number]>([0.58, 1]),
-    linear = $state(false);
+    linear = $state(false),
+    hold = $state(false);
   const activeKey = $derived(keys.find((k) => k.time === activeTime) ?? keys[0]);
   const index = $derived(activeKey ? keys.indexOf(activeKey) : -1);
   const nextKey = $derived(keys[index + 1]);
@@ -29,10 +36,15 @@
     if (activeKey) {
       if (activeKey.easing === "Linear") {
         linear = true;
+        hold = false;
         p1 = [0, 0];
         p2 = [1, 1];
+      } else if (activeKey.easing === "Hold") {
+        linear = false;
+        hold = true;
       } else {
         linear = false;
+        hold = false;
         p1 = [...activeKey.easing.Bezier.p1];
         p2 = [...activeKey.easing.Bezier.p2];
       }
@@ -48,13 +60,21 @@
     end = $derived(xy(1, 1)),
     a = $derived(xy(p1[0], p1[1])),
     b = $derived(xy(p2[0], p2[1]));
-  const curve = $derived(linear ? `M${start}L${end}` : `M${start}C${a} ${b} ${end}`);
+  const curve = $derived(
+    linear
+      ? `M${start}L${end}`
+      : hold
+        ? `M${start}L${end[0]} ${start[1]}L${end}`
+        : `M${start}C${a} ${b} ${end}`,
+  );
   const presets: { name: string; easing: Easing }[] = [
     { name: "Linear", easing: "Linear" },
     { name: "Ease in", easing: { Bezier: { p1: [0.42, 0], p2: [1, 1] } } },
     { name: "Ease out", easing: { Bezier: { p1: [0, 0], p2: [0.58, 1] } } },
     { name: "Smooth", easing: { Bezier: { p1: [0.42, 0], p2: [0.58, 1] } } },
     { name: "Overshoot", easing: { Bezier: { p1: [0.2, 1.4], p2: [0.4, 1] } } },
+    { name: "Anticipate", easing: { Bezier: { p1: [0.36, 0], p2: [0.66, -0.3] } } },
+    { name: "Hold", easing: "Hold" },
   ];
   let svg = $state<SVGSVGElement | null>(null),
     dragging: "p1" | "p2" | null = null;
@@ -69,8 +89,45 @@
         easing,
       });
   }
+  function kindOf(value: { Scalar: number } | { Vec2: [number, number] }): "Scalar" | "Vec2" {
+    return "Scalar" in value ? "Scalar" : "Vec2";
+  }
+  async function copyKeys() {
+    if (!keys.length) return;
+    keyframeClipboard.current = {
+      property,
+      kind: kindOf(keys[0].value),
+      keys: keys.map((k) => ({ time: k.time, value: k.value, easing: k.easing })),
+    };
+  }
+  async function pasteKeys() {
+    const copied = keyframeClipboard.current;
+    if (!copied || layer.locked) return;
+    // .cube rule of thumb: only like types animate a property. Opacity (scalar)
+    // cannot take a Position (vec2) key list.
+    const scalarTargets: Property[] = ["Rotation", "Opacity", "Z"];
+    const targetKind: "Scalar" | "Vec2" = scalarTargets.includes(property) ? "Scalar" : "Vec2";
+    if (copied.kind !== targetKind) return;
+    const shift = editor.currentTime - copied.keys[0].time;
+    await applyOp({
+      type: "batch",
+      label: `Paste ${copied.keys.length} keyframes`,
+      ops: copied.keys.map((k) => ({
+        type: "addKeyframe" as const,
+        comp: comp.id,
+        layer: layer.id,
+        property,
+        key: { ...k, time: k.time + shift },
+      })),
+    });
+  }
+  const pasteable = $derived(
+    !!keyframeClipboard.current &&
+      keyframeClipboard.current.kind ===
+        (["Rotation", "Opacity", "Z"].includes(property) ? "Scalar" : "Vec2"),
+  );
   function startDrag(e: PointerEvent, handle: "p1" | "p2") {
-    if (layer.locked || !nextKey) return;
+    if (layer.locked || !nextKey || hold) return;
     e.preventDefault();
     dragging = handle;
     linear = false;
@@ -101,23 +158,40 @@
   }
   onDestroy(cleanup);
   function handleKey(e: KeyboardEvent, handle: "p1" | "p2") {
-    const delta = e.shiftKey ? 0.1 : 0.02;
-    const p = handle === "p1" ? [...p1] : [...p2];
-    if (e.key === "ArrowLeft") p[0] -= delta;
-    else if (e.key === "ArrowRight") p[0] += delta;
-    else if (e.key === "ArrowUp") p[1] += delta;
-    else if (e.key === "ArrowDown") p[1] -= delta;
-    else return;
     e.preventDefault();
     e.stopPropagation();
-    const next: [number, number] = [
-      Math.max(0, Math.min(1, p[0])),
-      Math.max(-0.4, Math.min(1.4, p[1])),
-    ];
-    if (handle === "p1") p1 = next;
-    else p2 = next;
-    linear = false;
-    void commit({ Bezier: { p1: [...p1], p2: [...p2] } });
+    const key = e.key;
+    const delta = e.shiftKey ? 0.1 : 0.02;
+    // Nudge the *persisted* easing, read only after pending mutations (a
+    // just-clicked preset) have merged — never from a stale local copy.
+    void (async () => {
+      await opSettled();
+      const persisted =
+        activeKey && typeof activeKey.easing === "object" && "Bezier" in activeKey.easing
+          ? activeKey.easing.Bezier
+          : null;
+      if (hold || !persisted) return;
+      const base = handle === "p1" ? persisted.p1 : persisted.p2;
+      const p: [number, number] = [...base];
+      if (key === "ArrowLeft") p[0] -= delta;
+      else if (key === "ArrowRight") p[0] += delta;
+      else if (key === "ArrowUp") p[1] += delta;
+      else if (key === "ArrowDown") p[1] -= delta;
+      else return;
+      const next: [number, number] = [
+        Math.max(0, Math.min(1, p[0])),
+        Math.max(-0.4, Math.min(1.4, p[1])),
+      ];
+      if (handle === "p1") {
+        p1 = next;
+        p2 = [...persisted.p2];
+      } else {
+        p2 = next;
+        p1 = [...persisted.p1];
+      }
+      linear = false;
+      void commit({ Bezier: { p1: [...p1], p2: [...p2] } });
+    })();
   }
 </script>
 
@@ -130,6 +204,17 @@
       title="Close graph editor"
       aria-label="Close graph editor"
       onclick={onClose}><Icon name="x" size={12} /></button
+    >
+  </div>
+  <div class="key-clipboard">
+    <button
+      class="copy-keys"
+      disabled={!keys.length || layer.locked}
+      onclick={() => void copyKeys()}>Copy {keys.length} keyframes</button
+    ><button
+      class="paste-keys"
+      disabled={!pasteable || layer.locked}
+      onclick={() => void pasteKeys()}>Paste at playhead</button
     >
   </div>
   {#if keys.length < 2}
@@ -237,7 +322,29 @@
               onclick={() => void commit(preset.easing)}>{preset.name}</button
             >{/each}
         </div>
-        {#if nextKey && !linear}<div class="handle-values">
+        {#if nextKey && !layer.locked && keys.length > 2}
+          <button
+            class="apply-all"
+            disabled={layer.locked}
+            onclick={() =>
+              void applyOp({
+                type: "batch",
+                label: "Apply easing to all keyframes",
+                ops: keys
+                  .filter((_, i) => i < keys.length - 1)
+                  .map((k) => ({
+                    type: "setEasing" as const,
+                    comp: comp.id,
+                    layer: layer.id,
+                    property,
+                    time: k.time,
+                    easing: activeKey!.easing,
+                  })),
+              })}
+            >Apply this curve to all {keys.length - 1} segments</button
+          >
+        {/if}
+        {#if nextKey && !linear && !hold}<div class="handle-values">
             {#each ["p1", "p2"] as name}{@const point = name === "p1" ? p1 : p2}
               <div>
                 <span>{name.toUpperCase()}</span>{#each [0, 1] as axis}<input
@@ -328,6 +435,37 @@
     padding: 4px;
     background: #20221f;
   }
+  .key-clipboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .key-clipboard button {
+    border: 1px solid #3a4232;
+    background: transparent;
+    color: #c9d6b8;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .key-clipboard button:disabled { opacity: 0.45; cursor: default; }
+  .key-clipboard button:hover:not(:disabled) { background: #2b3226; }
+  .apply-all {
+    margin-top: 8px;
+    width: 100%;
+    border: 1px solid #3a4232;
+    background: transparent;
+    color: #a6b48d;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .apply-all:hover { background: #2b3226; }
   .ease-presets {
     display: flex;
     gap: 4px;

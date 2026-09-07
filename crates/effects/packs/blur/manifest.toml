@@ -2,6 +2,7 @@ api_version = "1.0"
 id = "builtin.blur"
 name = "Gaussian Blur"
 category = "Blur & sharpen"
+gpu_preview = true
 cost = "medium"
 shader = "blur.wgsl"
 inputs = ["input"]

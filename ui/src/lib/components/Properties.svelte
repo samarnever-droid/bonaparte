@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import ParamControl from "./ParamControl.svelte";
   import { inputGroup, releaseInputGroup, finiteInput } from "../live-input";
   import ColorField from "./ColorField.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
@@ -21,6 +22,8 @@
     toggleLayerLock,
     layerVisibility,
     layerLocked,
+    updateEffects,
+    setWorkspace,
   } from "../store.svelte";
   import {
     evaluate,
@@ -33,6 +36,7 @@
     type LayerKind,
     type Op,
     type PropValue,
+    type EffectValue,
   } from "../model";
   import { layerIcon, layerColor, layerType } from "../geometry";
   const layer = $derived(editingLayer());
@@ -44,6 +48,7 @@
     { key: "Rotation", label: "Rotation", axes: [""], step: 1, unit: "°" },
     { key: "Opacity", label: "Opacity", axes: [""], step: 1, unit: "%" },
     { key: "AnchorPoint", label: "Anchor", axes: ["X", "Y"], step: 1 },
+    { key: "Z", label: "Depth", axes: [""], step: 1, unit: "px" },
   ];
   function numbers(property: Property): number[] {
     if (!layer) return [0, 0];
@@ -88,6 +93,73 @@
       return { type: "setLayerContent", comp: cid, layer: id, kind };
     });
   }
+  // --- Quick grade: the Color workspace's core look, inline. ------------
+  const gradeManifest = $derived(
+    editor.effects.find((e) => e.id === "builtin.color_grade"),
+  );
+  const gradeEffect = $derived(
+    layer?.effects.find((e) => e.effect_id === "builtin.color_grade"),
+  );
+  const quickGradeParams = ["exposure", "contrast", "saturation", "temperature"];
+  async function addQuickGrade() {
+    await updateEffects((effects) =>
+      effects.push({
+        id: crypto.randomUUID(),
+        effect_id: "builtin.color_grade",
+        enabled: true,
+        params: {},
+        tracks: {},
+      }),
+    );
+    notify("Quick grade added — drag the sliders to set the look.");
+  }
+  // One-click looks: whole-grade presets, one undoable op each.
+  const LOOKS: { name: string; params: Record<string, EffectValue> }[] = [
+    {
+      name: "Noir",
+      params: { saturation: { Float: 0 }, contrast: { Float: 0.3 }, exposure: { Float: 0.05 } },
+    },
+    {
+      name: "Teal & Orange",
+      params: {
+        temperature: { Float: 0.22 },
+        saturation: { Float: 0.18 },
+        lift_color: { Color: [0.55, 0.47, 0.4, 1] },
+        gain_color: { Color: [0.42, 0.52, 0.58, 1] },
+      },
+    },
+    {
+      name: "Bleach",
+      params: { saturation: { Float: -0.55 }, contrast: { Float: 0.35 }, exposure: { Float: 0.15 } },
+    },
+    {
+      name: "Warm Film",
+      params: {
+        temperature: { Float: 0.3 },
+        contrast: { Float: 0.12 },
+        saturation: { Float: 0.1 },
+        lift_color: { Color: [0.53, 0.5, 0.44, 1] },
+      },
+    },
+  ];
+  async function applyLook(look: (typeof LOOKS)[number]) {
+    await updateEffects((effects) => {
+      let grade = effects.find((e) => e.effect_id === "builtin.color_grade");
+      if (!grade) {
+        grade = {
+          id: crypto.randomUUID(),
+          effect_id: "builtin.color_grade",
+          enabled: true,
+          params: {},
+          tracks: {},
+        };
+        effects.push(grade);
+      }
+      for (const [key, value] of Object.entries(look.params))
+        grade.params[key] = structuredClone(value);
+    });
+    notify(`“${look.name}” look applied.`);
+  }
   async function resetTransform() {
     const l = layer,
       c = comp;
@@ -98,6 +170,7 @@
       Rotation: { Scalar: 0 },
       Opacity: { Scalar: 1 },
       AnchorPoint: { Vec2: [0, 0] },
+      Z: { Scalar: 0 },
     };
     const ops: Op[] = [];
     for (const property of Object.keys(values) as Property[]) {
@@ -524,6 +597,45 @@
             </div>
           {/each}
         </section>
+        {#if gradeManifest && !("Adjustment" in layer.kind)}
+          <section class="inspector-section" aria-label="Quick grade">
+            <div class="section-bar">
+              <Icon name="adjust" size={10} /><span>Grade</span><span class="spacer"></span>
+              {#if gradeEffect}
+                <button
+                  class="icon-button small"
+                  title="Open the full Color workspace"
+                  aria-label="Open full grading"
+                  onclick={() => setWorkspace("Color")}><Icon name="palette" size={12} /></button
+                >
+              {/if}
+            </div>
+            <div class="looks-row" role="group" aria-label="Grade looks">
+              {#each LOOKS as look (look.name)}
+                <button
+                  class="look-chip"
+                  disabled={layer.locked}
+                  onclick={() => void applyLook(look)}>{look.name}</button
+                >
+              {/each}
+            </div>
+            {#if gradeEffect}
+              {#each gradeManifest.params.filter((p) => quickGradeParams.includes(p.id)) as param (param.id)}
+                <div class="grade-row">
+                  <ParamControl {param} instance={gradeEffect} disabled={layer.locked} />
+                </div>
+              {/each}
+              <p class="dim grade-note">Wheels, curves and LUT export live in the Color workspace.</p>
+            {:else}
+              <button
+                class="grade-add"
+                disabled={layer.locked}
+                onclick={() => void addQuickGrade()}
+                ><Icon name="adjust" size={13} />Add quick grade</button
+              >
+            {/if}
+          </section>
+        {/if}
         <section class="inspector-section">
           <div class="section-bar"><Icon name="down" size={10} /><span>Compositing</span></div>
           {#if !("Adjustment" in layer.kind)}<div class="form-row">
@@ -632,6 +744,47 @@
 </aside>
 
 <style>
+  .grade-row :global(.param-row) {
+    margin: 0;
+  }
+  .looks-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 6px 0 8px;
+  }
+  .look-chip {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-2);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .look-chip:hover:not(:disabled) { background: #26291f; color: var(--text-1); }
+  .look-chip:disabled { opacity: 0.45; cursor: default; }
+  .grade-note {
+    font-size: 11px;
+    margin: 6px 0 0;
+  }
+  .grade-add {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-2);
+    border-radius: 7px;
+    padding: 7px 8px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .grade-add:hover:not(:disabled) { background: #26291f; }
   .inspector {
     border-left: 1px solid var(--border);
   }

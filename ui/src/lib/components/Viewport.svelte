@@ -13,11 +13,26 @@
     clone,
     setProperty,
     addLayer,
+    layerContextItems,
+    openContextMenu,
+    compCameraAt,
+    moveCamera,
+    setTurntableEnabled,
+    focusCameraOnSelection,
+    snapshotFrame,
     selectComp,
     scrub,
     pause,
     cancelInteraction,
   } from "../store.svelte";
+  import {
+    ARRANGEMENTS,
+    applySceneArrangement,
+    arrangeInDepth,
+    create3dScene,
+    setFraming,
+    type Framing,
+  } from "../three-d";
   import type { PreviewBackend, PreviewQuality } from "../preview";
   import {
     getPlanes,
@@ -234,7 +249,7 @@
     anchor: [number, number];
   } = null;
   let gestureToken = 0;
-  function location(event: PointerEvent): [number, number] {
+  function location(event: { clientX: number; clientY: number }): [number, number] {
     if (!canvas || !comp) return [0, 0];
     const bounds = gesture?.bounds ?? canvas.getBoundingClientRect();
     return [
@@ -315,6 +330,76 @@
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", cancel);
+  }
+  // Right-click: layer actions on a hit, quick layer creation on empty canvas.
+  function framingOf(c: NonNullable<ReturnType<typeof activeComp>>): Framing {
+    const fov = c.camera?.fov ?? 500;
+    const z = c.camera?.z ?? 0;
+    const d = (f: number, zz: number) => Math.abs(fov - f) + Math.abs(z - zz) * 0.5;
+    const options: [Framing, number, number][] = [
+      ["wide", 780, 260],
+      ["medium", 500, 0],
+      ["closeup", 330, -220],
+    ];
+    return options.reduce((best, o) => (d(o[1], o[2]) < d(best[1], best[2]) ? o : best))[0];
+  }
+  function rightClick(event: MouseEvent) {
+    if (!comp || !editor.project) return;
+    const [x, y] = location(event);
+    const hit = hitTest(comp, editor.project, x, y, editor.currentTime);
+    if (hit) {
+      editor.selected = hit.id;
+      openContextMenu(event, [
+        ...layerContextItems(hit.id),
+        { separator: true as const },
+        { label: "Arrange layers in depth", icon: "graph", run: () => arrangeInDepth() },
+        { label: "Focus on this layer", icon: "target", run: () => void focusCameraOnSelection() },
+      ]);
+      return;
+    }
+    openContextMenu(event, [
+      { label: "New text layer", icon: "type", run: () => void addLayer("text") },
+      { label: "New rectangle", icon: "square", run: () => void addLayer("rectangle") },
+      { label: "New ellipse", icon: "circle", run: () => void addLayer("circle") },
+      { label: "New solid color", icon: "square", run: () => void addLayer("solid") },
+      { label: "New adjustment layer", icon: "adjust", run: () => void addLayer("adjustment") },
+    ]);
+  }
+  // --- 3D camera orbit: drag rotates the camera around the comp center ---
+  let orbiting: { x: number; y: number; angle: number; z: number } | null = null;
+  function angleOf(position: [number, number]): number {
+    return Math.atan2(position[1], position[0]);
+  }
+  function orbitDown(event: PointerEvent) {
+    if (editor.tool !== "orbit" || !comp || event.button !== 0) return;
+    const cam = compCameraAt();
+    const r = Math.hypot(cam.position[0], cam.position[1]);
+    orbiting = {
+      x: event.clientX,
+      y: event.clientY,
+      angle: angleOf(cam.position),
+      z: r > 1 ? cam.z : comp.width * 0.25,
+    };
+    event.preventDefault();
+  }
+  function orbitMove(event: PointerEvent) {
+    if (!orbiting || !comp) return;
+    const dx = event.clientX - orbiting.x,
+      dy = event.clientY - orbiting.y;
+    const angle = orbiting.angle + dx * 0.011;
+    const r = Math.abs(orbiting.z) > 1 ? Math.abs(orbiting.z) : comp.width * 0.25;
+    const cam = compCameraAt();
+    void moveCamera(
+      [r * Math.cos(angle), r * Math.sin(angle)],
+      Math.max(-2000, Math.min(4000, orbiting.z + dy * 2)),
+      cam.fov > 0 ? cam.fov : 500,
+      "orbit-camera",
+    );
+  }
+  async function orbitUp() {
+    if (!orbiting) return;
+    orbiting = null;
+    await flushLiveEdits();
   }
   function down(event: PointerEvent) {
     if (!comp || !editor.project || event.button !== 0) return;
@@ -547,6 +632,153 @@
         aria-pressed={editor.tool === "rotate"}
         onclick={() => (editor.tool = "rotate")}><Icon name="rotate" size={16} /></button
       >
+      <button
+        class="icon-button"
+        class:active={editor.tool === "orbit"}
+        title="3D orbit (O): drag to circle the camera around the scene"
+        aria-label="3D orbit tool"
+        aria-pressed={editor.tool === "orbit"}
+        onclick={() => (editor.tool = editor.tool === "orbit" ? "select" : "orbit")}
+        ><Icon name="cube" size={16} /></button
+      >
+      <span class="tool-rule"></span>
+      <button
+        class="icon-button"
+        class:active={!!comp?.turntable?.enabled}
+        title="Turntable: orbit the camera automatically while playing"
+        aria-label="Toggle turntable"
+        aria-pressed={!!comp?.turntable?.enabled}
+        disabled={!comp}
+        onclick={() => void setTurntableEnabled(!comp?.turntable?.enabled)}
+        ><Icon name="turntable" size={16} /></button
+      >
+      {#if comp && (comp.camera?.fov ?? 0) > 0}
+        <label class="fov-chip" title="Camera focal length — higher is a longer lens">
+          <span>FOV</span>
+          <input
+            type="range"
+            min="80"
+            max="1200"
+            step="10"
+            aria-label="Camera focal length"
+            value={comp.camera?.fov ?? 500}
+            onchange={(e) => {
+              const cam = compCameraAt();
+              void moveCamera(
+                [...cam.position] as [number, number],
+                cam.z,
+                Number(e.currentTarget.value),
+              );
+            }}
+          />
+        </label>
+        <label
+          class="fov-chip"
+          title="Depth of field: blur cards away from the focal plane"
+        >
+          <span>DoF</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            aria-label="Depth of field strength"
+            value={comp.camera?.dof ?? 0}
+            onchange={(e) => {
+              const cam = compCameraAt();
+              void moveCamera(
+                [...cam.position] as [number, number],
+                cam.z,
+                cam.fov,
+                undefined,
+                undefined,
+                Number(e.currentTarget.value),
+              );
+            }}
+          />
+        </label>
+        {#if (comp.camera?.dof ?? 0) > 0}
+          <label class="fov-chip" title="Focal plane distance (0 = the camera plane)">
+            <span>Focus</span>
+            <input
+              type="number"
+              step="10"
+              aria-label="Focal plane distance"
+              value={Math.round(comp.camera?.focus ?? 0)}
+              onchange={(e) => {
+                const cam = compCameraAt();
+                void moveCamera(
+                  [...cam.position] as [number, number],
+                  cam.z,
+                  cam.fov,
+                  undefined,
+                  Number(e.currentTarget.value),
+                );
+              }}
+            />
+          </label>
+          <button
+            class="icon-button"
+            title="Focus on the selected layer"
+            aria-label="Focus on selection"
+            onclick={() => void focusCameraOnSelection()}><Icon name="target" size={15} /></button
+          >
+        {/if}
+      {/if}
+      <span class="tool-rule"></span>
+      <button
+        class="icon-button"
+        title="New 3D scene: layered cards with an orbiting camera, ready to play"
+        aria-label="New 3D scene"
+        disabled={!comp}
+        onclick={() => create3dScene()}><Icon name="cube" size={16} /></button
+      >
+      <button
+        class="icon-button"
+        title="3D scene arrangements: one-click depth layouts"
+        aria-label="3D scene arrangements"
+        disabled={!comp}
+        onclick={(e) =>
+          openContextMenu(e, [
+            ...ARRANGEMENTS.map((a) => ({
+              label: a.label,
+              icon: "cube",
+              run: () => applySceneArrangement(a.id),
+            })),
+            { separator: true as const },
+            {
+              label: "Arrange layers in depth",
+              icon: "graph",
+              run: () => arrangeInDepth(),
+            },
+          ])}><Icon name="sparkles" size={16} /></button
+      >
+      {#if comp && (comp.camera?.fov ?? 0) > 0}
+        <div class="framing-group" role="group" aria-label="Camera framing presets">
+          <button
+            class:active={framingOf(comp) === "wide"}
+            title="Wide framing: see the whole depth stage"
+            onclick={() => setFraming("wide")}>Wide</button
+          >
+          <button
+            class:active={framingOf(comp) === "medium"}
+            title="Medium framing: balanced depth"
+            onclick={() => setFraming("medium")}>Medium</button
+          >
+          <button
+            class:active={framingOf(comp) === "closeup"}
+            title="Close-up: near layers fill the frame"
+            onclick={() => setFraming("closeup")}>Close-up</button
+          >
+        </div>
+      {/if}
+      <span class="tool-rule"></span>
+      <button
+        class="icon-button"
+        title="Snapshot this frame as a PNG"
+        aria-label="Snapshot frame"
+        onclick={() => void snapshotFrame()}><Icon name="camera" size={16} /></button
+      >
       <span class="tool-rule"></span>
       <button
         class="icon-button"
@@ -583,9 +815,19 @@
       >
         <canvas
           bind:this={canvas}
+          class:orbiting={editor.tool === "orbit"}
           aria-label="Rendered composition"
-          onpointerdown={down}
-          onpointermove={hover}
+          onpointerdown={(e) => {
+            orbitDown(e);
+            if (editor.tool !== "orbit") down(e);
+          }}
+          onpointermove={(e) => {
+            orbitMove(e);
+            hover(e);
+          }}
+          onpointerup={() => void orbitUp()}
+          onpointerleave={() => void orbitUp()}
+          oncontextmenu={rightClick}
           style:opacity={proxyActive ? 0 : 1}
           ondblclick={() => {
             if (selected && "PreComp" in selected.kind) {
@@ -794,6 +1036,47 @@
 </section>
 
 <style>
+  .fov-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-3, #8b9284);
+    background: #222422;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 3px 8px;
+  }
+  .fov-chip input[type='range'] {
+    width: 74px;
+    accent-color: #9dc37f;
+  }
+  .framing-group {
+    display: flex;
+    align-items: center;
+    background: #222422;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .framing-group button {
+    font-size: 10px;
+    padding: 3px 8px;
+    color: var(--text-3, #8b9284);
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .framing-group button + button {
+    border-left: 1px solid var(--border);
+  }
+  .framing-group button.active {
+    color: #d5e3c3;
+    background: #2c2f2a;
+  }
+  canvas.orbiting {
+    cursor: grab;
+  }
   .interaction-planes {
     position: absolute;
     inset: 0;

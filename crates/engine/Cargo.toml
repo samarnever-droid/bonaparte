@@ -11,6 +11,10 @@ glam = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true } # graph + tiles serialize into preview state
 
+# Row-parallel compositing needs threads; the wasm check target stays single-threaded.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = { workspace = true }
+
 # Native GPU execution lives in bonaparte-gpu. This crate stays target-independent.
 
 [dev-dependencies]

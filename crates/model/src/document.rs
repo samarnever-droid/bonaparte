@@ -9,6 +9,7 @@
 //!   FrameRate for frame snapping.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,82 @@ impl std::fmt::Display for BlendMode {
 }
 
 /// One composition: a canvas plus a stack of layers over time.
+/// The comp's 3D perspective camera. With `fov <= 0` (the default) the comp
+/// renders exactly as it always has — pure 2D, no projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    /// Camera pan offset from the comp center, in comp pixels.
+    #[serde(default)]
+    pub position: [f32; 2],
+    /// Camera depth along the view axis. Positive values pull the camera
+    /// back; layers at larger z sit farther away.
+    #[serde(default)]
+    pub z: f32,
+    /// Focal length in pixels. 0 disables the projection entirely.
+    #[serde(default)]
+    pub fov: f32,
+    /// Depth (camera-space) that renders perfectly sharp when depth of
+    /// field is active.
+    #[serde(default)]
+    pub focus: f32,
+    /// Depth-of-field strength 0..=1 (0 disables the effect).
+    #[serde(default)]
+    pub dof: f32,
+}
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0],
+            z: 0.0,
+            fov: 0.0,
+            focus: 0.0,
+            dof: 0.0,
+        }
+    }
+}
+impl Camera {
+    pub fn is_default(&self) -> bool {
+        *self == Camera::default()
+    }
+    /// Gaussian radius in pixels for a card at camera-space `depth`:
+    /// full strength one focal length away, capped at 60px.
+    pub fn blur_radius_at(&self, depth: f32) -> f32 {
+        if self.fov <= 0.0 || self.dof <= 0.0 {
+            return 0.0;
+        }
+        let away = (depth - self.focus).abs() / (self.fov * 0.8).max(1.0);
+        (self.dof * away * 48.0).min(60.0)
+    }
+}
+
+/// Turntable auto-orbit: spins the camera around the comp center while it
+/// is enabled (and the camera has a focal length).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Turntable {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seconds per full revolution.
+    #[serde(default = "default_turntable_period")]
+    pub period: f64,
+}
+fn default_turntable_period() -> f64 {
+    12.0
+}
+impl Default for Turntable {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            period: default_turntable_period(),
+        }
+    }
+}
+impl Turntable {
+    pub fn is_default(&self) -> bool {
+        !self.enabled && self.period == default_turntable_period()
+    }
+}
+
+/// One composition: a canvas plus a stack of layers over time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Comp {
     pub id: CompId,
@@ -80,6 +157,12 @@ pub struct Comp {
     pub layers: BTreeMap<LayerId, Layer>,
     #[serde(default, skip_serializing_if = "crate::AudioArrangement::is_default")]
     pub audio: crate::AudioArrangement,
+    /// Perspective camera for 3D depth (see `Camera`); default is off.
+    #[serde(default, skip_serializing_if = "Camera::is_default")]
+    pub camera: Camera,
+    /// One-click orbit animation of the camera (see `Turntable`).
+    #[serde(default, skip_serializing_if = "Turntable::is_default")]
+    pub turntable: Turntable,
 }
 
 /// One layer on the timeline. Static property values live in `transform`;
@@ -146,6 +229,7 @@ impl Layer {
                 color,
                 generator: Some("builtin.circle".into()),
                 style: ShapeStyle::default(),
+                points: Vec::new(),
             },
             start,
             duration,
@@ -159,6 +243,7 @@ impl Layer {
                 color,
                 generator: None,
                 style: ShapeStyle::default(),
+                points: Vec::new(),
             },
             start,
             duration,
@@ -203,6 +288,7 @@ pub enum Property {
     Rotation,
     Opacity,
     AnchorPoint,
+    Z,
 }
 
 impl Property {
@@ -210,7 +296,7 @@ impl Property {
     pub fn value_kind(&self) -> ValueKind {
         match self {
             Property::Position | Property::Scale | Property::AnchorPoint => ValueKind::Vec2,
-            Property::Rotation | Property::Opacity => ValueKind::Scalar,
+            Property::Rotation | Property::Opacity | Property::Z => ValueKind::Scalar,
         }
     }
 
@@ -222,6 +308,7 @@ impl Property {
             Property::Rotation => PropValue::Scalar(t.rotation),
             Property::Opacity => PropValue::Scalar(t.opacity),
             Property::AnchorPoint => PropValue::Vec2(t.anchor_point),
+            Property::Z => PropValue::Scalar(t.z),
         }
     }
 }
@@ -247,6 +334,14 @@ pub struct StaticTransform {
     /// Anchor pivot point relative to layer origin [x, y].
     #[serde(default)]
     pub anchor_point: [f32; 2],
+    /// Depth in comp pixels. Positive values push the layer away from a
+    /// perspective camera; 0 sits on the scene plane (pure 2D look).
+    #[serde(default, skip_serializing_if = "z_is_default")]
+    pub z: f32,
+}
+
+fn z_is_default(z: &f32) -> bool {
+    *z == 0.0
 }
 
 impl Default for StaticTransform {
@@ -257,6 +352,7 @@ impl Default for StaticTransform {
             rotation: 0.0,
             opacity: 1.0,
             anchor_point: [0.0, 0.0],
+            z: 0.0,
         }
     }
 }
@@ -286,6 +382,10 @@ impl StaticTransform {
                 self.anchor_point = v;
                 Ok(())
             }
+            (Property::Z, PropValue::Scalar(v)) => {
+                self.z = v;
+                Ok(())
+            }
             (mismatched, _) => Err(mismatched),
         }
     }
@@ -309,6 +409,10 @@ pub struct EffectiveTransform {
     /// | b  d  ty |
     /// | 0  0   1 |
     pub matrix: [f32; 6],
+    /// Camera-space depth (layer z minus camera z) after projection.
+    /// Larger = farther from the camera. Always 0 with the camera off.
+    #[serde(default)]
+    pub depth: f32,
 }
 
 impl EffectiveTransform {
@@ -327,12 +431,18 @@ pub enum LayerKind {
     /// A flat colored rectangle filling the comp.
     Solid { color: [f32; 4] },
     /// A vector shape (first-party generator plugin renders it, e.g. "builtin.circle").
+    /// `points` holds explicit vector subpaths (layer-local px, centered):
+    /// when non-empty the shape rasterizes them (even-odd fill + stroke)
+    /// instead of consulting the generator — this is how SVG and 3D
+    /// wireframe imports land.
     Shape {
         color: [f32; 4],
         #[serde(default)]
         generator: Option<String>,
         #[serde(default)]
         style: ShapeStyle,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<Vec<[f32; 2]>>,
     },
     Text {
         text: String,
@@ -386,11 +496,14 @@ impl Default for TextStyle {
 }
 
 /// Portable image pixels. The native host validates and decodes base64 once.
+/// The payload is `Arc<str>` so document snapshots, commits and undo history
+/// share the bytes instead of copying megabytes of base64 per edit
+/// (same rule as `EmbeddedAudio::data_base64`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmbeddedImage {
     pub width: u32,
     pub height: u32,
-    pub rgba_base64: String,
+    pub rgba_base64: Arc<str>,
 }
 
 /// An asset in the media library. `slot` marks it as a template placeholder
@@ -504,6 +617,8 @@ impl Project {
                 layer_order: Vec::new(),
                 layers: BTreeMap::new(),
                 audio: crate::AudioArrangement::default(),
+                camera: crate::document::Camera::default(),
+                turntable: crate::document::Turntable::default(),
             },
         );
         id
@@ -571,6 +686,102 @@ impl Comp {
 
     /// Compute the compound effective transform (inherited translation, rotation, scale, opacity)
     /// for `layer_id` at `time`, resolving through parent chains with cycle protection.
+    /// The camera state at `time`: the static camera, or — when the turntable
+    /// is enabled and the camera has a focal length — orbiting the comp
+    /// center at the camera's distance (or a quarter of the comp diagonal).
+    pub fn camera_at(&self, time: Time) -> Camera {
+        let mut cam = self.camera.clone();
+        if self.turntable.enabled && cam.fov > 0.0 {
+            let theta = std::f64::consts::TAU * time.as_secs_f64() / self.turntable.period.max(0.5);
+            let (sin, cos) = theta.sin_cos();
+            let r = (cam.position[0] * cam.position[0] + cam.position[1] * cam.position[1]).sqrt();
+            let r = if r < 1.0 {
+                (self.width.max(self.height) as f32) * 0.25
+            } else {
+                r
+            };
+            cam.position = [(r as f64 * cos) as f32, (r as f64 * sin) as f32];
+        }
+        cam
+    }
+
+    /// Layer draw order at `time`: bottom-to-top by composition, except with
+    /// an active perspective camera (`fov > 0`), where layers sort far to
+    /// near by camera depth. The sort is stable, so equal depths keep the
+    /// composed stacking order — and with the camera off the order is
+    /// exactly `layer_order`.
+    pub fn draw_order(&self, time: Time) -> Vec<LayerId> {
+        if self.camera.fov <= 0.0 {
+            return self.layer_order.clone();
+        }
+        let cam = self.camera_at(time);
+        let mut order: Vec<(f32, LayerId)> = self
+            .layer_order
+            .iter()
+            .map(|&id| {
+                let z = match self.layers.get(&id).map(|l| l.evaluate(Property::Z, time)) {
+                    Some(PropValue::Scalar(v)) => v,
+                    _ => 0.0,
+                };
+                (-(z - cam.z), id) // ascending: farthest first
+            })
+            .collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        order.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Compounded camera-space depth for a layer: the sum of `Z` along its
+    /// parent chain (target included). Parenting moves a whole subtree in
+    /// depth, matching how the 2D affine chain compounds position.
+    pub fn effective_depth(&self, layer_id: LayerId, time: Time) -> Option<f32> {
+        if !self.layers.contains_key(&layer_id) {
+            return None;
+        }
+        let mut chain = Vec::new();
+        let mut visited = HashSet::new();
+        let mut curr = Some(layer_id);
+        while let Some(id) = curr {
+            if !visited.insert(id) {
+                break;
+            }
+            match self.layers.get(&id) {
+                Some(l) => {
+                    chain.push(l);
+                    curr = l.parent;
+                }
+                None => break,
+            }
+        }
+        let depth = chain
+            .iter()
+            .map(|l| match l.evaluate(Property::Z, time) {
+                PropValue::Scalar(v) => v,
+                _ => 0.0,
+            })
+            .sum();
+        Some(depth)
+    }
+
+    /// Depth-of-field Gaussian radius for `layer` at `time` (0 = sharp /
+    /// disabled). Adjustment layers never take DoF: they have no depth of
+    /// their own — they reprocess whatever is beneath them.
+    pub fn dof_radius_for(&self, layer: &Layer, time: Time) -> f32 {
+        if matches!(layer.kind, LayerKind::Adjustment {}) {
+            return 0.0;
+        }
+        let cam = self.camera_at(time);
+        if cam.fov <= 0.0 || cam.dof <= 0.0 {
+            return 0.0;
+        }
+        let z = self.effective_depth(layer.id, time).unwrap_or_else(|| {
+            match layer.evaluate(Property::Z, time) {
+                PropValue::Scalar(v) => v,
+                _ => 0.0,
+            }
+        });
+        cam.blur_radius_at(z - cam.z)
+    }
+
     pub fn effective_transform(&self, layer_id: LayerId, time: Time) -> Option<EffectiveTransform> {
         self.effective_transform_with(layer_id, time, None)
     }
@@ -606,6 +817,7 @@ impl Comp {
         let mut opacity = 1.0f32;
         let mut compound_rot = 0.0f32;
         let mut compound_scale = [1.0f32, 1.0f32];
+        let mut compound_z = 0.0f32;
 
         let evaluate = |layer: &Layer, property: Property| {
             transient
@@ -641,6 +853,10 @@ impl Comp {
             compound_rot += rot;
             compound_scale[0] *= sc[0] / 100.0;
             compound_scale[1] *= sc[1] / 100.0;
+            compound_z += match evaluate(layer, Property::Z) {
+                PropValue::Scalar(v) => v,
+                _ => layer.transform.z,
+            };
 
             // Local 2D affine matrix for this layer:
             // Translate by -anchor, scale by (sc/100), rotate by rot (radians), translate by +pos
@@ -667,6 +883,29 @@ impl Comp {
             _ => target_layer.transform.anchor_point,
         };
 
+        // --- 3D camera projection (billboard-exact) ----------------------
+        // A layer is a card at one depth; the pinhole projection is a
+        // uniform perspective scale `s = fov / (fov + dz)` applied around
+        // the camera axis, so translation+scale stay exact and rotation
+        // stays in the screen plane. `fov <= 0` means the camera is off
+        // and nothing changes.
+        let cam = self.camera_at(time);
+        let depth = compound_z - cam.z;
+        let mut matrix = matrix;
+        if cam.fov > 0.0 {
+            let s = cam.fov / (cam.fov + depth).max(cam.fov * 0.05);
+            matrix = [
+                matrix[0] * s,
+                matrix[1] * s,
+                matrix[2] * s,
+                matrix[3] * s,
+                (matrix[4] - cam.position[0]) * s,
+                (matrix[5] - cam.position[1]) * s,
+            ];
+            compound_scale[0] *= s;
+            compound_scale[1] *= s;
+        }
+
         let effective_pos = [
             matrix[4] + target_anchor[0] * matrix[0] + target_anchor[1] * matrix[2],
             matrix[5] + target_anchor[0] * matrix[1] + target_anchor[1] * matrix[3],
@@ -679,6 +918,7 @@ impl Comp {
             opacity,
             anchor_point: target_anchor,
             matrix,
+            depth,
         })
     }
 }

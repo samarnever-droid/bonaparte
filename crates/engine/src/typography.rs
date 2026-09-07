@@ -1,6 +1,7 @@
 //! Pure-Rust, bundled-font typography. No OS font lookup or host dependencies.
 use fontdue::{Font, FontSettings};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn font(bold: bool) -> &'static Font {
     static REGULAR: OnceLock<Font> = OnceLock::new();
@@ -24,6 +25,7 @@ fn font(bold: bool) -> &'static Font {
     }
 }
 
+#[derive(Clone)]
 pub struct TextBitmap {
     pub width: u32,
     pub height: u32,
@@ -65,6 +67,53 @@ pub fn measure_text(text: &str, size: f32, bold: bool, tracking: f32) -> [f32; 2
 }
 
 pub fn rasterize_text(
+    text: &str,
+    size: f32,
+    bold: bool,
+    tracking: f32,
+) -> Result<Arc<TextBitmap>, String> {
+    let key = TextKey {
+        text: text.to_string(),
+        size: size.to_bits(),
+        bold,
+        tracking: tracking.to_bits(),
+    };
+    if let Some(hit) = text_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
+        return Ok(hit.clone());
+    }
+    let bitmap = rasterize_text_uncached(text, size, bold, tracking)?;
+    let shared = Arc::new(bitmap);
+    let mut cache = text_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= TEXT_CACHE_ENTRIES {
+        cache.clear();
+    }
+    cache.insert(key, shared.clone());
+    Ok(shared)
+}
+
+/// Distinct cached text rasters. Playback scrubs reuse the same few layers'
+/// rasters every frame; a generous cap stays well under a few megabytes while
+/// avoiding unbounded growth across long sessions.
+const TEXT_CACHE_ENTRIES: usize = 512;
+
+fn text_cache() -> &'static Mutex<HashMap<TextKey, Arc<TextBitmap>>> {
+    static CACHE: OnceLock<Mutex<HashMap<TextKey, Arc<TextBitmap>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TextKey {
+    text: String,
+    size: u32,
+    bold: bool,
+    tracking: u32,
+}
+
+fn rasterize_text_uncached(
     text: &str,
     size: f32,
     bold: bool,
@@ -127,7 +176,9 @@ pub fn rasterize_text_scaled(
     density: f32,
 ) -> Result<TextBitmap, String> {
     if density == 1.0 {
-        return rasterize_text(text, size, bold, tracking);
+        return Ok(Arc::unwrap_or_clone(rasterize_text(
+            text, size, bold, tracking,
+        )?));
     }
     if !density.is_finite() || density <= 0.0 || density > 8.0 {
         return Err("Invalid typography raster density".into());

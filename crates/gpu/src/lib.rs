@@ -2,7 +2,7 @@
 //! source pixels with CPU preview; transforms, blending and opted-in WGSL effects
 //! execute on the selected graphics adapter. Software adapters are reported honestly.
 mod uniforms;
-use bonaparte_effects::{CpuFrame, EffectRegistry};
+use bonaparte_effects::{CpuFrame, EffectRegistry, ParamValue};
 use bonaparte_engine::preview::{Sampling, Scene, SceneLayer, Source};
 use bonaparte_engine::{linear_to_srgb_byte, Frame};
 use bonaparte_model::{BlendMode, EffectInstance};
@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use uniforms::UniformLayout;
+pub use uniforms::UniformLayout;
 use wgpu::util::DeviceExt;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -74,6 +74,7 @@ struct Image {
     view: wgpu::TextureView,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 }
 impl Image {
     fn bytes(&self) -> usize {
@@ -88,6 +89,14 @@ struct Program {
     source: String,
     uniforms: UniformLayout,
     pipeline: wgpu::RenderPipeline,
+    /// For multi-pass contracts (a reflected `_pass` uniform): the composite
+    /// pass (2) on the extended layout with the original input at binding 5,
+    /// rendering into the standard 8-bit target.
+    pipeline2: Option<wgpu::RenderPipeline>,
+    /// Multi-pass blur passes (0/1): same program on a `Rgba16Float` target so
+    /// premultiplied intermediates keep their rgb/a ratio at low alpha — the
+    /// CPU keeps its horizontal blur in f32 for exactly this reason.
+    pipeline_float: Option<wgpu::RenderPipeline>,
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -146,6 +155,7 @@ fn pipeline(
     vertex: &wgpu::ShaderModule,
     fragment: &wgpu::ShaderModule,
     layout: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
     entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
@@ -171,7 +181,7 @@ fn pipeline(
             entry_point: Some(entry),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: FORMAT,
+                format: target_format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -211,6 +221,10 @@ impl GpuRenderer {
             label: Some("Layer inputs"),
             entries: &[texture_entry(0), texture_entry(1), uniform_entry(2)],
         });
+        // Public fragment effect contract. Bindings 0..4 are the pack-facing
+        // surface; binding 5 is host-reserved for multi-pass programs (the
+        // untouched original input) and simply goes unused by other shaders,
+        // which is legal against a wgpu pipeline layout.
         let effect_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Public fragment effect contract"),
             entries: &[
@@ -224,6 +238,7 @@ impl GpuRenderer {
                 uniform_entry(2),
                 uniform_entry(3),
                 uniform_entry(4),
+                texture_entry(5),
             ],
         });
         let draw_pipeline = pipeline(
@@ -231,6 +246,7 @@ impl GpuRenderer {
             &vertex,
             &fragment,
             &draw_layout,
+            FORMAT,
             "fs_draw",
             "Layer compositor",
         );
@@ -279,7 +295,13 @@ impl GpuRenderer {
         self.pool.clear();
         self.uploads.clear();
     }
-    fn image(&self, width: u32, height: u32, label: &str) -> Result<Arc<Image>, String> {
+    fn image(
+        &self,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Result<Arc<Image>, String> {
         if width == 0
             || height == 0
             || width > self.info.max_texture_size
@@ -299,7 +321,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
@@ -312,17 +334,40 @@ impl GpuRenderer {
             view,
             width,
             height,
+            format,
         }))
     }
     fn target(&mut self, width: u32, height: u32) -> Result<Arc<Image>, String> {
-        if let Some(image) = self
-            .pool
-            .iter()
-            .find(|i| i.width == width && i.height == height && Arc::strong_count(i) == 1)
-        {
+        self.target_format(width, height, FORMAT, "Pooled RGBA preview target")
+    }
+    /// `format` is typically `FORMAT`; multi-pass effect chains request
+    /// `Rgba16Float` so their premultiplied intermediates keep the rgb/a ratio
+    /// at low alpha, which 8-bit storage would destroy before the composite
+    /// pass divides by it (the CPU keeps its intermediate in f32 for the same
+    /// reason).
+    fn target_format(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Result<Arc<Image>, String> {
+        if let Some(image) = self.pool.iter().find(|i| {
+            i.width == width
+                && i.height == height
+                && i.format == format
+                && Arc::strong_count(i) == 1
+        }) {
             return Ok(image.clone());
         }
-        let bytes = width as usize * height as usize * 4;
+        let bytes = width as usize
+            * height as usize
+            * 4
+            * if format == wgpu::TextureFormat::Rgba16Float {
+                2
+            } else {
+                1
+            };
         while self.pool.iter().map(|i| i.bytes()).sum::<usize>() + bytes > POOL_BUDGET {
             let Some(index) = self.pool.iter().position(|i| Arc::strong_count(i) == 1) else {
                 return Err(
@@ -332,7 +377,7 @@ impl GpuRenderer {
             };
             self.pool.remove(index);
         }
-        let image = self.image(width, height, "Pooled RGBA preview target")?;
+        let image = self.image(width, height, format, label)?;
         self.pool.push(image.clone());
         Ok(image)
     }
@@ -360,7 +405,7 @@ impl GpuRenderer {
         {
             self.uploads.pop_front();
         }
-        let image = self.image(pixels.width, pixels.height, "Cached source raster")?;
+        let image = self.image(pixels.width, pixels.height, FORMAT, "Cached source raster")?;
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &image.texture,
@@ -519,95 +564,258 @@ impl GpuRenderer {
                     label: Some(&instance.effect_id),
                     source: wgpu::ShaderSource::Wgsl(pack.shader_source.clone().into()),
                 });
-            let pipeline = pipeline(
+            // One layout for every program: it always declares binding 5, so
+            // multi-pass shaders validate against the same layout as
+            // single-pass ones. Pipelines differ only in color-target format:
+            // single-pass + composite render 8-bit, blur passes float.
+            let single = pipeline(
                 &self.device,
                 &self.vertex,
                 &shader,
                 &self.effect_layout,
+                wgpu::TextureFormat::Rgba8Unorm,
                 "fs_main",
                 &instance.effect_id,
             );
+            let multi = uniforms.has_field("_pass");
+            let multi_pipelines = multi.then(|| {
+                (
+                    single.clone(),
+                    pipeline(
+                        &self.device,
+                        &self.vertex,
+                        &shader,
+                        &self.effect_layout,
+                        wgpu::TextureFormat::Rgba16Float,
+                        "fs_main",
+                        &instance.effect_id,
+                    ),
+                )
+            });
+            let (pipeline2, pipeline_float) = multi_pipelines
+                .map(|(composite, float)| (Some(composite), Some(float)))
+                .unwrap_or((None, None));
             self.programs.insert(
                 instance.effect_id.clone(),
                 Program {
                     source: pack.shader_source.clone(),
                     uniforms,
-                    pipeline,
+                    pipeline: single,
+                    pipeline2,
+                    pipeline_float,
                 },
             );
         }
-        let target = self.target(input.width, input.height)?;
-        let program = self
-            .programs
-            .get(&instance.effect_id)
-            .expect("compiled program");
-        let params = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Reflected effect uniforms"),
-                contents: &program.uniforms.pack(&values)?,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let resolution = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Effect raster resolution"),
-                contents: bytemuck::cast_slice(&[input.width as f32, input.height as f32]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let time = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Effect composition time"),
-                contents: &(scene.time.as_secs_f64() as f32).to_le_bytes(),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Effect inputs"),
-            layout: &self.effect_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: resolution.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: time.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: params.as_entire_binding(),
-                },
-            ],
-        });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(&instance.effect_id),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&program.pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.draw(0..3, 0..1);
+        // A program whose reflected Params declare `_pass` is a three-pass
+        // multi-input contract (glow, drop shadow): 0 = horizontal blur,
+        // 1 = vertical blur, 2 = composite. Binding 0 chains input -> pass-0
+        // output -> pass-1 output; binding 5 always carries the untouched
+        // original. Single-pass and direction-separable packs are unaffected.
+        let (pipeline, uniforms, pipeline2, pipeline_float) = {
+            let program = self
+                .programs
+                .get(&instance.effect_id)
+                .expect("compiled program");
+            (
+                program.pipeline.clone(),
+                program.uniforms.clone(),
+                program.pipeline2.clone(),
+                program.pipeline_float.clone(),
+            )
+        };
+        if let Some(composite_pipeline) = pipeline2 {
+            let original = input;
+            let mut chained = original.clone();
+            for pass_index in 0..3u32 {
+                let mut pass_values = values.clone();
+                pass_values.insert("_pass".to_string(), ParamValue::Index(pass_index as usize));
+                // Blur passes stay float; only the composite lands in 8-bit.
+                let target = if pass_index < 2 {
+                    self.target_format(
+                        chained.width,
+                        chained.height,
+                        wgpu::TextureFormat::Rgba16Float,
+                        "Multi-pass float chain target",
+                    )?
+                } else {
+                    self.target(chained.width, chained.height)?
+                };
+                let params = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Reflected effect uniforms"),
+                        contents: &uniforms.pack(&pass_values)?,
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+                let resolution =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Effect raster resolution"),
+                            contents: bytemuck::cast_slice(&[
+                                chained.width as f32,
+                                chained.height as f32,
+                            ]),
+                            usage: wgpu::BufferUsages::UNIFORM,
+                        });
+                let time = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Effect composition time"),
+                        contents: &(scene.time.as_secs_f64() as f32).to_le_bytes(),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+                let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Multi-pass effect inputs"),
+                    layout: &self.effect_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&chained.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: resolution.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: time.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::TextureView(&original.view),
+                        },
+                    ],
+                });
+                let pass_pipeline = if pass_index < 2 {
+                    pipeline_float.as_ref().expect("multi-pass program")
+                } else {
+                    &composite_pipeline
+                };
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some(&instance.effect_id),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &target.view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(pass_pipeline);
+                    pass.set_bind_group(0, &group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                chained = target;
+            }
+            return Ok(chained);
         }
-        Ok(target)
+
+        // A program whose reflected Params declare `direction_x`/`direction_y`
+        // is a separable two-pass contract (currently the Gaussian blur pack):
+        // run it horizontally into an intermediate target, then vertically into
+        // the final one. Single-pass packs keep the original one-pass flow.
+        let pipeline = pipeline;
+        let separable = uniforms.has_field("direction_x") && uniforms.has_field("direction_y");
+        let pass_count = if separable { 2 } else { 1 };
+        let mut input = input;
+        for pass_index in 0..pass_count {
+            let mut pass_values = values.clone();
+            if separable {
+                let direction = if pass_index == 0 {
+                    [1.0, 0.0]
+                } else {
+                    [0.0, 1.0]
+                };
+                pass_values.insert("direction_x".to_string(), ParamValue::Float(direction[0]));
+                pass_values.insert("direction_y".to_string(), ParamValue::Float(direction[1]));
+            }
+            let target = self.target(input.width, input.height)?;
+            let params = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Reflected effect uniforms"),
+                    contents: &uniforms.pack(&pass_values)?,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let resolution = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Effect raster resolution"),
+                    contents: bytemuck::cast_slice(&[input.width as f32, input.height as f32]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let time = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Effect composition time"),
+                    contents: &(scene.time.as_secs_f64() as f32).to_le_bytes(),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Effect inputs"),
+                layout: &self.effect_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&input.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: resolution.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: time.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&input.view),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&instance.effect_id),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            input = target;
+        }
+        Ok(input)
     }
     fn scene(
         &mut self,

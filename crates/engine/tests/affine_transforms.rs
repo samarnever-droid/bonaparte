@@ -50,6 +50,7 @@ fn test_affine_translation_moves_layer() {
         rotation: 0.0,
         opacity: 1.0,
         anchor_point: [0.0, 0.0],
+        z: 0.0,
     };
     p.insert_layer(c, layer);
 
@@ -77,6 +78,7 @@ fn test_affine_rotation_90_degrees() {
         rotation: 90.0, // Rotated 90 deg -> now 20% width, 80% height!
         opacity: 1.0,
         anchor_point: [0.0, 0.0],
+        z: 0.0,
     };
     p.insert_layer(c, layer);
 
@@ -118,6 +120,7 @@ fn test_affine_parent_hierarchy_transform() {
         rotation: 0.0,
         opacity: 0.5,
         anchor_point: [0.0, 0.0],
+        z: 0.0,
     };
     let parent_id = p.insert_layer(c, parent);
 
@@ -130,6 +133,7 @@ fn test_affine_parent_hierarchy_transform() {
         rotation: 0.0,
         opacity: 0.8,
         anchor_point: [0.0, 0.0],
+        z: 0.0,
     };
     p.insert_layer(c, child);
 

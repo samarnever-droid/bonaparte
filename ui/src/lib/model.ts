@@ -2,9 +2,35 @@ import type { AudioArrangement, AudioAsset } from "./audio/model";
 /// Wire types matching bonaparte-model. Struct fields are snake_case; Op fields camelCase.
 export const TICKS_PER_SEC = 120_000;
 export type Color = [number, number, number, number];
-export type Property = "Position" | "Scale" | "Rotation" | "Opacity" | "AnchorPoint";
+export type Property =
+  | "Position"
+  | "Scale"
+  | "Rotation"
+  | "Opacity"
+  | "AnchorPoint"
+  | "Z";
+/** The comp's 3D perspective camera; fov <= 0 disables projection (pure 2D). */
+export interface Camera3D {
+  position: [number, number];
+  z: number;
+  fov: number;
+  /** Camera-space depth that renders perfectly sharp when DoF is on. */
+  focus?: number;
+  /** Depth-of-field strength 0..1 (0 = off). */
+  dof?: number;
+}
+/** Turntable auto-orbit of the camera around the comp center. */
+export interface Turntable {
+  enabled: boolean;
+  period: number;
+}
+export const DEFAULT_CAMERA: Camera3D = { position: [0, 0], z: 0, fov: 0, focus: 0, dof: 0 };
+export const DEFAULT_TURNTABLE: Turntable = { enabled: false, period: 12 };
 export type PropValue = { Scalar: number } | { Vec2: [number, number] };
-export type Easing = "Linear" | { Bezier: { p1: [number, number]; p2: [number, number] } };
+export type Easing =
+  | "Linear"
+  | "Hold"
+  | { Bezier: { p1: [number, number]; p2: [number, number] } };
 export interface Keyframe {
   time: number;
   value: PropValue;
@@ -19,6 +45,8 @@ export interface StaticTransform {
   rotation: number;
   opacity: number;
   anchor_point: [number, number];
+  /** Depth in px; positive pushes the layer away from the camera. */
+  z?: number;
 }
 export type BlendMode =
   "Normal" | "Multiply" | "Screen" | "Overlay" | "Add" | "Darken" | "Lighten" | "Difference";
@@ -45,7 +73,7 @@ export interface TextStyle {
 }
 export type LayerKind =
   | { Solid: { color: Color } }
-  | { Shape: { color: Color; generator: string | null; style: ShapeStyle } }
+  | { Shape: { color: Color; generator: string | null; style: ShapeStyle; points?: [number, number][][] } }
   | { Text: { text: string; size: number; style: TextStyle } }
   | { Footage: { media: number } }
   | { PreComp: { comp: number } }
@@ -124,6 +152,8 @@ export interface Comp {
   layer_order: number[];
   layers: Record<string, Layer>;
   audio?: AudioArrangement;
+  camera?: Camera3D;
+  turntable?: Turntable;
 }
 export interface MediaAsset {
   id: number;
@@ -154,6 +184,16 @@ export interface Snapshot {
 }
 export type Op =
   | { type: "setCompAudio"; comp: number; audio: AudioArrangement }
+  | {
+      type: "setCamera";
+      comp: number;
+      position: [number, number];
+      z: number;
+      fov: number;
+      focus?: number;
+      dof?: number;
+    }
+  | { type: "setTurntable"; comp: number; enabled: boolean; period: number }
   | { type: "batch"; label: string; ops: Op[] }
   | { type: "renameProject"; name: string }
   | { type: "shiftLayer"; comp: number; layer: number; delta: number }
@@ -339,6 +379,8 @@ export function timecodeToTime(
 export function ease(easing: Easing, u: number): number {
   const uc = Math.min(1, Math.max(0, u));
   if (easing === "Linear") return uc;
+  // Stepped/Hold: the outgoing value persists until the next key's instant.
+  if (easing === "Hold") return uc >= 1 ? 1 : 0;
   const { p1, p2 } = easing.Bezier;
   let lo = 0;
   let hi = 1;
@@ -403,6 +445,8 @@ export function staticValue(t: StaticTransform, property: Property): PropValue {
       return { Scalar: t.opacity ?? 1 };
     case "AnchorPoint":
       return { Vec2: [...(t.anchor_point ?? [0, 0])] };
+    case "Z":
+      return { Scalar: t.z ?? 0 };
   }
 }
 

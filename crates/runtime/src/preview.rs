@@ -290,6 +290,7 @@ impl PreviewRenderer {
             project,
             images,
             registry,
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             resolution,
             key,
             cacheable,
@@ -418,30 +419,50 @@ pub struct PreviewJob {
     key: FrameKey,
     cacheable: bool,
     transient: Option<bonaparte_model::TransformOverride>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 pub struct PreviewFrame {
     pub pixels: Arc<Frame>,
     pub metadata: PreviewMetadata,
 }
 impl PreviewJob {
+    /// The job's cancel signal. Calling this makes an in-flight or about-to-run
+    /// render abort cooperatively between layers with a "cancelled" error.
+    /// Cached frames are unaffected; the job holds its own token.
+    pub fn cancel(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn render(&self) -> Result<PreviewFrame, String> {
         if self.cacheable {
             if let Some(frame) = self.renderer.cached(&self.key) {
                 return Ok(frame);
             }
         }
+        if self.is_cancelled() {
+            return Err("cancelled".into());
+        }
         let started = Instant::now();
-        let mut scene = prepare_scene_with_transform(
-            &self.project,
-            self.key.comp,
-            self.key.time,
-            &self.images,
-            &self.registry,
-            self.resolution,
-            &self.renderer.sources,
-            self.transient.as_ref(),
-        )
+        let token = self.cancel.clone();
+        let prepared = bonaparte_engine::cancel::scope(&token, || {
+            prepare_scene_with_transform(
+                &self.project,
+                self.key.comp,
+                self.key.time,
+                &self.images,
+                &self.registry,
+                self.resolution,
+                &self.renderer.sources,
+                self.transient.as_ref(),
+            )
+        })
         .map_err(|e| e.to_string())?;
+        let mut scene = prepared;
         if self.key.bypass {
             fn clear(scene: &mut Scene) {
                 for layer in &mut scene.layers {
@@ -453,9 +474,11 @@ impl PreviewJob {
             }
             clear(&mut scene);
         }
-        let (frame, backend, adapter, fallback_reason) =
+        let executed = bonaparte_engine::cancel::scope(&token, || {
             self.renderer
-                .execute(&scene, &self.registry, self.key.backend)?;
+                .execute(&scene, &self.registry, self.key.backend)
+        });
+        let (frame, backend, adapter, fallback_reason) = executed?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         self.renderer.renders.fetch_add(1, Ordering::Relaxed);
         let metadata = PreviewMetadata {

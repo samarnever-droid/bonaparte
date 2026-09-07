@@ -8,6 +8,36 @@ use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::session::McpSession;
 use crate::tools::{execute_tool, list_tool_definitions};
 
+/// Like [`handle_request`], but a panic inside a tool becomes an internal-
+/// error response instead of killing the server loop. The process survives;
+/// the session survives (document mutations are atomic per-op).
+pub fn handle_request_safe(
+    session: &mut McpSession,
+    req: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
+    let id = req.id.clone();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_request(session, req)
+    })) {
+        Ok(response) => response,
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "tool panicked".to_string());
+            id.map(|id| {
+                JsonRpcResponse::error(
+                    id,
+                    JsonRpcError::internal_error(&format!(
+                        "tool crashed and was contained: {message}"
+                    )),
+                )
+            })
+        }
+    }
+}
+
 /// Handles a single JSON-RPC request against an active McpSession.
 /// Returns `None` for notifications (requests without `id`), or `Some(response)`.
 pub fn handle_request(session: &mut McpSession, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
@@ -121,7 +151,7 @@ pub fn run_stdio<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Result<(
             }
         };
 
-        if let Some(resp) = handle_request(&mut session, req) {
+        if let Some(resp) = handle_request_safe(&mut session, req) {
             let json_str = serde_json::to_string(&resp)?;
             writeln!(writer, "{json_str}")?;
             writer.flush()?;

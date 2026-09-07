@@ -189,8 +189,9 @@ impl RenderGraph {
 
         let mut layer_source_nodes: BTreeMap<LayerId, NodeId> = BTreeMap::new();
 
-        // 3. Create source nodes for visible layers
-        for &layer_id in &comp.layer_order {
+        // 3. Create source nodes for visible layers (depth-sorted when the
+        // 3D camera is active so the composite chain matches the paint order)
+        for layer_id in comp.draw_order(time) {
             let layer = &comp.layers[&layer_id];
             if !layer.visible_at(time) {
                 continue;
@@ -227,7 +228,7 @@ impl RenderGraph {
                 ),
             };
 
-            layer_source_nodes.insert(layer.id, source_node);
+            layer_source_nodes.insert(layer_id, source_node);
         }
 
         // 4. Wire transform hierarchy (parent layer -> child layer)
@@ -246,8 +247,9 @@ impl RenderGraph {
             }
         }
 
-        // 5. Wire compositing chain in bottom-to-top order
-        for &layer_id in &comp.layer_order {
+        // 5. Wire compositing chain in bottom-to-top order (draw_order keeps
+        // this order and depth-sorts it when the 3D camera is active)
+        for layer_id in comp.draw_order(time) {
             let layer = &comp.layers[&layer_id];
             if !layer.visible_at(time) {
                 continue;

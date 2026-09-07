@@ -153,6 +153,30 @@ fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// Apply `f(y, row)` to every row of a row-major buffer — in parallel on
+/// native threads, sequentially on wasm. Every CPU kernel below only reads
+/// shared inputs and writes its own row, so results are byte-identical to
+/// the sequential loop.
+pub(crate) fn par_rows<T, F>(buf: &mut [T], row_len: usize, f: F)
+where
+    T: Send,
+    F: Fn(usize, &mut [T]) + Sync + Send,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use rayon::prelude::*;
+        buf.par_chunks_mut(row_len)
+            .enumerate()
+            .for_each(|(y, row)| f(y, row));
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        for (y, row) in buf.chunks_mut(row_len).enumerate() {
+            f(y, row);
+        }
+    }
+}
+
 /// Alpha-aware Gaussian glow. Halos contribute alpha outside the original silhouette.
 pub fn evaluate_glow(input: &CpuFrame, radius: f32, intensity: f32, tint: [f32; 4]) -> CpuFrame {
     if intensity <= 0.0 {
@@ -160,22 +184,27 @@ pub fn evaluate_glow(input: &CpuFrame, radius: f32, intensity: f32, tint: [f32; 
     }
     let halo = evaluate_blur(input, radius, false);
     let mut out = input.clone();
-    for (i, pixel) in out.rgba.chunks_exact_mut(4).enumerate() {
-        let src = &input.rgba[i * 4..i * 4 + 4];
-        let glow = &halo.rgba[i * 4..i * 4 + 4];
-        let sa = src[3] as f32 / 255.0;
-        let ha = (glow[3] as f32 / 255.0 * intensity * tint[3]).clamp(0.0, 1.0);
-        let alpha = sa + ha * (1.0 - sa);
-        for ch in 0..3 {
-            let value = if alpha > 0.0 {
-                (src[ch] as f32 / 255.0 * sa + glow[ch] as f32 / 255.0 * tint[ch] * ha) / alpha
-            } else {
-                0.0
-            };
-            pixel[ch] = f32_to_u8(value);
+    let row_len = out.width as usize * 4;
+    par_rows(&mut out.rgba, row_len, |y, row| {
+        let base = y * row_len;
+        for x in 0..out.width as usize {
+            let i = base + x * 4;
+            let src = &input.rgba[i..i + 4];
+            let glow = &halo.rgba[i..i + 4];
+            let sa = src[3] as f32 / 255.0;
+            let ha = (glow[3] as f32 / 255.0 * intensity * tint[3]).clamp(0.0, 1.0);
+            let alpha = sa + ha * (1.0 - sa);
+            for ch in 0..3 {
+                let value = if alpha > 0.0 {
+                    (src[ch] as f32 / 255.0 * sa + glow[ch] as f32 / 255.0 * tint[ch] * ha) / alpha
+                } else {
+                    0.0
+                };
+                row[x * 4 + ch] = f32_to_u8(value);
+            }
+            row[x * 4 + 3] = f32_to_u8(alpha);
         }
-        pixel[3] = f32_to_u8(alpha);
-    }
+    });
     out
 }
 
@@ -198,8 +227,10 @@ pub fn evaluate_blur(input: &CpuFrame, radius: f32, repeat_edge: bool) -> CpuFra
     let w = input.width as i32;
     let h = input.height as i32;
     let mut horizontal = vec![[0.0f32; 4]; (w * h) as usize];
-    for y in 0..h {
-        for x in 0..w {
+    par_rows(&mut horizontal, w as usize, |y, row| {
+        let y = y as i32;
+        for (x, slot) in row.iter_mut().enumerate() {
+            let x = x as i32;
             let mut acc = [0.0; 4];
             for (k, weight) in kernel.iter().enumerate() {
                 let sx = x + k as i32 - r;
@@ -213,11 +244,12 @@ pub fn evaluate_blur(input: &CpuFrame, radius: f32, repeat_edge: bool) -> CpuFra
                 }
                 acc[3] += alpha * weight;
             }
-            horizontal[(y * w + x) as usize] = acc;
+            *slot = acc;
         }
-    }
+    });
     let mut out = CpuFrame::new(input.width, input.height);
-    for y in 0..h {
+    par_rows(&mut out.rgba, (w * 4) as usize, |y, row| {
+        let y = y as i32;
         for x in 0..w {
             let mut acc = [0.0; 4];
             for (k, weight) in kernel.iter().enumerate() {
@@ -230,15 +262,15 @@ pub fn evaluate_blur(input: &CpuFrame, radius: f32, repeat_edge: bool) -> CpuFra
                     acc[ch] += pixel[ch] * weight;
                 }
             }
-            let i = ((y * w + x) * 4) as usize;
+            let i = (x * 4) as usize;
             if acc[3] > 0.000001 {
                 for ch in 0..3 {
-                    out.rgba[i + ch] = f32_to_u8(acc[ch] / acc[3]);
+                    row[i + ch] = f32_to_u8(acc[ch] / acc[3]);
                 }
             }
-            out.rgba[i + 3] = f32_to_u8(acc[3]);
+            row[i + 3] = f32_to_u8(acc[3]);
         }
-    }
+    });
     out
 }
 
@@ -252,28 +284,30 @@ pub fn evaluate_drop_shadow(
 ) -> CpuFrame {
     let blurred = evaluate_blur(input, radius, false);
     let mut out = input.clone();
-    for y in 0..input.height {
+    let row_len = out.width as usize * 4;
+    par_rows(&mut out.rgba, row_len, |y, row| {
         for x in 0..input.width {
             let uv = [
                 (x as f32 + 0.5 - offset_x) / input.width as f32,
                 (y as f32 + 0.5 - offset_y) / input.height as f32,
             ];
             let shadow = blurred.sample_uv_bilinear(uv[0], uv[1], false)[3] * color[3] * opacity;
-            let i = ((y * input.width + x) * 4) as usize;
-            let alpha = input.rgba[i + 3] as f32 / 255.0;
+            let i = (x * 4) as usize;
+            let alpha = input.rgba[y * row_len + i + 3] as f32 / 255.0;
             let out_alpha = alpha + shadow * (1.0 - alpha);
             for ch in 0..3 {
                 let v = if out_alpha > 0.0 {
-                    (input.rgba[i + ch] as f32 / 255.0 * alpha + color[ch] * shadow * (1.0 - alpha))
+                    (input.rgba[y * row_len + i + ch] as f32 / 255.0 * alpha
+                        + color[ch] * shadow * (1.0 - alpha))
                         / out_alpha
                 } else {
                     0.0
                 };
-                out.rgba[i + ch] = f32_to_u8(v);
+                row[i + ch] = f32_to_u8(v);
             }
-            out.rgba[i + 3] = f32_to_u8(out_alpha);
+            row[i + 3] = f32_to_u8(out_alpha);
         }
-    }
+    });
     out
 }
 
@@ -332,9 +366,10 @@ pub fn evaluate_color_adjust(
     hue_shift: f32,
 ) -> CpuFrame {
     let mut out = CpuFrame::new(input.width, input.height);
-    for y in 0..input.height {
+    let hue_rot = hue_shift / 360.0;
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         for x in 0..input.width {
-            let src = input.get_pixel_f32(x, y);
+            let src = input.get_pixel_f32(x, y as u32);
             let mut r = src[0] + brightness;
             let mut g = src[1] + brightness;
             let mut b = src[2] + brightness;
@@ -344,23 +379,19 @@ pub fn evaluate_color_adjust(
             b = (b - 0.5) * contrast + 0.5;
 
             let mut hsv = rgb_to_hsv([r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]);
-            let hue_rot = hue_shift / 360.0;
             hsv[0] = (hsv[0] + hue_rot).rem_euclid(1.0);
             hsv[1] = (hsv[1] * saturation).clamp(0.0, 1.0);
             let rgb = hsv_to_rgb(hsv);
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(rgb[0]),
-                    f32_to_u8(rgb[1]),
-                    f32_to_u8(rgb[2]),
-                    f32_to_u8(src[3]),
-                ],
-            );
+            let i = (x * 4) as usize;
+            row[i..i + 4].copy_from_slice(&[
+                f32_to_u8(rgb[0]),
+                f32_to_u8(rgb[1]),
+                f32_to_u8(rgb[2]),
+                f32_to_u8(src[3]),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -383,7 +414,7 @@ pub fn evaluate_transform(
     let sx = if scale_x.abs() > 1e-4 { scale_x } else { 1.0 };
     let sy = if scale_y.abs() > 1e-4 { scale_y } else { 1.0 };
 
-    for y in 0..input.height {
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         let v = (y as f32 + 0.5) * texel_y;
         for x in 0..input.width {
             let u = (x as f32 + 0.5) * texel_x;
@@ -401,18 +432,14 @@ pub fn evaluate_transform(
             let src_v = py + 0.5;
 
             let col = input.sample_uv_bilinear(src_u, src_v, false);
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(col[0]),
-                    f32_to_u8(col[1]),
-                    f32_to_u8(col[2]),
-                    f32_to_u8(col[3]),
-                ],
-            );
+            row[(x * 4) as usize..(x * 4) as usize + 4].copy_from_slice(&[
+                f32_to_u8(col[0]),
+                f32_to_u8(col[1]),
+                f32_to_u8(col[2]),
+                f32_to_u8(col[3]),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -430,7 +457,7 @@ pub fn evaluate_vignette(
     let inner = radius;
     let outer = radius + softness.max(0.001);
 
-    for y in 0..input.height {
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         let v = (y as f32 + 0.5) * texel_y;
         for x in 0..input.width {
             let u = (x as f32 + 0.5) * texel_x;
@@ -447,13 +474,15 @@ pub fn evaluate_vignette(
             let g = src[1] * (1.0 - factor * color[3]) + color[1] * factor * color[3];
             let b = src[2] * (1.0 - factor * color[3]) + color[2] * factor * color[3];
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [f32_to_u8(r), f32_to_u8(g), f32_to_u8(b), f32_to_u8(src[3])],
-            );
+            let i = (x * 4) as usize;
+            row[i..i + 4].copy_from_slice(&[
+                f32_to_u8(r),
+                f32_to_u8(g),
+                f32_to_u8(b),
+                f32_to_u8(src[3]),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -469,7 +498,7 @@ pub fn evaluate_chromatic_aberration(input: &CpuFrame, amount: f32, angle: f32) 
     let dir_u = rad.cos() * amount * texel_x;
     let dir_v = rad.sin() * amount * texel_y;
 
-    for y in 0..input.height {
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         let v = (y as f32 + 0.5) * texel_y;
         for x in 0..input.width {
             let u = (x as f32 + 0.5) * texel_x;
@@ -480,18 +509,15 @@ pub fn evaluate_chromatic_aberration(input: &CpuFrame, amount: f32, angle: f32) 
 
             let max_a = r_col[3].max(g_col[3].max(b_col[3]));
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(r_col[0]),
-                    f32_to_u8(g_col[1]),
-                    f32_to_u8(b_col[2]),
-                    f32_to_u8(max_a),
-                ],
-            );
+            let i = (x * 4) as usize;
+            row[i..i + 4].copy_from_slice(&[
+                f32_to_u8(r_col[0]),
+                f32_to_u8(g_col[1]),
+                f32_to_u8(b_col[2]),
+                f32_to_u8(max_a),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -499,9 +525,9 @@ pub fn evaluate_invert(input: &CpuFrame, amount: f32, invert_alpha: bool) -> Cpu
     let mut out = CpuFrame::new(input.width, input.height);
     let amt = amount.clamp(0.0, 1.0);
 
-    for y in 0..input.height {
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         for x in 0..input.width {
-            let src = input.get_pixel_f32(x, y);
+            let src = input.get_pixel_f32(x, y as u32);
             let inv_r = 1.0 - src[0];
             let inv_g = 1.0 - src[1];
             let inv_b = 1.0 - src[2];
@@ -517,13 +543,15 @@ pub fn evaluate_invert(input: &CpuFrame, amount: f32, invert_alpha: bool) -> Cpu
                 src[3]
             };
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [f32_to_u8(r), f32_to_u8(g), f32_to_u8(b), f32_to_u8(a)],
-            );
+            let i = (x * 4) as usize;
+            row[i..i + 4].copy_from_slice(&[
+                f32_to_u8(r),
+                f32_to_u8(g),
+                f32_to_u8(b),
+                f32_to_u8(a),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -536,9 +564,9 @@ pub fn evaluate_tint(
     let mut out = CpuFrame::new(input.width, input.height);
     let amt = amount.clamp(0.0, 1.0);
 
-    for y in 0..input.height {
+    par_rows(&mut out.rgba, input.width as usize * 4, |y, row| {
         for x in 0..input.width {
-            let src = input.get_pixel_f32(x, y);
+            let src = input.get_pixel_f32(x, y as u32);
             let luma = (0.299 * src[0] + 0.587 * src[1] + 0.114 * src[2]).clamp(0.0, 1.0);
 
             let tinted_r = black_color[0] * (1.0 - luma) + white_color[0] * luma;
@@ -549,13 +577,15 @@ pub fn evaluate_tint(
             let g = src[1] * (1.0 - amt) + tinted_g * amt;
             let b = src[2] * (1.0 - amt) + tinted_b * amt;
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [f32_to_u8(r), f32_to_u8(g), f32_to_u8(b), f32_to_u8(src[3])],
-            );
+            let i = (x * 4) as usize;
+            row[i..i + 4].copy_from_slice(&[
+                f32_to_u8(r),
+                f32_to_u8(g),
+                f32_to_u8(b),
+                f32_to_u8(src[3]),
+            ]);
         }
-    }
+    });
     out
 }
 
@@ -573,7 +603,8 @@ pub fn evaluate_directional_blur(input: &CpuFrame, length: f32, angle: f32) -> C
 
     let samples = (length * 0.5).ceil().max(1.0) as i32;
 
-    for y in 0..input.height {
+    let row_len = out.width as usize * 4;
+    par_rows(&mut out.rgba, row_len, |y, row| {
         let v = (y as f32 + 0.5) * texel_y;
         for x in 0..input.width {
             let u = (x as f32 + 0.5) * texel_x;
@@ -593,18 +624,14 @@ pub fn evaluate_directional_blur(input: &CpuFrame, length: f32, angle: f32) -> C
                 total_weight += weight;
             }
 
-            out.set_pixel_u8(
-                x,
-                y,
-                [
-                    f32_to_u8(acc[0] / total_weight),
-                    f32_to_u8(acc[1] / total_weight),
-                    f32_to_u8(acc[2] / total_weight),
-                    f32_to_u8(acc[3] / total_weight),
-                ],
-            );
+            row[(x * 4) as usize..(x * 4) as usize + 4].copy_from_slice(&[
+                f32_to_u8(acc[0] / total_weight),
+                f32_to_u8(acc[1] / total_weight),
+                f32_to_u8(acc[2] / total_weight),
+                f32_to_u8(acc[3] / total_weight),
+            ]);
         }
-    }
+    });
     out
 }
 

@@ -46,7 +46,13 @@ impl PropValue {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Easing {
     Linear,
-    Bezier { p1: [f32; 2], p2: [f32; 2] },
+    /// Hold the outgoing value for the entire segment, then step to the next
+    /// key exactly at its time — the classic stepped/"Hold" keyframe.
+    Hold,
+    Bezier {
+        p1: [f32; 2],
+        p2: [f32; 2],
+    },
 }
 
 impl Default for Easing {
@@ -65,6 +71,13 @@ impl Easing {
         let u = u.clamp(0.0, 1.0);
         match *self {
             Easing::Linear => u,
+            Easing::Hold => {
+                if u >= 1.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Easing::Bezier { p1, p2 } => {
                 // Solve x(u) = u_target for u by bisection, then return y(u).
                 // Bisection (not Newton) is deliberate: it cannot diverge, so

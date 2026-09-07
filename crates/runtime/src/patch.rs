@@ -34,8 +34,10 @@ pub fn delta(
             || old.fps != new.fps
             || old.duration != new.duration
             || old.background != new.background
+            || old.camera != new.camera
+            || old.turntable != new.turntable
         {
-            change.insert("props".into(),json!({"name":new.name,"width":new.width,"height":new.height,"fps":new.fps,"duration":new.duration,"background":new.background}));
+            change.insert("props".into(),json!({"name":new.name,"width":new.width,"height":new.height,"fps":new.fps,"duration":new.duration,"background":new.background,"camera":new.camera,"turntable":new.turntable}));
         }
         if old.layer_order != new.layer_order {
             change.insert("layerOrder".into(), json!(new.layer_order));

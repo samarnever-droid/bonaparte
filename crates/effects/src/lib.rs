@@ -9,6 +9,7 @@
 
 pub mod cpu_reference;
 pub mod grading;
+pub mod lut;
 pub mod registry;
 
 pub use cpu_reference::{
@@ -17,6 +18,7 @@ pub use cpu_reference::{
     evaluate_invert, evaluate_tint, evaluate_transform, evaluate_vignette, CpuEvalError, CpuFrame,
     ParamValue,
 };
+pub use lut::export_cube;
 pub use registry::{
     builtin_manifests, builtin_packs, EffectRegistry, RegisteredEffect, RegistryError,
     BLUR_MANIFEST, BLUR_SHADER, CHROMATIC_ABERRATION_MANIFEST, CHROMATIC_ABERRATION_SHADER,

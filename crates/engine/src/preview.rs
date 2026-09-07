@@ -47,6 +47,13 @@ enum SourceKey {
         values: String,
         callback: usize,
     },
+    Paths {
+        hash: u64,
+        width: u32,
+        height: u32,
+        values: String,
+        callback: usize,
+    },
 }
 struct CachedSource {
     key: SourceKey,
@@ -157,6 +164,57 @@ impl SourceCache {
             Ok(CpuFrame::from_rgba(mask.width, mask.height, rgba))
         })
     }
+    /// Rasterize explicit vector subpaths (SVG / wireframe imports) with a
+    /// content-hash cache key.
+    fn path(
+        &self,
+        color: [f32; 4],
+        style: &ShapeStyle,
+        size: [f32; 2],
+        density: f32,
+        subpaths: &[Vec<[f32; 2]>],
+    ) -> Result<Arc<CpuFrame>, RenderError> {
+        let width = (size[0] * density).ceil().max(1.0) as u32;
+        let height = (size[1] * density).ceil().max(1.0) as u32;
+        // FNV-1a over every coordinate so different shapes never collide.
+        let mut hash = 0xcbf29ce484222325u64;
+        for sub in subpaths {
+            for point in sub.iter() {
+                for v in point.iter() {
+                    hash = (hash ^ (v.to_bits() as u64)).wrapping_mul(0x100000001b3);
+                }
+            }
+            hash = (hash ^ 0xff).wrapping_mul(0x100000001b3);
+        }
+        let key = SourceKey::Paths {
+            hash,
+            width,
+            height,
+            values: format!("{color:?}:{style:?}"),
+            callback: 0,
+        };
+        let scale = density;
+        // Scale layer-local points into the raster frame (centered).
+        let mut raster: Vec<Vec<[f32; 2]>> = Vec::with_capacity(subpaths.len());
+        for sub in subpaths {
+            raster.push(
+                sub.iter()
+                    .map(|p| {
+                        [
+                            (p[0] + size[0] * 0.5) * scale,
+                            (p[1] + size[1] * 0.5) * scale,
+                        ]
+                    })
+                    .collect(),
+            );
+        }
+        self.get_or_make(key, || {
+            Ok(crate::vector::rasterize_paths(
+                width, height, color, style, &raster,
+            ))
+        })
+    }
+
     fn generator(
         &self,
         registry: &EffectRegistry,
@@ -289,7 +347,7 @@ pub fn prepare_scene(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     registry: &EffectRegistry,
     resolution: Resolution,
     cache: &SourceCache,
@@ -303,7 +361,7 @@ pub fn prepare_scene_with_transform(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     registry: &EffectRegistry,
     resolution: Resolution,
     cache: &SourceCache,
@@ -313,7 +371,7 @@ pub fn prepare_scene_with_transform(
         project: &Project,
         comp_id: CompId,
         time: Time,
-        frames: &dyn MediaFrames,
+        frames: &(dyn MediaFrames + Sync),
         registry: &EffectRegistry,
         resolution: Resolution,
         cache: &SourceCache,
@@ -359,16 +417,16 @@ pub fn prepare_scene_with_transform(
         };
         let [sx, sy] = scene.pixel_size();
         active.push(comp_id);
-        for id in &comp.layer_order {
+        for id in comp.draw_order(time) {
             let layer = comp
                 .layers
-                .get(id)
+                .get(&id)
                 .ok_or_else(|| RenderError::Invalid("Missing layer in render order".into()))?;
             if !layer.visible_at(time) {
                 continue;
             }
             let opacity = comp
-                .effective_transform_with(*id, time, transient)
+                .effective_transform_with(id, time, transient)
                 .map(|t| t.opacity.clamp(0.0, 1.0))
                 .unwrap_or(1.0);
             if opacity <= 0.00001 {
@@ -392,9 +450,22 @@ pub fn prepare_scene_with_transform(
                     color,
                     generator,
                     style,
+                    points,
                 } => {
                     let size = style.size.unwrap_or(scene.logical_size);
-                    let source = if let Some(id) = generator {
+                    let source = if !points.is_empty() {
+                        Source::Raster {
+                            pixels: cache.path(
+                                *color,
+                                style,
+                                size,
+                                source_density(size, density * magnification(&affine)),
+                                points,
+                            )?,
+                            sampling: Sampling::Linear,
+                            tint: None,
+                        }
+                    } else if let Some(id) = generator {
                         Source::Raster {
                             pixels: cache.generator(
                                 registry,
@@ -537,19 +608,44 @@ pub fn prepare_scene_with_transform(
             // Effects can extend a source outside its bounds, but a completely
             // off-canvas source still needs evaluation (e.g. a generator filter).
             scene.layers.push(SceneLayer {
-                id: *id,
+                id,
                 inverse,
                 size,
                 bounds,
                 opacity,
                 blend: layer.blend_mode,
                 source,
-                effects: layer
-                    .effects
-                    .iter()
-                    .filter(|e| e.enabled)
-                    .cloned()
-                    .collect(),
+                effects: {
+                    let mut effects: Vec<EffectInstance> = layer
+                        .effects
+                        .iter()
+                        .filter(|e| e.enabled)
+                        .cloned()
+                        .collect();
+                    // Depth of field: injected lens blur for off-focus cards.
+                    let dof_radius = comp.dof_radius_for(layer, time);
+                    if dof_radius > 0.0 {
+                        effects.push(bonaparte_model::EffectInstance {
+                            id: "__dof".into(),
+                            effect_id: "builtin.blur".into(),
+                            enabled: true,
+                            params: [
+                                (
+                                    "radius".to_string(),
+                                    bonaparte_model::EffectValue::Float(dof_radius),
+                                ),
+                                (
+                                    "repeat_edge".to_string(),
+                                    bonaparte_model::EffectValue::Bool(true),
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            tracks: Default::default(),
+                        });
+                    }
+                    effects
+                },
             });
         }
         active.pop();
@@ -645,11 +741,13 @@ pub fn render_scene_cpu(scene: &Scene, registry: &EffectRegistry) -> Result<Fram
     let mut frame = Frame::filled(scene.width, scene.height, scene.background);
     let pixel_size = scene.pixel_size();
     for layer in &scene.layers {
+        crate::cancel::check()?;
         let adjustment = matches!(layer.source, Source::Adjustment);
         if adjustment && layer.effects.is_empty() {
             continue;
         }
         let nested = if let Source::Composition(child) = &layer.source {
+            crate::cancel::check()?;
             Some(render_scene_cpu(child, registry)?)
         } else {
             None
@@ -674,7 +772,17 @@ pub fn render_scene_cpu(scene: &Scene, registry: &EffectRegistry) -> Result<Fram
                 }
                 _ => None,
             };
-            for y in y0..y0 + h {
+            // Rows are independent: each destination pixel reads only shared
+            // sources and its own bytes, so parallel rows are byte-identical
+            // to the sequential loop.
+            let dest_width = dest.width;
+            let blend = layer.blend;
+            let opacity = layer.opacity;
+            crate::reference::par_rows(&mut dest.rgba, dest_width as usize * 4, |y, row| {
+                let y = y as u32;
+                if y < y0 || y >= y0 + h {
+                    return;
+                }
                 for x in x0..x0 + w {
                     let mut pixel = source_at(
                         layer,
@@ -686,27 +794,27 @@ pub fn render_scene_cpu(scene: &Scene, registry: &EffectRegistry) -> Result<Fram
                         nested.as_ref(),
                     );
                     if !source_only {
-                        pixel[3] *= layer.opacity;
+                        pixel[3] *= opacity;
                     }
                     if pixel[3] >= 1.0 {
                         if let Some(color) = &opaque_flat {
-                            let i = ((y * dest.width + x) * 4) as usize;
-                            dest.rgba[i..i + 4].copy_from_slice(color);
+                            let i = (x * 4) as usize;
+                            row[i..i + 4].copy_from_slice(color);
                             continue;
                         }
                     }
-                    dest.blend_pixel(
-                        x,
-                        y,
+                    crate::reference::slice_blend_pixel(
+                        row,
+                        (x * 4) as usize,
                         pixel,
                         if source_only {
                             BlendMode::Normal
                         } else {
-                            layer.blend
+                            blend
                         },
                     );
                 }
-            }
+            });
         }
         if layer.effects.is_empty() {
             continue;
@@ -726,38 +834,44 @@ pub fn render_scene_cpu(scene: &Scene, registry: &EffectRegistry) -> Result<Fram
             height: filtered.height,
             rgba: filtered.rgba,
         };
-        for y in 0..frame.height {
-            for x in 0..frame.width {
-                if !adjustment && layer.blend == BlendMode::Normal {
-                    let i = ((y * frame.width + x) * 4) as usize;
+        // Row-parallel composite; identical per-pixel math to the sequential
+        // loop, so output is byte-identical.
+        let frame_width = frame.width;
+        let blend = layer.blend;
+        let opacity = layer.opacity;
+        crate::reference::par_rows(&mut frame.rgba, frame_width as usize * 4, |y, row| {
+            let y = y as u32;
+            for x in 0..frame_width {
+                if !adjustment && blend == BlendMode::Normal {
+                    let i = ((y * filtered.width + x) * 4) as usize;
                     if filtered.rgba[i + 3] == 0 {
                         continue;
                     }
-                    if layer.opacity == 1.0 && filtered.rgba[i + 3] == 255 {
-                        frame.rgba[i..i + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
+                    if opacity == 1.0 && filtered.rgba[i + 3] == 255 {
+                        let dest = (x * 4) as usize;
+                        row[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
                         continue;
                     }
                 }
                 let mut p = filtered.pixel(x, y);
                 if adjustment {
-                    let old = frame.pixel(x, y);
-                    let alpha = old[3] * (1.0 - layer.opacity) + p[3] * layer.opacity;
+                    let old = crate::reference::slice_pixel(row, (x * 4) as usize);
+                    let alpha = old[3] * (1.0 - opacity) + p[3] * opacity;
                     for c in 0..3 {
                         p[c] = if alpha > 0.000001 {
-                            (old[c] * old[3] * (1.0 - layer.opacity) + p[c] * p[3] * layer.opacity)
-                                / alpha
+                            (old[c] * old[3] * (1.0 - opacity) + p[c] * p[3] * opacity) / alpha
                         } else {
                             0.0
                         };
                     }
                     p[3] = alpha;
-                    frame.set_pixel(x, y, p);
+                    crate::reference::slice_set_pixel(row, (x * 4) as usize, p);
                 } else {
-                    p[3] *= layer.opacity;
-                    frame.blend_pixel(x, y, p, layer.blend);
+                    p[3] *= opacity;
+                    crate::reference::slice_blend_pixel(row, (x * 4) as usize, p, blend);
                 }
             }
-        }
+        });
     }
     Ok(frame)
 }

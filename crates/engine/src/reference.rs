@@ -32,6 +32,8 @@ pub enum RenderError {
     PreCompCycle(CompId),
     #[error("maximum precomp nesting depth exceeded at comp {0}")]
     PreCompDepthLimit(CompId),
+    #[error("render cancelled")]
+    Cancelled,
 }
 
 /// Injected decoded media pixels. Implemented natively by `bonaparte-media`
@@ -152,12 +154,13 @@ impl Frame {
 
     /// Read a pixel as linear floats 0..1.
     pub fn pixel(&self, x: u32, y: u32) -> [f32; 4] {
-        FrameView {
-            width: self.width,
-            height: self.height,
-            rgba: &self.rgba,
+        if x >= self.width || y >= self.height {
+            return [0.0, 0.0, 0.0, 0.0];
         }
-        .pixel(x, y)
+        slice_pixel(
+            &self.rgba,
+            ((y as usize * self.width as usize) + x as usize) * 4,
+        )
     }
 
     /// Set a pixel directly as linear floats 0..1.
@@ -165,11 +168,11 @@ impl Frame {
         if x >= self.width || y >= self.height {
             return;
         }
-        let i = ((y as usize * self.width as usize) + x as usize) * 4;
-        self.rgba[i] = linear_to_srgb_byte(color[0]);
-        self.rgba[i + 1] = linear_to_srgb_byte(color[1]);
-        self.rgba[i + 2] = linear_to_srgb_byte(color[2]);
-        self.rgba[i + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+        slice_set_pixel(
+            &mut self.rgba,
+            ((y as usize * self.width as usize) + x as usize) * 4,
+            color,
+        );
     }
 
     pub fn sample_bilinear(&self, u: f32, v: f32) -> [f32; 4] {
@@ -186,16 +189,98 @@ impl Frame {
         if x >= self.width || y >= self.height {
             return;
         }
-        if src[3] <= 0.0 {
-            return;
+        slice_blend_pixel(
+            &mut self.rgba,
+            ((y as usize * self.width as usize) + x as usize) * 4,
+            src,
+            mode,
+        );
+    }
+}
+
+/// Read a pixel from a tightly packed RGBA8 buffer at byte offset `idx`
+/// as linear floats 0..1. Shared by `Frame` accessors and row-parallel loops
+/// so both paths stay byte-identical.
+#[inline]
+pub fn slice_pixel(rgba: &[u8], idx: usize) -> [f32; 4] {
+    [
+        srgb_byte_to_linear(rgba[idx]),
+        srgb_byte_to_linear(rgba[idx + 1]),
+        srgb_byte_to_linear(rgba[idx + 2]),
+        rgba[idx + 3] as f32 / 255.0,
+    ]
+}
+
+/// Write a pixel into a tightly packed RGBA8 buffer at byte offset `idx`
+/// as linear floats 0..1. Shared by `Frame` accessors and row-parallel loops.
+#[inline]
+pub fn slice_set_pixel(rgba: &mut [u8], idx: usize, color: [f32; 4]) {
+    rgba[idx] = linear_to_srgb_byte(color[0]);
+    rgba[idx + 1] = linear_to_srgb_byte(color[1]);
+    rgba[idx + 2] = linear_to_srgb_byte(color[2]);
+    rgba[idx + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+}
+
+/// Blend a source pixel onto the destination byte offset `idx` using the
+/// specified blend mode. Row-parallel twin of [`Frame::blend_pixel`].
+#[inline]
+pub fn slice_blend_pixel(rgba: &mut [u8], idx: usize, src: [f32; 4], mode: BlendMode) {
+    if src[3] <= 0.0 {
+        return;
+    }
+    if src[3] >= 1.0 && mode == BlendMode::Normal {
+        slice_set_pixel(rgba, idx, src);
+        return;
+    }
+    let dst = slice_pixel(rgba, idx);
+    let out = blend_pixel_colors(mode, src, dst);
+    slice_set_pixel(rgba, idx, out);
+}
+
+/// Apply `f(y, row)` to every row of a row-major buffer — in parallel on
+/// native threads, sequentially on wasm. Rows are independent, so results
+/// are byte-identical to a sequential loop.
+pub(crate) fn par_rows<T, F>(buf: &mut [T], row_len: usize, f: F)
+where
+    T: Send,
+    F: Fn(usize, &mut [T]) + Sync + Send,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use rayon::prelude::*;
+        buf.par_chunks_mut(row_len)
+            .enumerate()
+            .for_each(|(y, row)| f(y, row));
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        for (y, row) in buf.chunks_mut(row_len).enumerate() {
+            f(y, row);
         }
-        if src[3] >= 1.0 && mode == BlendMode::Normal {
-            self.set_pixel(x, y, src);
-            return;
+    }
+}
+
+/// Like [`par_rows`] for row bodies that can fail. The first error in row
+/// order is returned, matching the sequential loop.
+fn try_par_rows<T, F, E>(buf: &mut [T], row_len: usize, f: F) -> Result<(), E>
+where
+    T: Send,
+    F: Fn(usize, &mut [T]) -> Result<(), E> + Sync + Send,
+    E: Send,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use rayon::prelude::*;
+        buf.par_chunks_mut(row_len)
+            .enumerate()
+            .try_for_each(|(y, row)| f(y, row))
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        for (y, row) in buf.chunks_mut(row_len).enumerate() {
+            f(y, row)?;
         }
-        let dst = self.pixel(x, y);
-        let out = blend_pixel_colors(mode, src, dst);
-        self.set_pixel(x, y, out);
+        Ok(())
     }
 }
 
@@ -347,7 +432,7 @@ pub fn render_comp(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
 ) -> Result<Frame, RenderError> {
     render_comp_with_registry(project, comp_id, time, frames, builtin_registry())
 }
@@ -357,7 +442,7 @@ pub fn render_comp_with_registry(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     registry: &EffectRegistry,
 ) -> Result<Frame, RenderError> {
     static CACHE: std::sync::LazyLock<crate::preview::SourceCache> =
@@ -379,7 +464,7 @@ pub fn render_comp_legacy(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
 ) -> Result<Frame, RenderError> {
     render_comp_registered(
         project,
@@ -396,7 +481,7 @@ pub fn render_comp_internal(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     active_comps: &mut Vec<CompId>,
     depth: usize,
 ) -> Result<Frame, RenderError> {
@@ -415,7 +500,7 @@ fn render_comp_registered(
     project: &Project,
     comp_id: CompId,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     active_comps: &mut Vec<CompId>,
     depth: usize,
     registry: &EffectRegistry,
@@ -434,8 +519,9 @@ fn render_comp_registered(
 
     active_comps.push(comp_id);
 
-    // Render in bottom-to-top order (layer_order[0] is bottom).
-    for &layer_id in &comp.layer_order {
+    // Render bottom-to-top (layer_order[0] is bottom); with an active
+    // perspective camera, draw_order sorts far layers first instead.
+    for layer_id in comp.draw_order(time) {
         let layer = comp
             .layers
             .get(&layer_id)
@@ -474,7 +560,7 @@ pub fn draw_layer(
     comp: &Comp,
     layer: &Layer,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     active_comps: &mut Vec<CompId>,
     depth: usize,
     clip_x: u32,
@@ -510,7 +596,7 @@ fn draw_layer_registered(
     comp: &Comp,
     layer: &Layer,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     active_comps: &mut Vec<CompId>,
     depth: usize,
     clip_x: u32,
@@ -522,7 +608,8 @@ fn draw_layer_registered(
     registry: &EffectRegistry,
 ) -> Result<(), RenderError> {
     let adjustment = matches!(layer.kind, LayerKind::Adjustment {});
-    if !layer.effects.iter().any(|e| e.enabled) {
+    let dof_radius = comp.dof_radius_for(layer, time);
+    if !layer.effects.iter().any(|e| e.enabled) && dof_radius <= 0.0 {
         if adjustment {
             return Ok(());
         }
@@ -580,7 +667,27 @@ fn draw_layer_registered(
         )?;
     }
     let mut filtered = CpuFrame::from_rgba(source.width, source.height, source.rgba);
-    for instance in &layer.effects {
+    // Depth of field is a lens property, injected as a trailing blur whose
+    // radius grows with distance from the focal plane.
+    let dof_effect = (dof_radius > 0.0).then(|| bonaparte_model::EffectInstance {
+        id: "__dof".into(),
+        effect_id: "builtin.blur".into(),
+        enabled: true,
+        params: [
+            (
+                "radius".to_string(),
+                bonaparte_model::EffectValue::Float(dof_radius),
+            ),
+            (
+                "repeat_edge".to_string(),
+                bonaparte_model::EffectValue::Bool(true),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        tracks: Default::default(),
+    });
+    for instance in layer.effects.iter().chain(dof_effect.iter()) {
         if !instance.enabled {
             continue;
         }
@@ -605,22 +712,28 @@ fn draw_layer_registered(
         frame.rgba = filtered.rgba;
         return Ok(());
     }
-    for y in 0..frame.height {
-        for x in 0..frame.width {
-            if !adjustment && layer.blend_mode == BlendMode::Normal {
+    // Rows are independent: each output pixel reads only `filtered` and its
+    // own destination bytes, so the parallel loop is byte-identical to the
+    // sequential one.
+    let blend_mode = layer.blend_mode;
+    let frame_width = frame.width;
+    par_rows(&mut frame.rgba, frame_width as usize * 4, |y, row| {
+        let y = y as u32;
+        for x in 0..frame_width {
+            if !adjustment && blend_mode == BlendMode::Normal {
                 let i = (((y + offset_y) * filtered.width + x + offset_x) * 4) as usize;
                 if filtered.rgba[i + 3] == 0 {
                     continue;
                 }
                 if opacity == 1.0 && filtered.rgba[i + 3] == 255 {
-                    let dest = ((y * frame.width + x) * 4) as usize;
-                    frame.rgba[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
+                    let dest = (x * 4) as usize;
+                    row[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
                     continue;
                 }
             }
             let mut pixel = filtered.pixel(x + offset_x, y + offset_y);
             if adjustment {
-                let original = frame.pixel(x, y);
+                let original = slice_pixel(row, (x * 4) as usize);
                 let alpha = original[3] * (1.0 - opacity) + pixel[3] * opacity;
                 for c in 0..3 {
                     pixel[c] = if alpha > 0.000001 {
@@ -632,13 +745,13 @@ fn draw_layer_registered(
                     };
                 }
                 pixel[3] = alpha;
-                frame.set_pixel(x, y, pixel);
+                slice_set_pixel(row, (x * 4) as usize, pixel);
             } else {
                 pixel[3] *= opacity;
-                frame.blend_pixel(x, y, pixel, layer.blend_mode);
+                slice_blend_pixel(row, (x * 4) as usize, pixel, blend_mode);
             }
         }
-    }
+    });
     Ok(())
 }
 
@@ -650,7 +763,7 @@ fn draw_layer_pixels(
     comp: &Comp,
     layer: &Layer,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
     active_comps: &mut Vec<CompId>,
     depth: usize,
     clip_x: u32,
@@ -756,6 +869,7 @@ fn draw_layer_pixels(
             return Err(RenderError::PreCompDepthLimit(*child_id));
         }
         let child_time = time - layer.start;
+        crate::cancel::check()?;
         Some(render_comp_registered(
             project,
             *child_id,
@@ -778,11 +892,49 @@ fn draw_layer_pixels(
         None
     };
 
+    // Explicit vector subpaths (SVG / 3D-wireframe imports) rasterize
+    // directly — no generator lookup, no shader.
+    let vector_shape = if let LayerKind::Shape {
+        color,
+        style,
+        points,
+        ..
+    } = &layer.kind
+    {
+        if points.is_empty() {
+            None
+        } else {
+            let w = layer_w.ceil().max(1.0) as u32;
+            let h = layer_h.ceil().max(1.0) as u32;
+            let sw = style.size.map(|s| s[0]).unwrap_or(layer_w).max(1.0);
+            let sh = style.size.map(|s| s[1]).unwrap_or(layer_h).max(1.0);
+            let sx = w as f32 / sw;
+            let sy = h as f32 / sh;
+            let shifted: Vec<Vec<[f32; 2]>> = points
+                .iter()
+                .map(|sub| {
+                    sub.iter()
+                        .map(|p| [(p[0] + sw * 0.5) * sx, (p[1] + sh * 0.5) * sy])
+                        .collect()
+                })
+                .collect();
+            let raster = crate::vector::rasterize_paths(w, h, *color, style, &shifted);
+            Some(Frame {
+                width: raster.width,
+                height: raster.height,
+                rgba: raster.rgba,
+            })
+        }
+    } else {
+        None
+    };
+
     // Shape generators use the public registry, never an engine-side plugin-ID switch.
     let generated_shape = if let LayerKind::Shape {
         color,
         generator: Some(id),
         style,
+        ..
     } = &layer.kind
     {
         let manifest = registry
@@ -842,107 +994,124 @@ fn draw_layer_pixels(
         }
         _ => None,
     };
-    // Evaluate pixels across the intersected bounding box.
-    for py in start_y..end_y {
-        let dest_y = py.saturating_sub(offset_y);
-        if dest_y >= frame.height {
-            continue;
-        }
-        for px in start_x..end_x {
-            let dest_x = px.saturating_sub(offset_x);
-            if dest_x >= frame.width {
-                continue;
-            }
-
-            // Map canvas pixel (px + 0.5, py + 0.5) to local layer space.
-            let [lx, ly] = inv_affine.transform_point([px as f32 + 0.5, py as f32 + 0.5]);
-
-            // Normalized local coordinates u, v in [0.0, 1.0].
-            let u = (lx + hw) / layer_w;
-            let v = (ly + hh) / layer_h;
-
-            if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
-                continue;
-            }
-
-            if let Some(color) = flat_opaque {
-                let i = ((dest_y * frame.width + dest_x) * 4) as usize;
-                frame.rgba[i..i + 4].copy_from_slice(&color);
-                continue;
-            }
-            let src_color = match &layer.kind {
-                LayerKind::Solid { color } => [color[0], color[1], color[2], color[3] * opacity],
-                LayerKind::Shape { color, style, .. } => {
-                    if let Some(generated) = &generated_shape {
-                        let p = generated.sample_bilinear(u, v);
-                        [p[0], p[1], p[2], p[3] * opacity]
-                    } else {
-                        let r = style.corner_radius.min(hw.min(hh));
-                        let qx = lx.abs() - hw + r;
-                        let qy = ly.abs() - hh + r;
-                        let distance = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt()
-                            + qx.max(qy).min(0.0)
-                            - r;
-                        let aa = (inv_affine.a.hypot(inv_affine.b))
-                            .max(inv_affine.c.hypot(inv_affine.d))
-                            .max(0.01);
-                        let coverage = (0.5 - distance / aa).clamp(0.0, 1.0);
-                        let stroke = if style.stroke_width > 0.0 {
-                            (0.5 + (distance + style.stroke_width) / aa).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        let mut out = [0.0; 4];
-                        for ch in 0..4 {
-                            out[ch] = color[ch] * (1.0 - stroke) + style.stroke_color[ch] * stroke;
-                        }
-                        out[3] *= coverage * opacity;
-                        out
-                    }
-                }
-                LayerKind::Footage { media } => {
-                    let view = frames
-                        .frame_rgba(*media, time)
-                        .ok_or(RenderError::MediaUnavailable(*media))?;
-                    let sx = ((u * view.width as f32) as u32).min(view.width.saturating_sub(1));
-                    let sy = ((v * view.height as f32) as u32).min(view.height.saturating_sub(1));
-                    let idx = ((sy as usize * view.width as usize) + sx as usize) * 4;
-                    [
-                        srgb_byte_to_linear(view.rgba[idx]),
-                        srgb_byte_to_linear(view.rgba[idx + 1]),
-                        srgb_byte_to_linear(view.rgba[idx + 2]),
-                        view.rgba[idx + 3] as f32 / 255.0 * opacity,
-                    ]
-                }
-                LayerKind::Text { style, .. } => {
-                    let coverage = text_bitmap.as_ref().expect("text bitmap").sample(u, v);
-                    [
-                        style.color[0],
-                        style.color[1],
-                        style.color[2],
-                        style.color[3] * opacity * coverage,
-                    ]
-                }
-                LayerKind::Adjustment {} => continue,
-                LayerKind::PreComp { .. } => {
-                    let pf = precomp_frame.as_ref().unwrap();
-                    let p = pf.sample_bilinear(u, v);
-                    [p[0], p[1], p[2], p[3] * opacity]
-                }
+    // Evaluate pixels across the intersected bounding box. Rows are
+    // independent — each destination pixel blends only its own bytes — so the
+    // parallel loop is byte-identical to the sequential one.
+    let blend_mode = if source_only {
+        BlendMode::Normal
+    } else {
+        layer.blend_mode
+    };
+    let frame_width = frame.width;
+    let offset_y_u32 = offset_y;
+    try_par_rows(
+        &mut frame.rgba,
+        frame_width as usize * 4,
+        |dest_y_abs, row| {
+            // The tile path offsets canvas rows into a smaller destination frame:
+            // canvas row py maps to frame row py - offset_y.
+            let dest_y = dest_y_abs as u32;
+            let Some(py) = dest_y.checked_add(offset_y_u32) else {
+                return Ok(());
             };
+            if py < start_y || py >= end_y {
+                return Ok(());
+            }
+            for px in start_x..end_x {
+                let dest_x = px.saturating_sub(offset_x);
+                if dest_x >= frame_width {
+                    continue;
+                }
 
-            frame.blend_pixel(
-                dest_x,
-                dest_y,
-                src_color,
-                if source_only {
-                    BlendMode::Normal
-                } else {
-                    layer.blend_mode
-                },
-            );
-        }
-    }
+                // Map canvas pixel (px + 0.5, py + 0.5) to local layer space.
+                let [lx, ly] = inv_affine.transform_point([px as f32 + 0.5, py as f32 + 0.5]);
+
+                // Normalized local coordinates u, v in [0.0, 1.0].
+                let u = (lx + hw) / layer_w;
+                let v = (ly + hh) / layer_h;
+
+                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                    continue;
+                }
+
+                if let Some(color) = flat_opaque {
+                    let i = (dest_x * 4) as usize;
+                    row[i..i + 4].copy_from_slice(&color);
+                    continue;
+                }
+                let src_color = match &layer.kind {
+                    LayerKind::Solid { color } => {
+                        [color[0], color[1], color[2], color[3] * opacity]
+                    }
+                    LayerKind::Shape { color, style, .. } => {
+                        if let Some(vector) = &vector_shape {
+                            let p = vector.sample_bilinear(u, v);
+                            [p[0], p[1], p[2], p[3] * opacity]
+                        } else if let Some(generated) = &generated_shape {
+                            let p = generated.sample_bilinear(u, v);
+                            [p[0], p[1], p[2], p[3] * opacity]
+                        } else {
+                            let r = style.corner_radius.min(hw.min(hh));
+                            let qx = lx.abs() - hw + r;
+                            let qy = ly.abs() - hh + r;
+                            let distance = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt()
+                                + qx.max(qy).min(0.0)
+                                - r;
+                            let aa = (inv_affine.a.hypot(inv_affine.b))
+                                .max(inv_affine.c.hypot(inv_affine.d))
+                                .max(0.01);
+                            let coverage = (0.5 - distance / aa).clamp(0.0, 1.0);
+                            let stroke = if style.stroke_width > 0.0 {
+                                (0.5 + (distance + style.stroke_width) / aa).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let mut out = [0.0; 4];
+                            for ch in 0..4 {
+                                out[ch] =
+                                    color[ch] * (1.0 - stroke) + style.stroke_color[ch] * stroke;
+                            }
+                            out[3] *= coverage * opacity;
+                            out
+                        }
+                    }
+                    LayerKind::Footage { media } => {
+                        let view = frames
+                            .frame_rgba(*media, time)
+                            .ok_or(RenderError::MediaUnavailable(*media))?;
+                        let sx = ((u * view.width as f32) as u32).min(view.width.saturating_sub(1));
+                        let sy =
+                            ((v * view.height as f32) as u32).min(view.height.saturating_sub(1));
+                        let idx = ((sy as usize * view.width as usize) + sx as usize) * 4;
+                        [
+                            srgb_byte_to_linear(view.rgba[idx]),
+                            srgb_byte_to_linear(view.rgba[idx + 1]),
+                            srgb_byte_to_linear(view.rgba[idx + 2]),
+                            view.rgba[idx + 3] as f32 / 255.0 * opacity,
+                        ]
+                    }
+                    LayerKind::Text { style, .. } => {
+                        let coverage = text_bitmap.as_ref().expect("text bitmap").sample(u, v);
+                        [
+                            style.color[0],
+                            style.color[1],
+                            style.color[2],
+                            style.color[3] * opacity * coverage,
+                        ]
+                    }
+                    LayerKind::Adjustment {} => continue,
+                    LayerKind::PreComp { .. } => {
+                        let pf = precomp_frame.as_ref().unwrap();
+                        let p = pf.sample_bilinear(u, v);
+                        [p[0], p[1], p[2], p[3] * opacity]
+                    }
+                };
+
+                slice_blend_pixel(row, (dest_x * 4) as usize, src_color, blend_mode);
+            }
+            Ok(())
+        },
+    )?;
 
     Ok(())
 }

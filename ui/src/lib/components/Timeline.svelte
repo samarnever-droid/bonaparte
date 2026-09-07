@@ -19,7 +19,14 @@
     toggleLayerLock,
     layerVisibility,
     layerLocked,
+    openContextMenu,
+    layerContextItems,
+    copyKeyframe,
+    deleteKeyframe,
+    type ContextMenuItem,
+    focusCameraOnSelection,
   } from "../store.svelte";
+  import { arrangeInDepth } from "../three-d";
   import { layerIcon, layerColor } from "../geometry";
   import {
     timeToTimecode,
@@ -372,6 +379,46 @@
     }
   }
   onDestroy(cleanup);
+  function layerMenu(event: MouseEvent, layerId: number) {
+    editor.selected = layerId;
+    openContextMenu(event, [
+      ...layerContextItems(layerId),
+      { separator: true },
+      { label: "Arrange layers in depth", icon: "graph", run: () => arrangeInDepth() },
+      {
+        label: "Cinematic focus on this",
+        icon: "target",
+        run: () => void focusCameraOnSelection(),
+      },
+    ]);
+  }
+  function keyMenu(event: MouseEvent, layer: Layer, row: RowTrack, key: Keyframe) {
+    if (layer.locked) return;
+    const items: ContextMenuItem[] = [
+      {
+        label: "Copy keyframe",
+        icon: "copy",
+        run: () => copyKeyframe(row, key),
+      },
+      {
+        label: "Edit easing",
+        icon: "graph",
+        run: () => {
+          editor.selected = layer.id;
+          if (row.prop) openGraph(row.prop);
+          else editor.inspector = "effects";
+        },
+      },
+      { separator: true },
+      {
+        label: "Delete keyframe",
+        icon: "trash",
+        danger: true,
+        run: () => void deleteKeyframe(layer.id, row, key.time),
+      },
+    ];
+    openContextMenu(event, items);
+  }
   function reorder(delta: number) {
     if (!comp || !selected || selected.locked) return;
     const index = comp.layer_order.indexOf(selected.id);
@@ -628,6 +675,7 @@
                 class="layer-name"
                 aria-label={`Select layer ${layer.name}`}
                 onclick={() => (editor.selected = layer.id)}
+                oncontextmenu={(e) => layerMenu(e, layer.id)}
                 ><Icon name={layerIcon(layer)} size={11} /><span class="truncate">{layer.name}</span
                 ></button
               >
@@ -658,6 +706,7 @@
                   if (e.key === "Enter") editor.selected = layer.id;
                 }}
                 onpointerdown={(e) => begin(e, layer, "move")}
+                oncontextmenu={(e) => layerMenu(e, layer.id)}
               >
                 <span
                   class="trim-handle left"
@@ -713,7 +762,8 @@
                         editor.selected = layer.id;
                         if (row.prop) openGraph(row.prop);
                         else editor.inspector = "effects";
-                      }}><Icon name="keyframe" size={9} /></button
+                      }}
+                      oncontextmenu={(e) => keyMenu(e, layer, row, key)}><Icon name="keyframe" size={9} /></button
                     >{/each}
                 </div>
               {/each}

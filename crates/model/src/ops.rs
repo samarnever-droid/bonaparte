@@ -35,6 +35,24 @@ pub enum Op {
         comp: CompId,
         audio: crate::AudioArrangement,
     },
+    /// Set the comp's 3D perspective camera. `fov <= 0` disables projection
+    /// (pure 2D rendering, exactly the legacy pipeline).
+    SetCamera {
+        comp: CompId,
+        position: [f32; 2],
+        z: f32,
+        fov: f32,
+        #[serde(default)]
+        focus: f32,
+        #[serde(default)]
+        dof: f32,
+    },
+    /// Set the comp's turntable auto-orbit (camera spins around the center).
+    SetTurntable {
+        comp: CompId,
+        enabled: bool,
+        period: f64,
+    },
     /// One transaction and one history entry. Nested batches are deliberately refused.
     Batch {
         label: String,
@@ -276,6 +294,40 @@ impl Op {
                     .comp_mut(comp)
                     .ok_or(ModelError::CompNotFound(comp))?
                     .audio = audio;
+                Ok(())
+            }
+            Op::SetCamera {
+                comp,
+                position,
+                z,
+                fov,
+                focus,
+                dof,
+            } => {
+                let c = project
+                    .comp_mut(comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
+                c.camera = crate::document::Camera {
+                    position,
+                    z,
+                    fov: fov.max(0.0),
+                    focus,
+                    dof: dof.clamp(0.0, 1.0),
+                };
+                Ok(())
+            }
+            Op::SetTurntable {
+                comp,
+                enabled,
+                period,
+            } => {
+                let c = project
+                    .comp_mut(comp)
+                    .ok_or(ModelError::CompNotFound(comp))?;
+                c.turntable = crate::document::Turntable {
+                    enabled,
+                    period: period.max(0.5),
+                };
                 Ok(())
             }
             Op::RenameProject { name } => {
@@ -626,6 +678,25 @@ impl Op {
                     ModelError::Invalid("Timeline shift overflows time range".into())
                 })?),
             }),
+            Op::SetCamera { comp, .. } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
+                Ok(Op::SetCamera {
+                    comp: *comp,
+                    position: c.camera.position,
+                    z: c.camera.z,
+                    fov: c.camera.fov,
+                    focus: c.camera.focus,
+                    dof: c.camera.dof,
+                })
+            }
+            Op::SetTurntable { comp, .. } => {
+                let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
+                Ok(Op::SetTurntable {
+                    comp: *comp,
+                    enabled: c.turntable.enabled,
+                    period: c.turntable.period,
+                })
+            }
             Op::SetCompAudio { comp, .. } => Ok(Op::SetCompAudio {
                 comp: *comp,
                 audio: project
@@ -912,6 +983,14 @@ impl Op {
                 delta.as_secs_f64()
             ),
             Op::SetCompAudio { .. } => "Edited audio timeline".into(),
+            Op::SetCamera { .. } => "Moved the 3D camera".into(),
+            Op::SetTurntable { enabled, .. } => {
+                if *enabled {
+                    "Started the turntable".into()
+                } else {
+                    "Stopped the turntable".into()
+                }
+            }
             Op::RenameProject { name } => format!("Renamed project to “{name}”"),
             Op::SetLayerContent { layer, .. } => format!("Edited layer {layer} content"),
             Op::SetLayerEffects { layer, .. } => format!("Edited layer {layer} effects"),
@@ -1028,6 +1107,8 @@ fn merge_targets(op: &Op) -> Option<Vec<String>> {
             time,
         } => vec![format!("key:{comp}:{layer}:{property:?}:{}", time.0)],
         Op::RenameLayer { comp, layer, .. } => vec![format!("name:{comp}:{layer}")],
+        Op::SetCamera { comp, .. } => vec![format!("camera:{comp}")],
+        Op::SetTurntable { comp, .. } => vec![format!("turntable:{comp}")],
         Op::Batch { ops, .. } => {
             let mut all = vec![];
             for op in ops {
@@ -1044,6 +1125,16 @@ fn merge_targets(op: &Op) -> Option<Vec<String>> {
 impl History {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Number of undoable entries currently retained (bounded at 200).
+    pub fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// Number of redoable entries currently retained.
+    pub fn redo_len(&self) -> usize {
+        self.redo_stack.len()
     }
 
     pub fn commit(&mut self, project: &mut Project, op: Op) -> Result<(), ModelError> {
@@ -1149,6 +1240,18 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
+    /// Label of the entry a `redo` would re-apply — i.e. the one `undo` just
+    /// reverted. Feeds "Undid: …" feedback in the UI and MCP responses.
+    pub fn redo_top_label(&self) -> Option<&str> {
+        self.redo_stack.last().map(|e| e.label.as_str())
+    }
+
+    /// Label of the entry an `undo` would revert — i.e. the one `redo` just
+    /// re-applied.
+    pub fn undo_top_label(&self) -> Option<&str> {
+        self.undo_stack.last().map(|e| e.label.as_str())
+    }
+
     pub fn undo_descriptions(&self) -> Vec<String> {
         self.undo_stack
             .iter()

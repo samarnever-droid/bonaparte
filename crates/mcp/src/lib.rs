@@ -20,6 +20,6 @@ pub mod tools;
 
 pub use png::encode_png;
 pub use protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, ToolCallResult, ToolDefinition};
-pub use server::{handle_request, run_stdio};
+pub use server::{handle_request, handle_request_safe, run_stdio};
 pub use session::McpSession;
-pub use tools::{execute_tool, list_tool_definitions};
+pub use tools::{editor_describe, execute_tool, list_tool_definitions};

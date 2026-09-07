@@ -67,7 +67,7 @@ fn manifests_supply_defaults_and_refuse_unknown_wrong_typed_and_out_of_range_par
     }
     let registry = EffectRegistry::new();
     let manifest = registry.get_manifest("builtin.color_grade").unwrap();
-    assert_eq!(manifest.params.len(), 12);
+    assert_eq!(manifest.params.len(), 21);
     for parameter in &manifest.params {
         assert!(!parameter.group.is_empty());
         assert!(parameter.kind.accepts(&parameter.kind.default_value()));
@@ -147,4 +147,95 @@ fn third_party_cpu_plugin_uses_public_registration_and_duplicate_ids_fail() {
 #[test]
 fn shader_paths_cannot_escape_the_pack_directory() {
     assert!(EffectManifest::parse("api_version='1.0'\nid='test.escape'\nname='Escape'\ncost='light'\nshader='../outside.wgsl'").is_err());
+}
+
+#[test]
+fn grade_v2_wheels_work_and_defaults_stay_byte_identical() {
+    let frame = CpuFrame::filled(4, 4, [200, 120, 60, 255]);
+    let defaults = HashMap::new();
+    let graded = evaluate_effect("builtin.color_grade", &frame, &defaults).unwrap();
+    assert_eq!(
+        graded.rgba, frame.rgba,
+        "all-default grade must be identity"
+    );
+
+    // Filmic rolloff compresses the bright channel instead of clipping.
+    let hot = CpuFrame::filled(4, 4, [255, 255, 255, 255]);
+    let params = HashMap::from([("filmic".into(), ParamValue::Float(1.0))]);
+    let rolled = evaluate_effect("builtin.color_grade", &hot, &params).unwrap();
+    assert!(
+        rolled.rgba[0] < 255,
+        "full white must roll off under filmic, got {}",
+        rolled.rgba[0]
+    );
+    // …and it reaches pixels even when exposure/white balance are neutral
+    // (regression: the neutral-light fast path used to skip gain and filmic).
+    let dim = CpuFrame::filled(4, 4, [128, 128, 128, 255]);
+    let dim_rolled = evaluate_effect("builtin.color_grade", &dim, &params).unwrap();
+    assert_ne!(dim_rolled.rgba[0], 128, "filmic must affect mid gray too");
+
+    // Gain multiplies in linear light: 0.5 halves energy.
+    let half = HashMap::from([("gain".into(), ParamValue::Float(0.5))]);
+    let halved = evaluate_effect("builtin.color_grade", &hot, &half).unwrap();
+    assert!(halved.rgba[0] < 255 && halved.rgba[0] > 100);
+
+    // Split toning tints shadows and highlights differently; strength zero is
+    // exactly the identity regardless of hues.
+    let strong = HashMap::from([
+        ("split_strength".into(), ParamValue::Float(1.0)),
+        ("split_shadow_hue".into(), ParamValue::Float(0.0)),
+        ("split_highlight_hue".into(), ParamValue::Float(0.0)),
+    ]);
+    let red_tinted = evaluate_effect("builtin.color_grade", &frame, &strong).unwrap();
+    assert!(
+        red_tinted.rgba[0] > frame.rgba[0],
+        "red hue lifts red channel"
+    );
+    let weak = HashMap::from([
+        ("split_strength".into(), ParamValue::Float(0.0)),
+        ("split_shadow_hue".into(), ParamValue::Float(0.0)),
+    ]);
+    assert_eq!(
+        evaluate_effect("builtin.color_grade", &frame, &weak)
+            .unwrap()
+            .rgba,
+        frame.rgba
+    );
+
+    // Chromatic wheels: a red-shifted lift tint pushes red up, blue down,
+    // relative to the same frame; neutral gray (0.5) is the exact identity.
+    let warm_lift = HashMap::from([("lift_color".into(), ParamValue::Color([0.8, 0.5, 0.2, 1.0]))]);
+    let warmed = evaluate_effect("builtin.color_grade", &dim, &warm_lift).unwrap();
+    assert!(warmed.rgba[0] > dim.rgba[0] && warmed.rgba[2] < dim.rgba[2]);
+    let neutral = HashMap::from([("lift_color".into(), ParamValue::Color([0.5, 0.5, 0.5, 1.0]))]);
+    assert_eq!(
+        evaluate_effect("builtin.color_grade", &dim, &neutral)
+            .unwrap()
+            .rgba,
+        dim.rgba
+    );
+    // Gain tint: red-side gain multiplies red energy in linear light.
+    let red_gain = HashMap::from([("gain_color".into(), ParamValue::Color([1.0, 0.5, 0.5, 1.0]))]);
+    let boosted = evaluate_effect("builtin.color_grade", &frame, &red_gain).unwrap();
+    assert!(boosted.rgba[0] >= frame.rgba[0]);
+    let neutral_gain =
+        HashMap::from([("gain_color".into(), ParamValue::Color([0.5, 0.5, 0.5, 1.0]))]);
+    assert_eq!(
+        evaluate_effect("builtin.color_grade", &frame, &neutral_gain)
+            .unwrap()
+            .rgba,
+        frame.rgba
+    );
+
+    // Lift raises the floor; negative lift crushes it.
+    let lifted = HashMap::from([("lift".into(), ParamValue::Float(0.2))]);
+    let up = evaluate_effect("builtin.color_grade", &dim, &lifted).unwrap();
+    assert!(up.rgba[0] > 128);
+    let crushed = HashMap::from([("lift".into(), ParamValue::Float(-0.2))]);
+    assert!(
+        evaluate_effect("builtin.color_grade", &dim, &crushed)
+            .unwrap()
+            .rgba[0]
+            < 128
+    );
 }

@@ -132,6 +132,8 @@ fn test_serde_all_op_variants() {
         Time(100),
     );
     let dummy_comp = Comp {
+        camera: Default::default(),
+        turntable: Default::default(),
         id: CompId(1),
         name: "C".into(),
         width: 1920,

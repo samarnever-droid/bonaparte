@@ -161,18 +161,27 @@ fn opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames() {
             let mut effect = EffectInstance::new("fx", &manifest.id);
             if manifest.id == "builtin.color_grade" {
                 for (id, value) in [
-                    ("exposure", 1.25),
-                    ("temperature", 0.4),
-                    ("tint", -0.2),
-                    ("contrast", 1.14),
-                    ("highlights", -0.3),
-                    ("shadows", 0.2),
-                    ("saturation", 0.7),
-                    ("vibrance", 0.3),
-                    ("gamma", 1.1),
-                    ("fade", 0.1),
+                    ("exposure", EffectValue::Float(1.25)),
+                    ("temperature", EffectValue::Float(0.4)),
+                    ("tint", EffectValue::Float(-0.2)),
+                    ("contrast", EffectValue::Float(1.14)),
+                    ("highlights", EffectValue::Float(-0.3)),
+                    ("shadows", EffectValue::Float(0.2)),
+                    ("saturation", EffectValue::Float(0.7)),
+                    ("vibrance", EffectValue::Float(0.3)),
+                    ("gamma", EffectValue::Float(1.1)),
+                    ("fade", EffectValue::Float(0.1)),
+                    ("lift", EffectValue::Float(-0.08)),
+                    ("gain", EffectValue::Float(1.2)),
+                    ("lift_color", EffectValue::Color([0.5, 0.5, 0.5, 1.0])),
+                    ("gain_color", EffectValue::Color([0.75, 0.45, 0.5, 1.0])),
+                    ("filmic", EffectValue::Float(0.35)),
+                    ("split_shadow_hue", EffectValue::Float(205.0)),
+                    ("split_highlight_hue", EffectValue::Float(45.0)),
+                    ("split_balance", EffectValue::Float(0.2)),
+                    ("split_strength", EffectValue::Float(0.6)),
                 ] {
-                    effect.params.insert(id.into(), EffectValue::Float(value));
+                    effect.params.insert(id.into(), value);
                 }
             }
             if manifest.id == "builtin.color_adjust" {
@@ -213,10 +222,18 @@ fn opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames() {
                 &cache,
             )
             .unwrap();
+            // Glow and drop shadow composite a float halo on the GPU while the
+            // CPU kernel rounds its halo to 8 bits before compositing; their
+            // fixtures carry the standard one-extra-level allowance.
+            let tolerance = if manifest.id.contains("glow") || manifest.id.contains("drop_shadow") {
+                3
+            } else {
+                2
+            };
             compare(
                 &render_scene_cpu(&scene, &registry).unwrap(),
                 &gpu.render(&scene, &registry).unwrap(),
-                2,
+                tolerance,
                 &manifest.id,
             );
         }
@@ -319,10 +336,18 @@ fn raster_uploads_and_targets_are_reused_with_bounded_retention() {
 fn unsupported_kernels_are_explicit_and_never_masquerade_as_gpu_frames() {
     gpu(|gpu| {
         let (mut p, c) = fixture(8, 8);
-        let mut l = Layer::new_solid("Blur", [1.0; 4], Time::ZERO, Time(240000));
-        l.effects.push(EffectInstance::new("blur", "builtin.blur"));
+        let mut l = Layer::new_solid("Legacy", [1.0; 4], Time::ZERO, Time(240000));
+        l.effects
+            .push(EffectInstance::new("legacy", "test.cpu_only"));
         p.insert_layer(c, l);
-        let registry = EffectRegistry::new();
+        let mut registry = EffectRegistry::new();
+        let manifest = EffectManifest::parse(
+            "api_version='1.0'\nid='test.cpu_only'\nname='CPU only'\ncost='light'\nshader='none.wgsl'\ngpu_preview=false\ninputs=['input']\n",
+        )
+        .unwrap();
+        registry
+            .register_cpu(manifest, String::new(), |_, input, _| Ok(input.clone()))
+            .unwrap();
         let scene = prepare_scene(
             &p,
             c,
@@ -335,8 +360,147 @@ fn unsupported_kernels_are_explicit_and_never_masquerade_as_gpu_frames() {
         .unwrap();
         let before = gpu.stats().submitted_frames;
         let error = gpu.render(&scene, &registry).unwrap_err();
-        assert!(error.contains("Gaussian Blur"));
+        assert!(error.contains("CPU only"), "unexpected reason: {error}");
         assert_eq!(gpu.stats().submitted_frames, before);
+    });
+
+    // Every first-party filter is now GPU-enabled: a scene stacking glow and
+    // drop shadow with blur still executes natively.
+    gpu(|gpu| {
+        let (mut p, c) = fixture(31, 17);
+        p.comp_mut(c).unwrap().background = [0.0; 4];
+        let mut l = Layer::new_rect("Text-ish", [0.95, 0.8, 0.2, 1.0], Time::ZERO, Time(240000));
+        if let LayerKind::Shape { style, .. } = &mut l.kind {
+            style.size = Some([13.0, 7.0]);
+        }
+        let mut glow = EffectInstance::new("glow", "builtin.glow");
+        glow.params.insert("radius".into(), EffectValue::Float(4.0));
+        glow.params
+            .insert("intensity".into(), EffectValue::Float(1.6));
+        let mut shadow = EffectInstance::new("shadow", "builtin.drop_shadow");
+        shadow
+            .params
+            .insert("offset_x".into(), EffectValue::Float(3.0));
+        shadow
+            .params
+            .insert("offset_y".into(), EffectValue::Float(2.0));
+        shadow
+            .params
+            .insert("radius".into(), EffectValue::Float(5.0));
+        shadow
+            .params
+            .insert("color".into(), EffectValue::Color([0.0, 0.0, 0.1, 0.9]));
+        shadow
+            .params
+            .insert("opacity".into(), EffectValue::Float(0.8));
+        l.effects = vec![glow, shadow];
+        p.insert_layer(c, l);
+        let registry = EffectRegistry::new();
+        let scene = prepare_scene(
+            &p,
+            c,
+            Time::ZERO,
+            &NoMedia,
+            &registry,
+            Resolution::FULL,
+            &SourceCache::default(),
+        )
+        .unwrap();
+        assert!(
+            GpuRenderer::unsupported(&scene, &registry).is_none(),
+            "glow + drop shadow scenes must be GPU-eligible now"
+        );
+        let before = gpu.stats().submitted_frames;
+        compare(
+            &render_scene_cpu(&scene, &registry).unwrap(),
+            &gpu.render(&scene, &registry).unwrap(),
+            3,
+            "glow + drop shadow stack",
+        );
+        assert_eq!(gpu.stats().submitted_frames - before, 1);
+    });
+}
+
+#[test]
+fn separable_gpu_blur_matches_cpu_reference() {
+    gpu(|gpu| {
+        let registry = EffectRegistry::new();
+        for repeat_edge in [true, false] {
+            let (mut p, c) = fixture(37, 23);
+            p.comp_mut(c).unwrap().background = [0.0; 4];
+            let mut l = Layer::new_rect("Shape", [0.9, 0.5, 0.2, 0.8], Time::ZERO, Time(240000));
+            if let LayerKind::Shape { style, .. } = &mut l.kind {
+                style.size = Some([15.0, 9.0]);
+            }
+            l.transform.rotation = 12.0;
+            l.effects.push(EffectInstance::new("blur", "builtin.blur"));
+            l.effects[0]
+                .params
+                .insert("radius".into(), EffectValue::Float(6.5));
+            l.effects[0]
+                .params
+                .insert("repeat_edge".into(), EffectValue::Bool(repeat_edge));
+            p.insert_layer(c, l);
+            let scene = prepare_scene(
+                &p,
+                c,
+                Time::ZERO,
+                &NoMedia,
+                &registry,
+                Resolution::FULL,
+                &SourceCache::default(),
+            )
+            .unwrap();
+            let cpu = render_scene_cpu(&scene, &registry).unwrap();
+            let before = gpu.stats().submitted_frames;
+            let rendered = gpu.render(&scene, &registry).unwrap();
+            assert_eq!(gpu.stats().submitted_frames - before, 1);
+            compare(
+                &cpu,
+                &rendered,
+                2,
+                &format!("gaussian blur repeat_edge={repeat_edge}"),
+            );
+        }
+        // An animated radius also exercises the two-pass host path through the
+        // shared parameter evaluation (scaled with the raster grid).
+        let (mut p, c) = fixture(19, 13);
+        p.comp_mut(c).unwrap().background = [0.0; 4];
+        let mut l = Layer::new_rect("Shape", [0.2, 0.8, 0.4, 0.9], Time::ZERO, Time(240000));
+        if let LayerKind::Shape { style, .. } = &mut l.kind {
+            style.size = Some([9.0, 7.0]);
+        }
+        let mut blur = EffectInstance::new("blur", "builtin.blur");
+        let mut radius_track = Track::new();
+        radius_track.set_key(Keyframe {
+            time: Time::ZERO,
+            value: PropValue::Scalar(2.0),
+            easing: Easing::Linear,
+        });
+        radius_track.set_key(Keyframe {
+            time: Time(120000),
+            value: PropValue::Scalar(9.0),
+            easing: Easing::Linear,
+        });
+        blur.tracks.insert("radius".into(), radius_track);
+        l.effects.push(blur);
+        p.insert_layer(c, l);
+        let scene = prepare_scene(
+            &p,
+            c,
+            Time(60000),
+            &NoMedia,
+            &registry,
+            Resolution::FULL,
+            &SourceCache::default(),
+        )
+        .unwrap();
+        compare(
+            &render_scene_cpu(&scene, &registry).unwrap(),
+            &gpu.render(&scene, &registry).unwrap(),
+            2,
+            "gaussian blur animated radius",
+        );
     });
 }
 #[test]
@@ -426,5 +590,62 @@ kind={Checkbox={default=true}}
             1,
             "public shader registration",
         );
+    });
+}
+
+#[test]
+fn camera_projection_depth_order_and_dof_match_between_gpu_and_cpu() {
+    gpu(|gpu| {
+        let (mut p, c) = fixture(65, 39);
+        // Two rotated cards at different depths behind a live camera with
+        // depth of field — the full 3D scene description.
+        p.comp_mut(c).unwrap().camera = Camera {
+            position: [3.0, -2.0],
+            z: 0.0,
+            fov: 300.0,
+            focus: 0.0,
+            dof: 0.8,
+        };
+        let mut far = Layer::new_rect("far", [0.15, 0.8, 0.3, 0.9], Time::ZERO, Time(240000));
+        if let LayerKind::Shape { style, .. } = &mut far.kind {
+            style.size = Some([40.0, 26.0]);
+        }
+        far.transform.rotation = 12.0;
+        far.transform.position = [10.0, 2.0];
+        far.transform.z = 420.0; // off-focus: DoF blurs it
+        let mut near = Layer::new_rect("near", [0.85, 0.3, 0.12, 0.8], Time::ZERO, Time(240000));
+        if let LayerKind::Shape { style, .. } = &mut near.kind {
+            style.size = Some([30.0, 20.0]);
+        }
+        near.transform.rotation = -21.0;
+        near.transform.position = [-6.0, -1.0];
+        near.transform.z = -180.0; // close to the camera: large
+                                   // Composed ABOVE the far card but NEARER in depth: draw_order must
+                                   // flip the paint order on both backends.
+        let near_id = p.insert_layer(c, near);
+        let _far_id = p.insert_layer(c, far);
+        assert_eq!(p.comp(c).unwrap().layer_order.len(), 2);
+
+        let registry = EffectRegistry::new();
+        let cache = SourceCache::default();
+        let scene = prepare_scene(
+            &p,
+            c,
+            Time::ZERO,
+            &NoMedia,
+            &registry,
+            Resolution::FULL,
+            &cache,
+        )
+        .unwrap();
+        // The scene carries the depth-sorted order (far first).
+        assert_eq!(scene.layers.len(), 2);
+        compare(
+            &render_scene_cpu(&scene, &registry).unwrap(),
+            &gpu.render(&scene, &registry).unwrap(),
+            2,
+            "3d camera + depth + dof",
+        );
+        let _ = near_id;
     });
 }

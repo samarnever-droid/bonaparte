@@ -125,7 +125,7 @@ test("half-resolution canvas gestures use original coordinates and Auto restores
   expect((await command(request, "state")).project.comps["1"].width).toBe(320);
 });
 
-test("the engine badge reports real GPU execution and explicit whole-frame fallback", async ({
+test("the engine badge reports real GPU execution, native multi-pass effects, and explicit whole-frame fallback", async ({
   page,
   request,
 }) => {
@@ -134,28 +134,32 @@ test("the engine badge reports real GPU execution and explicit whole-frame fallb
     !status.gpu.available,
     "No graphics API adapter is available; required GPU CI exercises this test on llvmpipe.",
   );
+  const native = status.gpu.software ? "gpu-software" : "gpu";
+  const canvas = page.getByLabel("Rendered composition");
   await page.getByLabel("Preview renderer").selectOption("gpu");
-  await expect(page.getByLabel("Rendered composition")).toHaveAttribute(
-    "data-renderer",
-    status.gpu.software ? "gpu-software" : "gpu",
-  );
+  await expect(canvas).toHaveAttribute("data-renderer", native);
   await expect
     .poll(async () => (await command(request, "preview_status")).gpu.submittedFrames)
     .toBeGreaterThan(0);
+  // Glow and drop shadow execute natively as multi-pass GPU programs; adding
+  // them must not fall back to the CPU.
   await page.locator(".sidebar").getByRole("button", { name: "Effects", exact: true }).click();
+  await page.locator(".sidebar").getByRole("button", { name: "Glow", exact: true }).click();
+  await expect(canvas).toHaveAttribute("data-renderer", native);
   await page
     .locator(".sidebar")
-    .getByRole("button", { name: "Gaussian Blur", exact: true })
+    .getByRole("button", { name: "Drop Shadow", exact: true })
     .click();
-  await expect(page.getByLabel("Rendered composition")).toHaveAttribute("data-renderer", "cpu");
+  await expect(canvas).toHaveAttribute("data-renderer", native);
+  await page.getByLabel("Remove Drop Shadow", { exact: true }).click();
+  await page.getByLabel("Remove Glow", { exact: true }).click();
+  await expect(canvas).toHaveAttribute("data-renderer", native);
+  // The explicit CPU choice still drives the whole-frame fallback display.
+  await page.getByLabel("Preview renderer").selectOption("cpu");
+  await expect(canvas).toHaveAttribute("data-renderer", "cpu");
   await page.getByLabel("Preview performance").click();
-  await expect(page.getByRole("dialog")).toContainText("Gaussian Blur");
+  await expect(page.getByRole("dialog")).toContainText("Actual execution", { ignoreCase: true });
   await page.getByLabel("Dismiss performance panel").click();
-  await page.getByLabel("Remove Gaussian Blur", { exact: true }).click();
-  await expect(page.getByLabel("Rendered composition")).toHaveAttribute(
-    "data-renderer",
-    status.gpu.software ? "gpu-software" : "gpu",
-  );
 });
 
 test("quarter preview does not downsample downloaded PNG exports", async ({ page }, info) => {

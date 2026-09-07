@@ -5,7 +5,7 @@ use std::path::Path;
 
 use bonaparte_effects::registry::builtin_registry;
 use bonaparte_engine::reference::render_comp;
-use bonaparte_model::{FrameRate, Op, Project, Time};
+use bonaparte_model::{FrameRate, LayerId, Op, Project, Time};
 use bonaparte_runtime::{decode_embedded_frames, RenderInput};
 use serde::Deserialize;
 use serde_json::json;
@@ -43,6 +43,13 @@ pub fn f64_to_framerate(fps: f64) -> FrameRate {
 /// Returns the complete catalog of all 10 MCP tools with JSON schemas.
 pub fn list_tool_definitions() -> Vec<ToolDefinition> {
     vec![
+        ToolDefinition {
+            // Listed first on purpose: an agent should call this before
+            // anything else — it maps every capability and the live project.
+            name: "editor.describe".to_string(),
+            description: "ONE-CALL self-discovery: units, the full op catalog with copy-paste examples, editor commands, every effect with typed params, and a summary of the current project. Call this before any other tool.".to_string(),
+            input_schema: json!({"type":"object", "properties":{}}),
+        },
         ToolDefinition {
             name: "effects.list".to_string(),
             description: "List effect manifests, parameter types, defaults, limits and documentation. Use setLayerEffects ops to attach ordered instances and numeric/point animation tracks. This host executes CPU evaluators, not GPU shaders.".to_string(),
@@ -162,6 +169,130 @@ pub fn list_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// One static entry in the op catalog handed to AI agents.
+fn op_doc(type_name: &str, summary: &str, example: serde_json::Value) -> serde_json::Value {
+    json!({
+        "type": type_name,
+        "summary": summary,
+        "example": example,
+    })
+}
+
+/// A complete, machine-readable map of everything an AI agent can do to the
+/// live editor: units, the full op catalog with examples, editor commands,
+/// every effect with typed params, and a summary of the current project.
+/// One call answers "what exists and how do I drive it".
+pub fn editor_describe(
+    project: &Project,
+    registry: &bonaparte_effects::EffectRegistry,
+) -> serde_json::Value {
+    let ops = vec![
+        op_doc("setValue", "Set a layer property. Property is one of Position|Scale|Rotation|Opacity|AnchorPoint|Z. Position/Scale/AnchorPoint take {\"Vec2\":[x,y]}; Rotation/Opacity/Z take {\"Scalar\":n}. Position is px from comp center, Scale is percent, Z is depth px (positive = away from the camera).",
+            json!({"type":"setValue","comp":1,"layer":1,"property":"Position","value":{"Vec2":[100.0,0.0]}})),
+        op_doc("addKeyframe", "Add one keyframe to a property track. Time is in ticks (120000 = 1 second). Easing is \"Linear\", \"Hold\", or {\"Bezier\":{\"p1\":[x,y],\"p2\":[x,y]}} with p in [-0.4..1.4].",
+            json!({"type":"addKeyframe","comp":1,"layer":1,"property":"Position","key":{"time":120000,"value":{"Vec2":[0.0,-80.0]},"easing":{"Bezier":{"p1":[0.42,0.0],"p2":[0.58,1.0]}}}})),
+        op_doc("removeKeyframe", "Remove the keyframe at a given tick time.", json!({"type":"removeKeyframe","comp":1,"layer":1,"property":"Opacity","time":120000})),
+        op_doc("moveKeyframe", "Retiming: move one key from tick `from` to tick `to`.", json!({"type":"moveKeyframe","comp":1,"layer":1,"property":"Position","from":0,"to":240000})),
+        op_doc("setEasing", "Set the easing on the segment starting at the key at `time`.", json!({"type":"setEasing","comp":1,"layer":1,"property":"Position","time":0,"easing":"Hold"})),
+        op_doc("setLayerTime", "Trim/retime a layer bar: start and duration in ticks.", json!({"type":"setLayerTime","comp":1,"layer":1,"start":0,"duration":240000})),
+        op_doc("shiftLayer", "Move a layer bar in time by `delta` ticks (keyframes ride along).", json!({"type":"shiftLayer","comp":1,"layer":1,"delta":-120000})),
+        op_doc("setLayerEffects", "Replace a layer's whole effect stack (see effects catalog for param ids/types; omit params to use defaults).",
+            json!({"type":"setLayerEffects","comp":1,"layer":1,"effects":[{"id":"grade-1","effect_id":"builtin.color_grade","enabled":true,"params":{"exposure":{"Float":0.5}},"tracks":{}}]})),
+        op_doc("renameLayer", "Rename a layer.", json!({"type":"renameLayer","comp":1,"layer":1,"name":"Title card"})),
+        op_doc("setLayerVisible", "Show/hide a layer.", json!({"type":"setLayerVisible","comp":1,"layer":1,"visible":false})),
+        op_doc("setLayerLocked", "Lock/unlock a layer (locked layers reject edits).", json!({"type":"setLayerLocked","comp":1,"layer":1,"locked":true})),
+        op_doc("setLayerParent", "Parent a layer to another (transforms inherit).", json!({"type":"setLayerParent","comp":1,"layer":2,"parent":1})),
+        op_doc("setLayerBlendMode", "One of Normal|Multiply|Screen|Overlay|Add|Darken|Lighten|Difference.", json!({"type":"setLayerBlendMode","comp":1,"layer":1,"blendMode":"Screen"})),
+        op_doc("reorderLayer", "Move a layer to an index in comp.layer_order (0 = bottom).", json!({"type":"reorderLayer","comp":1,"layer":2,"newIndex":0})),
+        op_doc("addLayer", "Add a full layer object (id is reassigned by the model; give a unique provisional id).",
+            json!({"type":"addLayer","comp":1,"layer":{"id":9999,"name":"Punch","kind":{"Text":{"text":"Hello","style":{"font_size":64,"color":[1,1,1,1]}}},"start":0,"duration":240000,"transform":{"position":[0,0],"scale":[100,100],"rotation":0,"opacity":1,"anchor_point":[0,0]},"tracks":{},"effects":[],"visible":true,"locked":false,"parent":null,"blend_mode":"Normal"}})),
+        op_doc("removeLayer", "Delete a layer (undo restores it exactly).", json!({"type":"removeLayer","comp":1,"layer":2})),
+        op_doc("setCamera", "The comp's 3D perspective camera. fov<=0 disables 3D; dof 0..1 is depth-of-field strength; focus is the sharp plane in camera space.",
+            json!({"type":"setCamera","comp":1,"position":[0.0,0.0],"z":0.0,"fov":500.0,"focus":0.0,"dof":0.0})),
+        op_doc("setTurntable", "Auto-orbit the camera around the comp center while playing.", json!({"type":"setTurntable","comp":1,"enabled":true,"period":12.0})),
+        op_doc("createComp", "New composition.", json!({"type":"createComp","name":"Ending","width":1920,"height":1080,"fps":{"num":30,"den":1},"duration":480000})),
+        op_doc("setCompProps", "Update comp name/size/fps/duration/background.", json!({"type":"setCompProps","comp":1,"name":"Main","width":1920,"height":1080,"fps":{"num":30,"den":1},"duration":480000,"background":[0.0,0.0,0.0,1.0]})),
+        op_doc("batch", "Several ops as ONE undoable history entry.",
+            json!({"type":"batch","label":"Rise and fade in","ops":[{"type":"setValue","comp":1,"layer":1,"property":"Position","value":{"Vec2":[0.0,-80.0]}},{"type":"setValue","comp":1,"layer":1,"property":"Opacity","value":{"Scalar":1.0}}]})),
+    ];
+    let effects: Vec<serde_json::Value> = registry
+        .list()
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.id,
+                "name": m.name,
+                "category": m.category,
+                "params": m.params,
+            })
+        })
+        .collect();
+    let comps: Vec<serde_json::Value> = project
+        .comps
+        .values()
+        .map(|c| {
+            json!({
+                "id": c.id.0,
+                "name": c.name,
+                "size": [c.width, c.height],
+                "duration_ticks": c.duration.0,
+                "layers": c.layer_order.iter().map(|id| {
+                    let l = &c.layers[id];
+                    json!({
+                        "id": l.id.0, "name": l.name, "locked": l.locked,
+                        "visible": l.visible, "depth_z": l.transform.z,
+                        "animated": l.tracks.keys().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
+                        "effects": l.effects.iter().map(|e| e.effect_id.clone()).collect::<Vec<_>>(),
+                    })
+                }).collect::<Vec<_>>(),
+                "camera": c.camera,
+                "turntable": c.turntable,
+            })
+        })
+        .collect();
+    json!({
+        "units": {
+            "time": "ticks; 120000 ticks = 1 second; comp duration is also ticks",
+            "position": "pixels relative to the comp center (0,0 = center)",
+            "scale": "percent (100 = natural size)",
+            "rotation": "degrees, clockwise",
+            "opacity": "0..1",
+            "z": "depth in px; positive is farther from the camera; the 3D camera needs fov > 0; a child compounds its parent chain Z (parenting moves the subtree in depth)",
+        },
+        "properties": ["Position", "Scale", "Rotation", "Opacity", "AnchorPoint", "Z"],
+        "value_shapes": {"Vec2": "[x, y]", "Scalar": "number"},
+        "ops": ops,
+        "commands": {
+            "apply": "POST /api/apply {op, editGroup?} — one op; editGroup merges rapid edits into one undo entry",
+            "state": "POST /api/state — full snapshot with revision",
+            "undo": "POST /api/undo",
+            "redo": "POST /api/redo",
+            "open_project": "POST /api/open_project {json: <project json string>}",
+            "save_project": "POST /api/save_project",
+            "export_png": "POST /api/export_png {compId, time}",
+            "describe": "POST /api/describe — this document",
+        },
+        "mcp_tools": ["project.info", "op.apply", "ops.propose", "effects.list", "editor.describe", "export.lut", "comp.render", "history.undo", "history.redo", "debug.panic"],
+        "effects": effects,
+        "project": {
+            "name": project.name,
+            "comps": comps,
+        },
+        "recipes": {
+            "animate": "batch a setValue for t=0 with an addKeyframe, scrub by setting nothing (time lives on keyframes), then addKeyframe at a later tick with the end value",
+            "grade": "setLayerEffects with builtin.color_grade (exposure/contrast/saturation/temperature/lift_color/gain_color) or export a .cube via MCP export.lut",
+            "diorama": "setCamera {fov:500, dof:0.8} + setValue Z on layers; setTurntable for the one-click orbit",
+            "parent": "setLayerParent child->parent then animate the parent; children follow",
+            "import": "editor commands import_svg {name, svg, compId} (SVG text → editable vector shape layers, auto-fitted, never upscaled), import_obj {name, obj, compId} (OBJ text → per-group wireframe layers with Z depth; scale them and animate Z for parallax), and vectorize_image {compId, layerId, maxColors?} (trace an embedded image layer into editable vector shapes)",
+        },
+    })
+}
+
+fn tool_editor_describe(session: &mut McpSession, _args: serde_json::Value) -> ToolCallResult {
+    ToolCallResult::json(&editor_describe(&session.project, &builtin_registry()))
+        .unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
+}
+
 /// Executes a tool call by name with provided JSON arguments.
 pub fn execute_tool(
     session: &mut McpSession,
@@ -169,11 +300,16 @@ pub fn execute_tool(
     args: serde_json::Value,
 ) -> ToolCallResult {
     match name {
+        // Chaos drill: deliberately panics so hosts can verify that tool
+        // crashes are contained (JSON-RPC error, process and session live).
+        "debug.panic" => panic!("debug.panic drill: this tool always panics"),
+        "export.lut" => tool_export_lut(session, args),
         "effects.list" => ToolCallResult::json(&json!({"effects": builtin_registry().list(), "renderer": "CPU reference", "gpu_available": false})).unwrap_or_else(|e| ToolCallResult::error(e.to_string())),
         "project.create" => tool_project_create(session, args),
         "project.open" => tool_project_open(session, args),
         "project.save" => tool_project_save(session, args),
         "project.info" => tool_project_info(session, args),
+        "editor.describe" => tool_editor_describe(session, args),
         "op.apply" => tool_op_apply(session, args),
         "ops.propose" => tool_ops_propose(session, args),
         "history.list" => tool_history_list(session, args),
@@ -218,6 +354,29 @@ fn tool_project_create(session: &mut McpSession, args: serde_json::Value) -> Too
     if let Err(error) = project.validate() {
         return ToolCallResult::error(error);
     }
+    if session.is_hosted() {
+        // Route through the host so the running editor adopts the new
+        // document atomically (its own validation runs again there).
+        let json = match bonaparte_runtime::serialize_project(&project) {
+            Ok(json) => json,
+            Err(e) => return ToolCallResult::error(e),
+        };
+        return match session
+            .lock_host()
+            .and_then(|mut host| host.command("open_project", json!({"json": json})))
+        {
+            Ok(_) => {
+                session.sync_from_host();
+                ToolCallResult::json(&json!({
+                    "success": true,
+                    "comp_id": comp_id.0,
+                    "hosted": true,
+                }))
+                .unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
+            }
+            Err(e) => ToolCallResult::error(e),
+        };
+    }
     session.project = project;
     session.history = bonaparte_model::History::new();
     session.active_comp = Some(comp_id);
@@ -246,6 +405,25 @@ fn tool_project_open(session: &mut McpSession, args: serde_json::Value) -> ToolC
         Ok(a) => a,
         Err(e) => return ToolCallResult::error(format!("Invalid arguments for project.open: {e}")),
     };
+
+    // Hosted sessions route inline JSON straight into the live editor; only
+    // the path variant falls through to local file reading first.
+    if session.is_hosted() && parsed.path.is_none() {
+        if let Some(json_string) = parsed.json {
+            return match session
+                .lock_host()
+                .and_then(|mut host| host.command("open_project", json!({"json": json_string})))
+            {
+                Ok(_) => {
+                    session.sync_from_host();
+                    ToolCallResult::json(&json!({ "success": true, "hosted": true }))
+                        .unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
+                }
+                Err(e) => ToolCallResult::error(e),
+            };
+        }
+        return ToolCallResult::error("project.open requires either 'path' or 'json' argument");
+    }
 
     let content = if let Some(path_str) = parsed.path {
         match fs::read_to_string(&path_str) {
@@ -394,6 +572,56 @@ fn tool_project_info(session: &mut McpSession, _args: serde_json::Value) -> Tool
     ToolCallResult::json(&res).unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
 }
 
+#[derive(Deserialize)]
+struct ExportLutArgs {
+    layer_id: u64,
+    #[serde(default = "default_lut_size")]
+    size: u32,
+    #[serde(default)]
+    time_ticks: i64,
+}
+fn default_lut_size() -> u32 {
+    33
+}
+
+/// Bakes a layer's effect stack into an industry-standard .cube LUT.
+fn tool_export_lut(session: &mut McpSession, args: serde_json::Value) -> ToolCallResult {
+    let parsed: ExportLutArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return ToolCallResult::error(format!("Invalid arguments for export.lut: {e}")),
+    };
+    let Some(comp) = session.target_comp(None) else {
+        return ToolCallResult::error("No composition to bake from");
+    };
+    let Some(layer) = session
+        .project
+        .comps
+        .get(&comp)
+        .and_then(|c| c.layers.get(&LayerId(parsed.layer_id)))
+    else {
+        return ToolCallResult::error(format!("Layer {} not found", parsed.layer_id));
+    };
+    if layer.effects.is_empty() {
+        return ToolCallResult::error("The layer has no effects to bake into a LUT");
+    }
+    let cube = match bonaparte_effects::export_cube(
+        builtin_registry(),
+        &layer.effects,
+        parsed.size,
+        Time(parsed.time_ticks),
+    ) {
+        Ok(cube) => cube,
+        Err(e) => return ToolCallResult::error(e),
+    };
+    ToolCallResult::json(&json!({
+        "format": "cube",
+        "size": parsed.size,
+        "bytes": cube.len(),
+        "content": cube,
+    }))
+    .unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
+}
+
 fn tool_op_apply(session: &mut McpSession, args: serde_json::Value) -> ToolCallResult {
     // Support either {"op": {...}} or direct {...}
     let op_value = if let Some(sub_op) = args.get("op") {
@@ -408,6 +636,30 @@ fn tool_op_apply(session: &mut McpSession, args: serde_json::Value) -> ToolCallR
     };
 
     let description = op.describe();
+    // Hosted sessions route through the live editor: the op lands in the
+    // editor's native undo history, preview caches invalidate, and the UI
+    // reflects AI edits immediately.
+    if session.is_hosted() {
+        return match session
+            .lock_host()
+            .and_then(|mut host| host.command("apply", json!({"op": op})))
+        {
+            Ok(_) => {
+                session.sync_from_host();
+                let undo_depth = session
+                    .lock_host()
+                    .map(|host| host.history.undo_descriptions().len())
+                    .unwrap_or(0);
+                ToolCallResult::json(&json!({
+                    "success": true,
+                    "description": description,
+                    "undo_depth": undo_depth,
+                }))
+                .unwrap_or_else(|e| ToolCallResult::error(e.to_string()))
+            }
+            Err(e) => ToolCallResult::error(format!("Op validation failed: {e}")),
+        };
+    }
     match bonaparte_runtime::commit(
         &mut session.project,
         &mut session.history,
@@ -596,6 +848,8 @@ fn tool_comp_render(session: &mut McpSession, args: serde_json::Value) -> ToolCa
                 Err(error) => return ToolCallResult::error(error),
             },
             registry: builtin_registry().clone(),
+            bit_depth: 8,
+            output_space: Default::default(),
         };
         let start = Time::from_secs_f64(parsed.start_time.unwrap_or(0.0));
         let end = Time::from_secs_f64(parsed.end_time.unwrap_or(comp_duration_secs));

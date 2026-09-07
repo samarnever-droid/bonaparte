@@ -3,11 +3,19 @@
 use bonaparte_effects::ParamValue;
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct UniformLayout {
     size: usize,
     fields: Vec<(String, usize, naga::TypeInner)>,
 }
 impl UniformLayout {
+    /// True when the reflected Params struct declares a member with this name.
+    /// Used by the host to detect multi-pass contracts (e.g. the separable
+    /// blur pack's `direction_x`/`direction_y` pass direction).
+    pub fn has_field(&self, name: &str) -> bool {
+        self.fields.iter().any(|(field, _, _)| field == name)
+    }
+
     pub fn reflect(source: &str) -> Result<Self, String> {
         let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
         naga::valid::Validator::new(

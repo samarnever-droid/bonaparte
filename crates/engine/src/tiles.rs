@@ -171,7 +171,7 @@ impl TileGrid {
         comp: &Comp,
         layer: &Layer,
         time: Time,
-        frames: &dyn MediaFrames,
+        frames: &(dyn MediaFrames + Sync),
     ) -> Option<Rect> {
         if !layer.visible_at(time) {
             return None;
@@ -232,7 +232,7 @@ impl TileGrid {
         layer: &Layer,
         tile: Tile,
         time: Time,
-        frames: &dyn MediaFrames,
+        frames: &(dyn MediaFrames + Sync),
     ) -> bool {
         let tile_rect = self.tile_rect(tile);
         if let Some(layer_box) = self.layer_bounding_box(comp, layer, time, frames) {
@@ -248,7 +248,7 @@ impl TileGrid {
         comp: &'a Comp,
         tile: Tile,
         time: Time,
-        frames: &dyn MediaFrames,
+        frames: &(dyn MediaFrames + Sync),
     ) -> Vec<&'a Layer> {
         let mut layers = Vec::new();
         for &layer_id in &comp.layer_order {
@@ -272,7 +272,7 @@ pub fn render_tile(
     comp_id: CompId,
     tile: Tile,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
 ) -> Result<TileFrame, RenderError> {
     let comp = project
         .comp(comp_id)
@@ -341,7 +341,7 @@ pub fn render_viewport_tiles(
     vw: u32,
     vh: u32,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
 ) -> Result<Vec<TileFrame>, RenderError> {
     let comp = project
         .comp(comp_id)
@@ -374,7 +374,7 @@ pub fn render_viewport(
     vw: u32,
     vh: u32,
     time: Time,
-    frames: &dyn MediaFrames,
+    frames: &(dyn MediaFrames + Sync),
 ) -> Result<Frame, RenderError> {
     let comp = project
         .comp(comp_id)

@@ -8,11 +8,12 @@
     selectComp,
     addLayer,
     addEffect,
-    importImage,
+    importAnyFile,
     applyOp,
     newLayer,
   } from "../store.svelte";
   import { formatFps, timeToSecs } from "../model";
+  import { create3dScene } from "../three-d";
   import { PRESETS, applyPreset } from "../presets";
   let search = $state("");
   let showHistory = $state(false);
@@ -146,21 +147,24 @@
           ><span class="spacer"></span><small class="mono">{asset.embedded?.width ?? ""}</small>
         </div>
       {/each}
-      <button class="import-zone" onclick={() => void importImage()} disabled={!comp}>
+      <button class="import-zone" onclick={() => void importAnyFile()} disabled={!comp}>
         <span class="import-icon"><Icon name="upload" size={16} /></span>
         <span
-          ><strong>Bring your ideas in</strong><small>Drop an image, or <em>browse files</em></small
+          ><strong>Bring your ideas in</strong><small
+            >Drop an image, SVG, or 3D model, or <em>browse files</em></small
           ></span
         >
-        <span class="formats mono">PNG · JPG · WEBP</span>
+        <span class="formats mono">PNG · JPG · WEBP · SVG · OBJ</span>
       </button>
       <div class="create-section">
         <div class="section-title upper">Start with a layer</div>
         <div class="create-grid">
-          {#each [{ id: "text", name: "Text", icon: "type" }, { id: "rectangle", name: "Shape", icon: "square" }, { id: "circle", name: "Ellipse", icon: "circle" }, { id: "adjustment", name: "Adjustment", icon: "adjust" }] as item}
+          {#each [{ id: "text", name: "Text", icon: "type" }, { id: "rectangle", name: "Shape", icon: "square" }, { id: "circle", name: "Ellipse", icon: "circle" }, { id: "adjustment", name: "Adjustment", icon: "adjust" }, { id: "3d", name: "3D Scene", icon: "cube" }] as item}
             <button
               onclick={() =>
-                void addLayer(item.id as "text" | "rectangle" | "circle" | "adjustment")}
+                item.id === "3d"
+                  ? create3dScene()
+                  : void addLayer(item.id as "text" | "rectangle" | "circle" | "adjustment")}
               disabled={!comp}
               ><Icon name={item.icon} size={16} /><span>{item.name}</span><Icon
                 name="plus"

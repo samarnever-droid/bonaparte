@@ -35,7 +35,12 @@ import {
   type EffectValue,
   type ParamDef,
   type Track,
+  type Easing,
+  type Keyframe,
+  type Camera3D,
+  DEFAULT_CAMERA,
 } from "./model";
+import { cameraAt, effectiveDepth } from "./geometry";
 
 class EditorState {
   project = $state.raw(null as Project | null);
@@ -85,7 +90,7 @@ class EditorState {
   workspace = $state("Design" as "Design" | "Color" | "Animate" | "Audio");
   sidebar = $state("project" as "project" | "effects" | "motion" | "audio");
   inspector = $state("properties" as "properties" | "effects");
-  tool = $state("select" as "select" | "hand" | "rotate");
+  tool = $state("select" as "select" | "hand" | "rotate" | "orbit");
   showGuides = $state(false);
   bypassEffects = $state(false);
   graphProperty = $state(null as Property | null);
@@ -104,6 +109,7 @@ class EditorState {
     null as
       | { kind: "composition"; compId: number | null }
       | { kind: "export" | "shortcuts" | "new-project" }
+      | { kind: "rename-layer"; compId: number; layerId: number; name: string }
       | null,
   );
   exporting = $state(false);
@@ -253,6 +259,42 @@ export function accept(snapshot: Snapshot | SnapshotPatch, dirty = true) {
   }
   queueRecovery();
 }
+/** Resolves after every queued mutation has been applied to the local store.
+ * UI read-modify-write gestures (e.g. nudging an easing handle right after a
+ * preset click) await this so they read merged state, not stale copies. */
+export function opSettled(): Promise<void> {
+  return mutationQueue.then(() => undefined);
+}
+
+/** Pull the bridge state and merge it when somebody else moved the project
+ * (an AI session, a second tab). Runs through the same mutation queue as
+ * edits, so it can never race a local mutation. Skipped while a local edit
+ * is in flight, during playback, or while the tab is hidden. */
+async function reconcileExternalEdits(): Promise<boolean> {
+  return queued(async () => {
+    if (!editor.project) return;
+    if (editor.pending > 1 || editor.playing || pendingLive !== null) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    const snapshot = (await command<Snapshot | SnapshotPatch>("state", {})) as
+      | Snapshot
+      | SnapshotPatch;
+    if (snapshot.revision !== editor.revision) accept(snapshot);
+  }).then(() => true).catch(() => false);
+}
+let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+export function startReconciling() {
+  if (reconcileTimer !== null) return;
+  const tick = () => {
+    void reconcileExternalEdits().finally(() => {
+      reconcileTimer = setTimeout(tick, 1200);
+    });
+  };
+  reconcileTimer = setTimeout(tick, 1200);
+}
+export function stopReconciling() {
+  if (reconcileTimer !== null) clearTimeout(reconcileTimer);
+  reconcileTimer = null;
+}
 export async function queued(action: () => Promise<void>): Promise<boolean> {
   editor.pending++;
   let succeeded = false;
@@ -273,6 +315,7 @@ export async function queued(action: () => Promise<void>): Promise<boolean> {
 
 export async function init() {
   editor.loading = true;
+  startReconciling();
   editor.initError = "";
   try {
     try {
@@ -308,6 +351,10 @@ export async function init() {
       if (recovery) {
         try {
           state = await command<Snapshot>("open_project", { json: recovery });
+          setTimeout(
+            () => notify("Restored your unsaved work from the last session."),
+            600,
+          );
           notify("Your last session was recovered.");
         } catch {
           notify("The saved recovery could not be opened. Your original file is unchanged.", true);
@@ -353,27 +400,30 @@ export async function undoOp() {
   await flushLiveEdits();
   editor.liveEdit = null;
   pause();
-  return queued(async () =>
-    accept(
-      await command<Snapshot | SnapshotPatch>("undo", {
-        delta: !!editor.deltaProtocol,
-        baseRevision: editor.revision,
-      }),
-    ),
-  );
+  return queued(async () => {
+    const response = await command<Snapshot | SnapshotPatch>("undo", {
+      delta: !!editor.deltaProtocol,
+      baseRevision: editor.revision,
+    });
+    accept(response);
+    // The bridge names what actually reverted (drained undos stay silent).
+    const label = (response as { lastUndone?: string }).lastUndone;
+    if (label) notify(`Undid: ${label}`);
+  });
 }
 export async function redoOp() {
   await flushLiveEdits();
   editor.liveEdit = null;
   pause();
-  return queued(async () =>
-    accept(
-      await command<Snapshot | SnapshotPatch>("redo", {
-        delta: !!editor.deltaProtocol,
-        baseRevision: editor.revision,
-      }),
-    ),
-  );
+  return queued(async () => {
+    const response = await command<Snapshot | SnapshotPatch>("redo", {
+      delta: !!editor.deltaProtocol,
+      baseRevision: editor.revision,
+    });
+    accept(response);
+    const label = (response as { lastRedone?: string }).lastRedone;
+    if (label) notify(`Redid: ${label}`);
+  });
 }
 export function selectComp(id: number) {
   void flushLiveEdits();
@@ -1196,6 +1246,27 @@ export async function renderTo(canvas: HTMLCanvasElement) {
   }
 }
 
+/** One-click snapshot of the current frame as a PNG download. */
+export async function snapshotFrame() {
+  const comp = activeComp();
+  if (!comp) return;
+  await flushLiveEdits();
+  await mutationQueue;
+  pause();
+  try {
+    const data = await binary("export_png", {
+      compId: comp.id,
+      time: editor.currentTime,
+      bypassEffects: false,
+    });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    download(new Blob([data], { type: "image/png" }), `${filename()}-${stamp}.png`);
+    notify("Frame snapshot saved.");
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
 export function download(data: Blob, name: string) {
   const url = URL.createObjectURL(data),
     a = document.createElement("a");
@@ -1375,14 +1446,372 @@ export async function importImage(file?: File) {
     editor.imageImporting = false;
   }
 }
-export async function exportFile(format: "png" | "mp4" | "wav") {
+/** Vector import: SVG geometry becomes editable shape layers (one per
+ * element), scaled to fit the comp without upscaling. */
+export async function importSvg(file?: File) {
+  const comp = activeComp();
+  if (!comp) return;
+  if (!file) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".svg,image/svg+xml";
+    input.onchange = () => {
+      const selected = input.files?.[0];
+      if (selected) void importSvg(selected);
+    };
+    input.click();
+    return;
+  }
+  try {
+    if (file.size > 8 * 1024 * 1024) throw new Error("SVG files must be smaller than 8 MB.");
+    editor.imageImporting = true;
+    notify("Importing SVG… every element lands as an editable vector shape.");
+    const svg = await file.text();
+    await queued(async () =>
+      accept(
+        await command<Snapshot>("import_svg", {
+          name: file.name,
+          svg,
+          compId: comp.id,
+        }),
+      ),
+    );
+    editor.selected = (editor.project?.next_layer ?? 1) - 1;
+    notify("SVG imported as editable vector shapes. Recolor, keyframe, and extrude away.");
+  } catch (error) {
+    notify(String(error), true);
+  } finally {
+    editor.imageImporting = false;
+  }
+}
+/** 3D import: OBJ groups become depth-positioned wireframe layers so meshes
+ * render instantly in the 3D diorama and every group animates on its own. */
+export async function importObj(file?: File) {
+  const comp = activeComp();
+  if (!comp) return;
+  if (!file) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".obj,model/obj";
+    input.onchange = () => {
+      const selected = input.files?.[0];
+      if (selected) void importObj(selected);
+    };
+    input.click();
+    return;
+  }
+  try {
+    if (file.size > 32 * 1024 * 1024) throw new Error("OBJ files must be smaller than 32 MB.");
+    editor.imageImporting = true;
+    notify("Importing 3D model… groups become depth-sorted wireframes you can animate.");
+    const obj = await file.text();
+    await queued(async () =>
+      accept(
+        await command<Snapshot>("import_obj", {
+          name: file.name,
+          obj,
+          compId: comp.id,
+        }),
+      ),
+    );
+    editor.selected = (editor.project?.next_layer ?? 1) - 1;
+    notify("3D model imported. Nudge Z on any group for instant depth parallax.");
+  } catch (error) {
+    notify(String(error), true);
+  } finally {
+    editor.imageImporting = false;
+  }
+}
+/** Raster→vector: traces an embedded image layer into editable vector shape
+ * layers (posterized marching squares) and hides the original pixels. */
+export async function vectorizeImage(compId: number, layerId: number) {
+  try {
+    await queued(async () =>
+      accept(
+        await command<Snapshot>("vectorize_image", {
+          compId,
+          layerId,
+          maxColors: 8,
+        }),
+      ),
+    );
+    notify("Vectorized. Every color region is now an editable vector shape.");
+  } catch (error) {
+    notify(String(error), true);
+  }
+}
+/** One front door for drops and browse: routes a file to the right importer. */
+export async function importAnyFile(file?: File) {
+  if (!file) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,image/svg+xml,.svg,.obj,audio/*";
+    input.multiple = true;
+    input.onchange = () => {
+      for (const selected of Array.from(input.files ?? [])) void importAnyFile(selected);
+    };
+    input.click();
+    return;
+  }
+  if (/\.svg$/i.test(file.name) || file.type === "image/svg+xml") await importSvg(file);
+  else if (/\.obj$/i.test(file.name) || file.type === "model/obj") await importObj(file);
+  else if (file.type.startsWith("audio/") || /\.(wav|mp3|flac|ogg|oga|aif|aiff|m4a|aac)$/i.test(file.name)) {
+    const { importAudio } = await import("./audio/actions");
+    await importAudio(file);
+  } else if (file.type.startsWith("image/")) await importImage(file);
+  else notify("Import an image, SVG, OBJ model, audio file, or .bonaparte project.", true);
+}
+/** Keyframe clipboard: copies a property's whole key list so animations can
+ * be reused across layers and properties (type-compatible only). */
+export interface CopiedKeys {
+  property: Property;
+  kind: "Scalar" | "Vec2";
+  keys: { time: number; value: PropValue; easing: Easing }[];
+}
+export const keyframeClipboard: { current: CopiedKeys | null } = $state({ current: null });
+
+/** Right-click context menu. One instance lives in App; surfaces call
+ * openContextMenu with items and the menu renders where the pointer landed. */
+export interface ContextMenuItem {
+  label?: string;
+  icon?: string;
+  hint?: string;
+  danger?: boolean;
+  disabled?: boolean;
+  separator?: boolean;
+  run?: () => void;
+}
+export const contextMenu: { current: { x: number; y: number; items: ContextMenuItem[] } | null } =
+  $state({ current: null });
+export function openContextMenu(event: MouseEvent, items: ContextMenuItem[]) {
+  if (!items.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  contextMenu.current = { x: event.clientX, y: event.clientY, items };
+}
+export function closeContextMenu() {
+  contextMenu.current = null;
+}
+
+/** Actions for right-clicking a layer (canvas or timeline). */
+export function layerContextItems(layerId: number): ContextMenuItem[] {
+  const comp = activeComp();
+  const layer = comp?.layers[String(layerId)];
+  if (!comp || !layer) return [];
+  const index = comp.layer_order.indexOf(layerId);
+  return [
+    {
+      label: "Duplicate",
+      icon: "copy",
+      disabled: layer.locked,
+      run: () => {
+        editor.selected = layerId;
+        void duplicateSelected();
+      },
+    },
+    {
+      label: "Rename…",
+      icon: "type",
+      disabled: layer.locked,
+      run: () => {
+        editor.dialog = {
+          kind: "rename-layer",
+          compId: comp.id,
+          layerId,
+          name: layer.name,
+        };
+      },
+    },
+    {
+      label: layer.locked ? "Unlock" : "Lock",
+      icon: layer.locked ? "unlock" : "lock",
+      run: () => void applyOp({ type: "setLayerLocked", comp: comp.id, layer: layerId, locked: !layer.locked }),
+    },
+    {
+      label: layer.visible ? "Hide" : "Show",
+      icon: layer.visible ? "eye-off" : "eye",
+      run: () => void toggleLayerVisibility(comp.id, layerId),
+    },
+    { separator: true },
+    ...("Footage" in layer.kind
+      ? [
+          {
+            label: "Vectorize to shapes",
+            icon: "sparkles",
+            run: () => void vectorizeImage(comp.id, layerId),
+          },
+        ]
+      : []),
+    { separator: true },
+    {
+      label: "Bring forward",
+      icon: "up",
+      disabled: index < 0 || index >= comp.layer_order.length - 1,
+      run: () => {
+        editor.selected = layerId;
+        void applyOp({ type: "reorderLayer", comp: comp.id, layer: layerId, newIndex: index + 1 });
+      },
+    },
+    {
+      label: "Send backward",
+      icon: "down",
+      disabled: index <= 0,
+      run: () => {
+        editor.selected = layerId;
+        void applyOp({ type: "reorderLayer", comp: comp.id, layer: layerId, newIndex: index - 1 });
+      },
+    },
+    { separator: true },
+    {
+      label: "Delete",
+      icon: "trash",
+      danger: true,
+      disabled: layer.locked,
+      run: () => {
+        editor.selected = layerId;
+        void deleteSelected();
+      },
+    },
+  ];
+}
+
+/** The comp's effective camera (turntable applied) — for HUD readouts. */
+export function compCameraAt(time = editor.currentTime): Camera3D {
+  const comp = activeComp();
+  if (!comp) return { ...DEFAULT_CAMERA };
+  return cameraAt(comp, time);
+}
+
+/** Live camera drag state (viewport orbit); committed as setCamera ops. */
+export async function moveCamera(
+  position: [number, number],
+  z: number,
+  fov: number,
+  group?: string,
+  focus?: number,
+  dof?: number,
+) {
+  const comp = activeComp();
+  if (!comp) return;
+  await applyOp(
+    {
+      type: "setCamera",
+      comp: comp.id,
+      position,
+      z,
+      fov,
+      focus: focus ?? comp.camera?.focus ?? 0,
+      dof: dof ?? comp.camera?.dof ?? 0,
+    },
+    group,
+  );
+}
+
+/** Point the focal plane at the selected layer so it renders sharp. */
+export async function focusCameraOnSelection() {
+  const comp = activeComp(),
+    layer = selectedLayer();
+  if (!comp || !layer) return;
+  const cam = cameraAt(comp, editor.currentTime);
+  if (cam.fov <= 0) {
+    // No camera yet: enable one, focused on the layer's plane.
+    const depth = effectiveDepth(comp, layer, editor.currentTime);
+    await applyOp({
+      type: "setCamera",
+      comp: comp.id,
+      position: [0, 0],
+      z: 0,
+      fov: 500,
+      focus: Math.round(depth * 100) / 100,
+      dof: 0.7,
+    });
+    notify(`3D camera on, focused on ${layer.name}.`);
+    return;
+  }
+  // Parent-chain compounded depth, not raw Z, so children focus correctly.
+  const depth = effectiveDepth(comp, layer, editor.currentTime);
+  await applyOp({
+    type: "setCamera",
+    comp: comp.id,
+    position: [...cam.position] as [number, number],
+    z: cam.z,
+    fov: cam.fov,
+    focus: Math.round(depth * 100) / 100,
+    dof: Math.max(comp.camera?.dof ?? 0, 0.7),
+  });
+  notify(`Cinematic focus locked on ${layer.name}.`);
+}
+
+export async function setTurntableEnabled(enabled: boolean) {
+  const comp = activeComp();
+  if (!comp) return;
+  await applyOp({
+    type: "setTurntable",
+    comp: comp.id,
+    enabled,
+    period: comp.turntable?.period ?? 12,
+  });
+}
+
+export function valueKind(value: PropValue): "Scalar" | "Vec2" {
+  return "Scalar" in value ? "Scalar" : "Vec2";
+}
+
+/** Copy a single keyframe (timeline diamond context menu) to the clipboard. */
+export function copyKeyframe(row: { prop?: Property }, key: Keyframe) {
+  keyframeClipboard.current = {
+    property: row.prop ?? "Position",
+    kind: valueKind(key.value),
+    keys: [{ time: key.time, value: key.value, easing: key.easing }],
+  };
+}
+
+/** Delete a timeline keyframe, whether it animates a transform property or an
+ * effect parameter (effect keys live inside the effect's own tracks). */
+export async function deleteKeyframe(
+  layerId: number,
+  row: { prop?: Property; effectId?: string; paramId?: string },
+  keyTime: number,
+) {
+  const comp = activeComp();
+  const layer = comp?.layers[String(layerId)];
+  if (!comp || !layer || layer.locked) return;
+  if (row.prop) {
+    await applyOp({
+      type: "removeKeyframe",
+      comp: comp.id,
+      layer: layerId,
+      property: row.prop,
+      time: keyTime,
+    });
+    return;
+  }
+  await applyOp((project) => {
+    const target = project.comps[String(comp.id)]?.layers[String(layerId)];
+    if (!target) return null;
+    const effects = clone(target.effects);
+    const track = effects.find((e) => e.id === row.effectId)?.tracks[row.paramId!];
+    if (!track) return null;
+    track.keys = track.keys.filter((k) => k.time !== keyTime);
+    return { type: "setLayerEffects", comp: comp.id, layer: layerId, effects };
+  });
+}
+
+export async function exportFile(
+  format: "png" | "mp4" | "wav",
+  options: { bitDepth?: number; outputSpace?: string } = {},
+) {
   await flushLiveEdits();
   await mutationQueue;
   pause();
   const comp = activeComp();
   if (!comp) return;
   editor.exporting = true;
-  const args = { compId: comp.id, time: editor.currentTime, bypassEffects: false };
+  const args: Record<string, unknown> = { compId: comp.id, time: editor.currentTime, bypassEffects: false };
+  if (format === "png") {
+    if (options.bitDepth) args.bitDepth = options.bitDepth;
+    if (options.outputSpace) args.outputSpace = options.outputSpace;
+  }
   try {
     if (desktop) {
       const { save } = await import("@tauri-apps/plugin-dialog");
