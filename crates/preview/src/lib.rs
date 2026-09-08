@@ -4,10 +4,7 @@
 use bonaparte_mcp::{handle_request_safe, McpSession};
 use bonaparte_runtime::{EditorSession, PreviewRequest, RenderRequest, MAX_PROJECT_BYTES};
 use serde_json::{json, Value};
-use std::{
-    io::Read,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub type Reply = (u16, &'static str, Vec<u8>);
 
