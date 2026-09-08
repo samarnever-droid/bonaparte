@@ -128,6 +128,7 @@ class EditorState {
       | { kind: "composition"; compId: number | null }
       | { kind: "export" | "shortcuts" | "new-project" }
       | { kind: "rename-layer"; compId: number; layerId: number; name: string }
+      | { kind: "lyrics"; assetId: number; hasGrid: boolean }
       | null,
   );
   exporting = $state(false);

@@ -14,6 +14,7 @@
     hasAudio,
   } from "../store.svelte";
   import ExportRunner from "./ExportRunner.svelte";
+  import { generateKinetic } from "../kinetic";
 
   /** "—" under a second, otherwise "12s" / "1m 03s". */
   function etaLabel(seconds: number): string {
@@ -34,6 +35,13 @@
   let bitDepth = $state<8 | 16>(8);
   let outputSpace = $state<"srgb" | "display-p3" | "rec2020" | "linear">("srgb");
   let submitting = $state(false);
+  let lyricText = $state(
+    "We light up the sky\nHold the beat down\nNever coming down",
+  );
+  let lyricStyle = $state<"pop" | "rise" | "wave">("pop");
+  let lyricSync = $state(true);
+  let lyricFoley = $state(true);
+  let lyricBusy = $state(false);
   const spaces = [
     { id: "srgb", label: "sRGB", note: "standard screens" },
     { id: "display-p3", label: "Display P3", note: "wide gamut, modern displays" },
@@ -149,7 +157,9 @@
               ? "download"
               : editor.dialog?.kind === "shortcuts"
                 ? "bolt"
-                : "plus"}
+                : editor.dialog?.kind === "lyrics"
+                  ? "bolt"
+                  : "plus"}
           size={20}
         />
       </div>
@@ -457,6 +467,62 @@
           >
         </div>
       </form>
+    {:else if editor.dialog?.kind === "lyrics"}
+      <h2 id="dialog-title">Type the words. The beat does the rest. ⚡</h2>
+      <p class="dialog-subtitle">
+        Kinetic lays every word on the beat grid — motion, timing, even the
+        impacts, synthesized.
+      </p>
+      <label class="form-label" for="lyric-lines">Lyric lines</label>
+      <textarea
+        id="lyric-lines"
+        class="field"
+        rows="5"
+        aria-label="Lyric lines"
+        placeholder="One line per row"
+        bind:value={lyricText}
+      ></textarea>
+      <label class="form-label" for="lyric-style">Motion style</label>
+      <select
+        id="lyric-style"
+        class="field"
+        aria-label="Motion style"
+        bind:value={lyricStyle}
+      >
+        <option value="pop">Pop — words punch in on the beat</option>
+        <option value="rise">Rise — words glide up into place</option>
+        <option value="wave">Wave — words ride the line</option>
+      </select>
+      <label class="form-label checkbox-row">
+        <input type="checkbox" bind:checked={lyricSync} />
+        <span>Sync phrases to the beat grid</span>
+      </label>
+      <label class="form-label checkbox-row">
+        <input type="checkbox" bind:checked={lyricFoley} />
+        <span>Auto sound design — synthesized impacts on downbeats</span>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" onclick={close}>Cancel</button>
+        <button
+          type="button"
+          class="btn primary"
+          disabled={lyricBusy}
+          onclick={() => {
+            if (editor.dialog?.kind !== "lyrics") return;
+            lyricBusy = true;
+            void generateKinetic({
+              assetId: editor.dialog.assetId,
+              lines: lyricText.split("\n"),
+              style: lyricStyle,
+              sync: lyricSync,
+              foley: lyricFoley,
+            }).then(() => {
+              lyricBusy = false;
+              close();
+            });
+          }}>Generate ⚡<Icon name="bolt" size={13} /></button
+        >
+      </div>
     {:else if editor.dialog?.kind === "shortcuts"}
       <h2 id="dialog-title">Keep your flow.</h2>
       <p class="dialog-subtitle">A few shortcuts between an idea and a frame.</p>

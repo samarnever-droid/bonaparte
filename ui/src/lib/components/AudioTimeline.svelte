@@ -235,6 +235,17 @@
         icon: "star",
         run: () => void cutToBeat("pulse"),
       },
+      {
+        label: "Lyric video ⚡",
+        icon: "bolt",
+        run: () =>
+          (editor.dialog = {
+            kind: "lyrics",
+            assetId: clip.media,
+            hasGrid:
+              !!editor.project?.media[String(clip.media)]?.audio?.beat_grid?.length,
+          }),
+      },
       { separator: true },
       {
         label: clip.muted ? "Unmute clip" : "Mute clip",

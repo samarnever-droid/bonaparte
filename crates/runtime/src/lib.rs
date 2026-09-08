@@ -169,6 +169,23 @@ fn grid_is_strong(_grid: &[f64], i: usize) -> bool {
     i % 4 == 0
 }
 
+/// Fresh audio-track id for an arrangement (Kinetic's sound-design lane).
+fn bonaparte_runtime_audio_fresh_track(
+    arrangement: &mut bonaparte_model::AudioArrangement,
+) -> String {
+    let mut n = arrangement.tracks.len() + 1;
+    let mut id = format!("track-{n}");
+    while arrangement.tracks.iter().any(|t| t.id == id) {
+        n += 1;
+        id = format!("track-{n}");
+    }
+    arrangement.tracks.push(bonaparte_model::AudioTrack::new(
+        id.clone(),
+        "Sound design ⚡".to_owned(),
+    ));
+    id
+}
+
 const APPLY_HINT: &str = "hint: properties are Position|Scale|Rotation|Opacity|AnchorPoint|Z; values are {\"Scalar\": number} or {\"Vec2\": [x, y]}; comp/layer ids must exist in /api/state; time is ticks (120000 = 1s); POST /api/describe returns the full op catalog with examples";
 pub fn commit_grouped(
     project: &mut Project,
@@ -562,13 +579,17 @@ impl EditorSession {
                 let mut audio = comp.audio.clone();
                 audio.markers.retain(|m| !m.id.starts_with("beat-"));
                 for (i, ms) in beats_ms.iter().enumerate() {
-                    let ticks = (ms / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
-                    if ticks >= comp.duration.0 {
+                    // The audio ruler measures FRAMES at the engine rate.
+                    let frame = (ms / 1000.0 * bonaparte_model::AUDIO_RATE as f64).round() as i64;
+                    if frame
+                        >= (comp.duration.0 * bonaparte_model::AUDIO_RATE as i64)
+                            / TICKS_PER_SEC as i64
+                    {
                         break;
                     }
                     audio.markers.push(AudioMarker {
                         id: format!("beat-{ms}"),
-                        frame: ticks,
+                        frame,
                         name: if strong[i] {
                             "Downbeat".into()
                         } else {
@@ -744,6 +765,397 @@ impl EditorSession {
                     if let Some(o) = r.as_object_mut() {
                         o.insert("style".into(), json!(if pulse { "pulse" } else { "remix" }));
                         o.insert("segments".into(), json!(segments));
+                    }
+                    r
+                })
+            }
+            "kinetic_lyrics" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Kinetic {
+                    comp_id: u64,
+                    #[serde(default)]
+                    audio_asset: Option<u64>,
+                    lines: Vec<String>,
+                    #[serde(default = "default_kinetic_style")]
+                    style: String,
+                    #[serde(default)]
+                    size: Option<f32>,
+                }
+                fn default_kinetic_style() -> String {
+                    "pop".into()
+                }
+                let k: Kinetic = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let lines: Vec<String> = k
+                    .lines
+                    .iter()
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                if lines.is_empty() || lines.len() > 64 {
+                    return Err("Kinetic lyrics need 1–64 non-empty lines".into());
+                }
+                let total_words: usize = lines.iter().map(|l| l.split_whitespace().count()).sum();
+                if total_words == 0 {
+                    return Err("Kinetic lyrics need at least one word".into());
+                }
+                if total_words > 180 {
+                    return Err(
+                        "Kinetic lyrics cap at 180 words — split the song into sections".into(),
+                    );
+                }
+                if !matches!(k.style.as_str(), "pop" | "rise" | "wave") {
+                    return Err("Kinetic styles are pop, rise or wave".into());
+                }
+                let comp_id = CompId(k.comp_id);
+                let comp = self.project.comp(comp_id).ok_or("Composition not found")?;
+                let comp_ms = comp.duration.0 as f64 / TICKS_PER_SEC as f64 * 1000.0;
+                // Phrase spans: quantize to the beat grid when one exists,
+                // otherwise split the comp evenly.
+                let grid = k
+                    .audio_asset
+                    .and_then(|id| self.project.media.get(&MediaId(id)))
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.beat_grid.clone());
+                let (spans, beat_ms): (Vec<(f64, f64)>, f64) = match &grid {
+                    Some(g) => {
+                        // Only beats inside the comp drive the layout; a grid
+                        // can run past the comp (audio longer than the comp).
+                        let visible: Vec<f64> =
+                            g.iter().copied().take_while(|b| *b < comp_ms).collect();
+                        if visible.len() >= lines.len() + 1 {
+                            let period = (visible[visible.len() - 1] - visible[0])
+                                / (visible.len() - 1) as f64;
+                            let per = (visible.len() - 1) / lines.len();
+                            let spans = (0..lines.len())
+                                .map(|i| {
+                                    let a = visible[i * per];
+                                    let b = if i + 1 < lines.len() {
+                                        visible[(i + 1) * per]
+                                    } else {
+                                        visible[(i + 1) * per - 1] + period
+                                    };
+                                    (a, b.min(comp_ms))
+                                })
+                                .collect::<Vec<_>>();
+                            (spans, period)
+                        } else {
+                            let span = comp_ms / lines.len() as f64;
+                            let spans = (0..lines.len())
+                                .map(|i| (i as f64 * span, (i + 1) as f64 * span))
+                                .collect();
+                            (spans, 500.0)
+                        }
+                    }
+                    _ => {
+                        let span = comp_ms / lines.len() as f64;
+                        let spans = (0..lines.len())
+                            .map(|i| (i as f64 * span, (i + 1) as f64 * span))
+                            .collect();
+                        (spans, 500.0)
+                    }
+                };
+                let size = k
+                    .size
+                    .unwrap_or((comp.height as f32 * 0.10).clamp(18.0, 140.0));
+                let bold = true;
+                let space_w = bonaparte_engine::typography::measure_text(" ", size, bold, 0.0)[0];
+                let y = comp.height as f32 * 0.80;
+                let ms_tick = TICKS_PER_SEC as f64 / 1000.0;
+                let to_t = |ms: f64| (ms * ms_tick).round() as i64;
+                // Downbeat test: the persisted grid is rotated so index 0 is a
+                // downbeat — position does the meter.
+                let is_downbeat = |t: f64| -> bool {
+                    grid.as_ref().is_some_and(|g| {
+                        g.iter()
+                            .enumerate()
+                            .any(|(i, b)| i % 4 == 0 && (b - t).abs() <= 60.0)
+                    })
+                };
+                let mut ops: Vec<Op> = Vec::new();
+                let base_layer = self.project.next_layer;
+                let mut made_layers = 0u64;
+                let mut made_words = 0u64;
+                for (li, line) in lines.iter().enumerate() {
+                    let (start_ms, end_ms) = spans[li];
+                    if end_ms - start_ms < 80.0 {
+                        continue;
+                    }
+                    let words: Vec<&str> = line.split_whitespace().collect();
+                    let widths: Vec<f32> = words
+                        .iter()
+                        .map(|w| bonaparte_engine::typography::measure_text(w, size, bold, 0.0)[0])
+                        .collect();
+                    let total_w: f32 = widths.iter().sum::<f32>()
+                        + space_w * (words.len().saturating_sub(1)) as f32;
+                    let stagger =
+                        (((end_ms - start_ms) * 0.65) / words.len() as f64).min(beat_ms.min(420.0));
+                    let mut x = comp.width as f32 / 2.0 - total_w / 2.0;
+                    for (wi, word) in words.iter().enumerate() {
+                        let cx = x + widths[wi] / 2.0;
+                        x += widths[wi] + space_w;
+                        let w_start = start_ms + wi as f64 * stagger;
+                        let layer_id = LayerId(base_layer.0 + made_layers);
+                        let mut layer = Layer::new(
+                            format!("Lyric: {word}"),
+                            LayerKind::Text {
+                                text: (*word).to_owned(),
+                                size,
+                                style: bonaparte_model::TextStyle {
+                                    color: [1.0; 4],
+                                    bold,
+                                    tracking: 0.0,
+                                },
+                            },
+                            Time(to_t(w_start)),
+                            Time(to_t(end_ms - w_start).max(1)),
+                        );
+                        layer.transform.position = [cx, y];
+                        ops.push(Op::AddLayer {
+                            comp: comp_id,
+                            layer,
+                        });
+                        made_layers += 1;
+                        made_words += 1;
+                        let peak = if is_downbeat(w_start) { 120.0 } else { 112.0 };
+                        let mut keys = |property: Property, keys: Vec<(f64, PropValue, Easing)>| {
+                            for (t, value, easing) in keys {
+                                ops.push(Op::AddKeyframe {
+                                    comp: comp_id,
+                                    layer: layer_id,
+                                    property,
+                                    key: Keyframe {
+                                        time: Time(to_t(t)),
+                                        value,
+                                        easing,
+                                    },
+                                });
+                            }
+                        };
+                        let snap = Easing::Bezier {
+                            p1: [0.2, 0.8],
+                            p2: [0.3, 1.0],
+                        };
+                        match k.style.as_str() {
+                            "rise" => {
+                                keys(
+                                    Property::Position,
+                                    vec![
+                                        (w_start, PropValue::Vec2([cx, y + 26.0]), snap),
+                                        (w_start + 110.0, PropValue::Vec2([cx, y]), Easing::Linear),
+                                    ],
+                                );
+                                keys(
+                                    Property::Opacity,
+                                    vec![
+                                        (w_start, PropValue::Scalar(0.0), Easing::Linear),
+                                        (w_start + 80.0, PropValue::Scalar(1.0), Easing::Linear),
+                                    ],
+                                );
+                            }
+                            "wave" => {
+                                keys(
+                                    Property::Opacity,
+                                    vec![
+                                        (w_start, PropValue::Scalar(0.0), Easing::Linear),
+                                        (w_start + 60.0, PropValue::Scalar(1.0), Easing::Linear),
+                                    ],
+                                );
+                                let span = (end_ms - start_ms).max(400.0);
+                                let bob = [
+                                    (0.0, 0.0f32),
+                                    (0.25, -7.0),
+                                    (0.5, 7.0),
+                                    (0.75, -7.0),
+                                    (1.0, 0.0),
+                                ];
+                                keys(
+                                    Property::Position,
+                                    bob.iter()
+                                        .map(|(f, dy)| {
+                                            (
+                                                start_ms + f * span,
+                                                PropValue::Vec2([cx, y + dy]),
+                                                Easing::Linear,
+                                            )
+                                        })
+                                        .collect(),
+                                );
+                            }
+                            _ => {
+                                // "pop": punch in from tiny, overshoot to the
+                                // peak (harder on downbeats), settle at 100.
+                                keys(
+                                    Property::Scale,
+                                    vec![
+                                        (w_start, PropValue::Vec2([8.0, 8.0]), snap),
+                                        (w_start + 70.0, PropValue::Vec2([peak, peak]), snap),
+                                        (
+                                            w_start + 160.0,
+                                            PropValue::Vec2([100.0, 100.0]),
+                                            Easing::Linear,
+                                        ),
+                                    ],
+                                );
+                                keys(
+                                    Property::Opacity,
+                                    vec![
+                                        (w_start, PropValue::Scalar(0.0), Easing::Linear),
+                                        (w_start + 60.0, PropValue::Scalar(1.0), Easing::Linear),
+                                    ],
+                                );
+                            }
+                        }
+                    }
+                }
+                if made_words == 0 {
+                    return Err("Lines were too short to place any words".into());
+                }
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::Batch {
+                        label: format!("Kinetic lyrics ({made_words} words)"),
+                        ops,
+                    },
+                )?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("lines".into(), json!(lines.len()));
+                        o.insert("words".into(), json!(made_words));
+                        o.insert("style".into(), json!(k.style));
+                    }
+                    r
+                })
+            }
+            "sound_design" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Design {
+                    comp_id: u64,
+                    audio_asset: u64,
+                    #[serde(default = "default_flavor")]
+                    flavor: String,
+                    #[serde(default = "default_true")]
+                    on_downbeats: bool,
+                }
+                fn default_flavor() -> String {
+                    "impact".into()
+                }
+                fn default_true() -> bool {
+                    true
+                }
+                let d: Design = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let grid = self
+                    .project
+                    .media
+                    .get(&MediaId(d.audio_asset))
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.beat_grid.clone())
+                    .ok_or("No beat grid yet — run Detect beats first")?;
+                let comp_id = CompId(d.comp_id);
+                let comp = self.project.comp(comp_id).ok_or("Composition not found")?;
+                let comp_end_tick = comp.duration.0;
+                let ms_tick = TICKS_PER_SEC as f64 / 1000.0;
+                // Events: downbeats by default (grid index 0 is a downbeat).
+                let comp_frames =
+                    comp_end_tick * bonaparte_model::AUDIO_RATE as i64 / TICKS_PER_SEC as i64;
+                let events: Vec<i64> = grid
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !d.on_downbeats || i % 4 == 0)
+                    .map(|(_, ms)| {
+                        (*ms / 1000.0 * bonaparte_model::AUDIO_RATE as f64).round() as i64
+                    })
+                    .filter(|t| *t >= 0 && *t < comp_frames)
+                    .collect();
+                if events.is_empty() {
+                    return Err("No beat events fall inside this composition".into());
+                }
+                let rate = bonaparte_model::AUDIO_RATE;
+                let (name, pcm) = match d.flavor.as_str() {
+                    "whoosh" => ("Whoosh ⚡ (auto)", bonaparte_audio::fx::whoosh(rate)),
+                    "riser" => ("Riser ⚡ (auto)", bonaparte_audio::fx::riser(rate)),
+                    _ => ("Impact ⚡ (auto)", bonaparte_audio::fx::impact(rate)),
+                };
+                // Synthesized mono 16-bit WAV → the normal decode pipeline.
+                let data_len = pcm.len() * 2;
+                let mut wav = Vec::with_capacity(44 + data_len);
+                wav.extend_from_slice(b"RIFF");
+                wav.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+                wav.extend_from_slice(b"WAVEfmt ");
+                wav.extend_from_slice(&16u32.to_le_bytes());
+                wav.extend_from_slice(&1u16.to_le_bytes());
+                wav.extend_from_slice(&1u16.to_le_bytes());
+                wav.extend_from_slice(&rate.to_le_bytes());
+                wav.extend_from_slice(&(rate * 2).to_le_bytes());
+                wav.extend_from_slice(&2u16.to_le_bytes());
+                wav.extend_from_slice(&16u16.to_le_bytes());
+                wav.extend_from_slice(b"data");
+                wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+                for s in &pcm {
+                    let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                    wav.extend_from_slice(&v.to_le_bytes());
+                }
+                let (embedded, decoded) = bonaparte_media::audio::decode(&wav)?;
+                let duration =
+                    Time((embedded.frames as u128 * TICKS_PER_SEC as u128 / rate as u128) as i64);
+                let media = self.project.next_media;
+                let mut arrangement = comp.audio.clone();
+                let track_id = bonaparte_runtime_audio_fresh_track(&mut arrangement);
+                for t in &events {
+                    let available = comp_frames - t;
+                    let mut clip = AudioClip::new(
+                        format!("sdfx-{t}"),
+                        name.to_owned(),
+                        media,
+                        (embedded.frames.min(available.max(0) as u64)).max(1),
+                    );
+                    clip.start_frame = *t;
+                    clip.gain_db = -2.0;
+                    arrangement
+                        .tracks
+                        .iter_mut()
+                        .find(|tr| tr.id == track_id)
+                        .expect("sound design track")
+                        .clips
+                        .push(clip);
+                }
+                let asset = MediaAsset {
+                    id: MediaId(0),
+                    name: name.to_owned(),
+                    path: None,
+                    kind: MediaKind::Audio { duration },
+                    embedded: None,
+                    audio: Some(embedded),
+                    slot: None,
+                    alias: None,
+                    perception: None,
+                    video: None,
+                };
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::Batch {
+                        label: format!("Sound design: {name}"),
+                        ops: vec![
+                            Op::AddMedia { asset },
+                            Op::SetCompAudio {
+                                comp: comp_id,
+                                audio: arrangement,
+                            },
+                        ],
+                    },
+                )?;
+                self.audio.sources.insert(media, decoded);
+                let count = events.len();
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("events".into(), json!(count));
+                        o.insert("mediaId".into(), json!(media.0));
+                        o.insert("flavor".into(), json!(d.flavor));
                     }
                     r
                 })

@@ -288,7 +288,7 @@ fn shift_overflow_and_oversized_batch_leave_document_and_redo_intact() {
             &mut project,
             Op::Batch {
                 label: "Too large".into(),
-                ops: (0..257)
+                ops: (0..2049)
                     .map(|_| Op::RenameProject {
                         name: "Partial edit".into()
                     })

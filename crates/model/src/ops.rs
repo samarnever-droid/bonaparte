@@ -259,9 +259,9 @@ impl Op {
     pub fn apply(self, project: &mut Project) -> Result<(), ModelError> {
         match self {
             Op::Batch { ops, .. } => {
-                if ops.len() > 256 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 2048 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 256 operations and cannot be nested".into(),
+                        "Transactions allow at most 2048 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();
@@ -674,9 +674,9 @@ impl Op {
     pub fn invert(&self, project: &Project) -> Result<Op, ModelError> {
         match self {
             Op::Batch { label, ops } => {
-                if ops.len() > 256 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 2048 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 256 operations and cannot be nested".into(),
+                        "Transactions allow at most 2048 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();

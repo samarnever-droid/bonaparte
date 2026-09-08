@@ -3,6 +3,7 @@
 //! envelope/resampler state. Playback and export call this exact implementation.
 pub mod beats;
 mod dsp;
+pub mod fx;
 mod graph;
 use bonaparte_model::*;
 pub use dsp::eq_response;
