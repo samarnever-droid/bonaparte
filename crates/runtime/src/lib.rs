@@ -18,6 +18,7 @@ pub mod interaction;
 pub mod kaya;
 mod patch;
 pub mod preview;
+pub mod vault;
 pub use audio::{decode_project_audio, AudioChunkRequest, DecodedAudios};
 pub use preview::{PreviewJob, PreviewRenderer, PreviewRequest};
 
@@ -1398,7 +1399,7 @@ impl EditorSession {
                 }
                 let n: Narrate = serde_json::from_value(args).map_err(|e| e.to_string())?;
                 let narration = kaya::narrate(&n.text, &n.provider, &n.api_key, &n.voice)?;
-                let (embedded, decoded) = bonaparte_media::audio::decode(&narration.audio)?;
+                let (embedded, _decoded) = bonaparte_media::audio::decode(&narration.audio)?;
                 let start_frame =
                     (n.start_secs * bonaparte_model::AUDIO_RATE as f64).round() as i64;
                 let prepared = audio::prepare_import(json!({
@@ -1439,6 +1440,47 @@ impl EditorSession {
                     }
                     r
                 })
+            }
+            "vault_list" => {
+                let listing = vault::list()?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        if let Value::Object(vault) = listing {
+                            for (k, v) in vault {
+                                o.insert(k, v);
+                            }
+                        }
+                    }
+                    r
+                })
+            }
+            "vault_save" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct VaultSave {
+                    folder: String,
+                    name: String,
+                    data_base64: String,
+                }
+                let v: VaultSave = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let written = vault::save(&v.folder, &v.name, &v.data_base64)?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("saved".into(), json!(written));
+                        o.insert("folder".into(), json!(v.folder));
+                    }
+                    r
+                })
+            }
+            "vault_read" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct VaultRead {
+                    folder: String,
+                    name: String,
+                }
+                let v: VaultRead = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                vault::read(&v.folder, &v.name)
             }
             "save_project" => {
                 if args["compact"].as_bool() == Some(true) {
@@ -1752,6 +1794,115 @@ impl EditorSession {
                 candidate.validate()?;
                 commit(&mut self.project, &mut self.history, &self.registry, op)?;
                 self.changed()
+            }
+            "import_lottie" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct ImportLottie {
+                    name: String,
+                    json: String,
+                    comp_id: CompId,
+                }
+                let import: ImportLottie =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let comp = self
+                    .project
+                    .comp(import.comp_id)
+                    .ok_or("Composition not found")?;
+                let duration = comp.duration;
+                let comp_w = comp.width as f64;
+                let comp_h = comp.height as f64;
+                let doc = bonaparte_engine::import_lottie::lottie_doc(&import.json)?;
+                if doc.layers.is_empty() {
+                    return Err(
+                        "No convertible layers in this Lottie (precomps/images/text are skipped)"
+                            .into(),
+                    );
+                }
+                // Fit inside the comp, never upscale (same rule as SVG).
+                let scale = (comp_w / doc.width.max(1.0))
+                    .min(comp_h / doc.height.max(1.0))
+                    .min(1.0);
+                // Sub-comp sized to the Lottie, capped like the SVG path.
+                const CHILD_CAP: f64 = 4000.0;
+                let inner = (CHILD_CAP / doc.width.max(1.0))
+                    .min(CHILD_CAP / doc.height.max(1.0))
+                    .min(1.0);
+                let fps = FrameRate {
+                    num: (doc.fps.round() as u32).max(1),
+                    den: 1,
+                };
+                // The sub-comp keeps the Lottie's OWN timeline; the parent
+                // group simply shows whatever fits inside its duration.
+                let child_duration = Time(
+                    (((doc.out_frame - doc.in_frame) / doc.fps) * TICKS_PER_SEC as f64)
+                        .round()
+                        .max(1.0) as i64,
+                );
+                let child_id = CompId(self.project.next_comp.0);
+                let mut ops: Vec<Op> = vec![Op::CreateComp {
+                    name: format!("{} (Lottie)", import.name),
+                    width: (doc.width * inner).ceil().max(1.0) as u32,
+                    height: (doc.height * inner).ceil().max(1.0) as u32,
+                    fps,
+                    duration: child_duration,
+                }];
+                let skipped_note = doc.skipped_kinds.join(", ");
+                let layer_count = doc.layers.len();
+                for mut layer in doc.layers {
+                    if inner < 1.0 {
+                        layer.transform.position = [
+                            layer.transform.position[0] * inner as f32,
+                            layer.transform.position[1] * inner as f32,
+                        ];
+                        layer.transform.scale = [
+                            layer.transform.scale[0] * inner as f32,
+                            layer.transform.scale[1] * inner as f32,
+                        ];
+                        for track in layer.tracks.values_mut() {
+                            for key in track.keys.iter_mut() {
+                                if let PropValue::Vec2([x, y]) = &mut key.value {
+                                    *x *= inner as f32;
+                                    *y *= inner as f32;
+                                }
+                            }
+                        }
+                    }
+                    ops.push(Op::AddLayer {
+                        comp: child_id,
+                        layer,
+                    });
+                }
+                let mut assembled = Layer::new(
+                    import.name.clone(),
+                    LayerKind::PreComp { comp: child_id },
+                    Time::ZERO,
+                    duration,
+                );
+                assembled.transform.scale = [scale as f32 * 100.0, scale as f32 * 100.0];
+                ops.push(Op::AddLayer {
+                    comp: import.comp_id,
+                    layer: assembled,
+                });
+                let op = Op::Batch {
+                    label: format!("Imported {} (Lottie)", import.name),
+                    ops,
+                };
+                let mut candidate = self.project.clone();
+                op.clone()
+                    .apply(&mut candidate)
+                    .map_err(|e| e.to_string())?;
+                candidate.validate()?;
+                commit(&mut self.project, &mut self.history, &self.registry, op)?;
+                let mut response = self.changed()?;
+                if let Some(o) = response.as_object_mut() {
+                    o.insert("layers".into(), json!(layer_count));
+                    if !skipped_note.is_empty() {
+                        o.insert("skipped".into(), json!(doc.skipped));
+                        o.insert("skippedKinds".into(), json!(skipped_note));
+                    }
+                }
+                Ok(response)
             }
             "import_obj" => {
                 #[derive(Deserialize)]

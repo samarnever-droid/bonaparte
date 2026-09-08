@@ -75,7 +75,8 @@
     if (mod && key === "s") {
       e.preventDefault();
       target?.blur();
-      void saveProject();
+      // Shift = Save As (pick a location), plain = silent save.
+      void saveProject(e.shiftKey);
       return;
     }
     if (mod && key === "o") {
@@ -216,13 +217,20 @@
       e.returnValue = "";
     }
   }
+  let autosaveTimer: ReturnType<typeof setInterval> | null = null;
   onMount(() => {
     void init();
     window.addEventListener("beforeunload", beforeUnload);
+    // Silent autosave: once a file path exists, dirty work saves themselves
+    // every minute — no dialog, no interruptions, ever.
+    autosaveTimer = setInterval(() => {
+      if (editor.dirty && editor.lastSavePath) void saveProject();
+    }, 60_000);
   });
   onDestroy(() => {
     pause();
     resizeEnd();
+    if (autosaveTimer) clearInterval(autosaveTimer);
     window.removeEventListener("beforeunload", beforeUnload);
   });
 </script>

@@ -16,6 +16,8 @@
   import ExportRunner from "./ExportRunner.svelte";
   import { generateKinetic } from "../kinetic";
   import { kayaKeys, saveKayaKeys, kayaAnalyze, kayaTranscribe, narratorSpeak } from "../kaya-client";
+  import { vaultList, vaultSave, vaultRead, vaultFolderFor, type VaultFolder } from "../vault-client";
+  import { importAnyFile } from "../store.svelte";
 
   /** "—" under a second, otherwise "12s" / "1m 03s". */
   function etaLabel(seconds: number): string {
@@ -50,6 +52,52 @@
   let kayaProvider = $state<"sarvam" | "elevenlabs">("sarvam");
   let kayaStart = $state(0);
   let kayaBusy = $state(false);
+  let vaultFolders = $state([] as VaultFolder[]);
+  let vaultRoot = $state("");
+  let vaultBusy = $state(false);
+  let vaultUpload = $state<HTMLInputElement | null>(null);
+
+  async function openVault() {
+    vaultBusy = true;
+    try {
+      const listing = await vaultList();
+      vaultFolders = listing.folders;
+      vaultRoot = listing.root;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
+  $effect(() => {
+    if (editor.dialog?.kind === "vault") void openVault();
+  });
+
+  async function vaultPull(folder: string, file: string) {
+    vaultBusy = true;
+    try {
+      const asFile = await vaultRead(folder, file);
+      await importAnyFile(asFile);
+      editor.dialog = null;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
+  async function vaultUploadFiles(files: FileList | null) {
+    if (!files?.length) return;
+    vaultBusy = true;
+    try {
+      for (const file of Array.from(files)) {
+        const folder = vaultFolderFor(file.name);
+        await vaultSave(folder, file.name, file);
+      }
+      const listing = await vaultList();
+      vaultFolders = listing.folders;
+      vaultRoot = listing.root;
+    } finally {
+      vaultBusy = false;
+    }
+  }
 
   $effect(() => {
     if (editor.dialog?.kind !== "kaya") return;
@@ -177,7 +225,9 @@
                   ? "bolt"
                   : editor.dialog?.kind === "kaya"
                     ? "wave"
-                    : "plus"}
+                    : editor.dialog?.kind === "vault"
+                      ? "layers"
+                      : "plus"}
           size={20}
         />
       </div>
@@ -633,6 +683,60 @@
             });
           }}
         >Speak ⚡<Icon name="bolt" size={13} /></button>
+      </div>
+    {:else if editor.dialog?.kind === "vault"}
+      <h2 id="dialog-title">The Vault — one shelf for every project.</h2>
+      <p class="dialog-subtitle">
+        Logos, brand art, audio, Lottie — dumped here once, available
+        everywhere. {vaultRoot ? `Living at ${vaultRoot}` : ""}
+      </p>
+      <div class="dialog-actions" style="justify-content:flex-start;gap:8px;margin:0 0 10px">
+        <button
+          type="button"
+          class="btn ghost"
+          disabled={vaultBusy}
+          onclick={() => vaultUpload?.click()}
+        >Upload to vault<Icon name="plus" size={13} /></button>
+        <input
+          bind:this={vaultUpload}
+          type="file"
+          multiple
+          hidden
+          aria-label="Upload files to the vault"
+          onchange={(e) => void vaultUploadFiles(e.currentTarget.files)}
+        />
+      </div>
+      <div style="max-height:46vh;overflow:auto;display:flex;flex-direction:column;gap:12px">
+        {#each vaultFolders as folder (folder.name)}
+          {#if folder.entries.length}
+            <div>
+              <div class="form-label" style="margin-bottom:4px">{folder.name} · {folder.entries.length}</div>
+              {#each folder.entries as entry (entry.file)}
+                <button
+                  type="button"
+                  class="btn ghost"
+                  style="display:flex;justify-content:space-between;width:100%;margin:2px 0"
+                  disabled={vaultBusy}
+                  title="Add to this composition"
+                  onclick={() => void vaultPull(folder.name, entry.file)}
+                ><span class="truncate">{entry.file}</span><span
+                    >{entry.bytes > 1_048_576
+                      ? `${(entry.bytes / 1_048_576).toFixed(1)} MB`
+                      : `${Math.max(1, Math.round(entry.bytes / 1024))} KB`}</span
+                  ></button>
+              {/each}
+            </div>
+          {/if}
+        {/each}
+        {#if vaultFolders.every((f) => !f.entries.length)}
+          <p class="modal-note"><Icon name="info" size={12} /><span
+            >The vault is empty — upload a logo, a track, a Lottie. Files land
+            in clean folders and show up in every project.</span
+          ></p>
+        {/if}
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" onclick={close}>Close</button>
       </div>
     {:else if editor.dialog?.kind === "shortcuts"}
       <h2 id="dialog-title">Keep your flow.</h2>

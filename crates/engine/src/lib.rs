@@ -12,6 +12,7 @@
 pub mod font;
 pub mod gpu;
 pub mod graph;
+pub mod import_lottie;
 pub mod import_obj;
 pub mod import_svg;
 pub mod preview;

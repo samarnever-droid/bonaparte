@@ -3,6 +3,7 @@
   import { fromHex, toHex } from "../color";
   import { inputGroup, releaseInputGroup, finiteInput } from "../live-input";
   import { flushLiveEdits } from "../store.svelte";
+  import ColorWheel from "./ColorWheel.svelte";
   let {
     value,
     label,
@@ -18,7 +19,8 @@
   } = $props();
   const hex = $derived(toHex(value, linear));
   let focused = $state(false),
-    draft = $state("");
+    draft = $state(""),
+    wheelOpen = $state(false);
   function end(node: HTMLElement) {
     releaseInputGroup(node);
     focused = false;
@@ -27,16 +29,30 @@
 </script>
 
 <div class="color-field">
-  <input
-    type="color"
-    aria-label={`${label} color`}
-    value={hex}
+  <button
+    type="button"
+    class="swatch"
+    aria-label={`${label} color — open the circular picker`}
     {disabled}
-    oninput={(e) =>
-      onchange(fromHex(e.currentTarget.value, value[3], linear), inputGroup(e.currentTarget))}
-    onchange={() => void flushLiveEdits()}
-    onblur={(e) => end(e.currentTarget)}
-  />
+    style={`background:${hex}`}
+    onclick={(e) => {
+      e.stopPropagation();
+      wheelOpen = !wheelOpen;
+    }}
+  ></button>
+  {#if wheelOpen}
+    <ColorWheel
+      {hex}
+      alpha={value[3]}
+      {linear}
+      onchange={(wheelHex, wheelAlpha) =>
+        onchange(fromHex(wheelHex, wheelAlpha, linear))}
+      onclose={() => {
+        wheelOpen = false;
+        void flushLiveEdits();
+      }}
+    />
+  {/if}
   <input
     class="hex mono"
     aria-label={`${label} hex`}
@@ -123,5 +139,17 @@
   }
   .color-field input:focus {
     border-color: #939990;
+  }
+  .swatch {
+    width: 26px;
+    height: 22px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    padding: 0;
+    flex: none;
+  }
+  .color-field {
+    position: relative;
   }
 </style>

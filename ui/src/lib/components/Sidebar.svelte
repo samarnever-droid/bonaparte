@@ -139,7 +139,12 @@
       <div class="section-title upper">
         <Icon name="down" size={10} />Assets<span class="spacer"></span><span class="count"
           >{Object.keys(editor.project?.media ?? {}).length}</span
-        >
+        ><button
+          class="icon-button"
+          title="The Vault — global asset shelf"
+          aria-label="Open the Vault"
+          onclick={() => (editor.dialog = { kind: "vault" })}
+        ><Icon name="layers" size={12} /></button>
       </div>
       {#each assets as asset (asset.id)}
         <div class="asset-item" class:reusable={!!comp}>

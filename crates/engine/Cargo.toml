@@ -10,6 +10,7 @@ fontdue = "0.9" # pure-Rust rasterization of the bundled, licensed typefaces
 glam = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true } # graph + tiles serialize into preview state
+serde_json = { workspace = true } # Lottie (Bodymovin) JSON parsing
 
 # Row-parallel compositing needs threads; the wasm check target stays single-threaded.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

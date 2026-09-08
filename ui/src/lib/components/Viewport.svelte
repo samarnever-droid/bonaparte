@@ -63,6 +63,32 @@
   let size = $state({ width: 700, height: 430 });
   let zoom = $state("fit");
   let pan = $state({ x: 0, y: 0 });
+  /** Trackpad + touch support: pinch = ctrl+wheel zooms around the cursor,
+   * two-finger scroll pans. Mouse wheels keep working both ways. */
+  function stageWheel(e: WheelEvent) {
+    if (!comp) return;
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const factor = Math.exp(-e.deltaY * 0.01);
+      const next = Math.min(8, Math.max(0.1, scale * factor));
+      const numeric = `${Math.round(next * 100)}`;
+      if (zoom === "fit" && Math.abs(next - scale) < 0.01) return;
+      // Keep the point under the cursor pinned while zooming.
+      const box = stage?.getBoundingClientRect();
+      if (box) {
+        const cx = e.clientX - (box.left + box.width / 2);
+        const cy = e.clientY - (box.top + box.height / 2);
+        const ratio = next / scale;
+        pan = {
+          x: cx - (cx - pan.x) * ratio,
+          y: cy - (cy - pan.y) * ratio,
+        };
+      }
+      zoom = numeric;
+    } else {
+      pan = { x: pan.x - e.deltaX, y: pan.y - e.deltaY };
+    }
+  }
   const comp = $derived(activeComp());
   const selected = $derived(editingLayer());
   const poseLayer = $derived(
@@ -608,7 +634,7 @@
       onclick={fit}><Icon name="maximize" size={13} /></button
     >
   </div>
-  <div class="stage" bind:this={stage} class:hand={editor.tool === "hand"}>
+  <div class="stage" bind:this={stage} class:hand={editor.tool === "hand"} onwheel={stageWheel}>
     <div class="viewer-tools" role="toolbar" aria-label="Canvas tools">
       <button
         class="icon-button"
@@ -980,8 +1006,12 @@
         zoom = e.currentTarget.value;
         if (zoom === "fit") pan = { x: 0, y: 0 };
       }}
-      ><option value="fit">Fit · {Math.round(scale * 100)}%</option
-      >{#each [25, 50, 75, 100, 150, 200] as percentage}<option value={String(percentage)}
+      ><option
+        value="fit"
+        >Fit · {Math.round(scale * 100)}%</option
+      >{#if zoom !== "fit" && ![25, 50, 75, 100, 150, 200].includes(Number(zoom))}
+        <option value={zoom}>{zoom}%</option>
+      {/if}{#each [25, 50, 75, 100, 150, 200] as percentage}<option value={String(percentage)}
           >{percentage}%</option
         >{/each}</select
     >

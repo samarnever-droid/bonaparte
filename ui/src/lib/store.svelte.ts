@@ -67,6 +67,9 @@ class EditorState {
   /** Multi-selection overlay (Shift/Ctrl-click, marquee, mod+A). The
    * primary selection stays `selected` so single-object paths are stable. */
   multiSelected = $state([] as number[]);
+  /** Last saved/opened file path (desktop). Save writes here SILENTLY —
+   * no file-explorer dialog — once a path exists. */
+  lastSavePath = $state(null as string | null);
   currentTime = $state(144000);
   playing = $state(false);
   renderSeq = $state(0);
@@ -133,6 +136,7 @@ class EditorState {
       | { kind: "rename-layer"; compId: number; layerId: number; name: string }
       | { kind: "lyrics"; assetId: number; hasGrid: boolean }
       | { kind: "kaya"; assetId: number }
+      | { kind: "vault" }
       | null,
   );
   exporting = $state(false);
@@ -1361,19 +1365,41 @@ function filename() {
     (editor.project?.name ?? "Untitled").replace(/[^\p{L}\p{N}\-_ ]/gu, "").trim() || "Untitled"
   );
 }
-export async function saveProject() {
+function rememberedPath(): string | null {
+  try {
+    return localStorage.getItem("bonaparte.lastSavePath");
+  } catch {
+    return null;
+  }
+}
+function rememberPath(path: string) {
+  editor.lastSavePath = path;
+  try {
+    localStorage.setItem("bonaparte.lastSavePath", path);
+  } catch {
+    /* private mode — memory only */
+  }
+}
+
+/** Save. With a remembered path this is SILENT — no file-explorer dialog.
+ * Hold Shift (or use Save As) to pick a new location. */
+export async function saveProject(forceDialog = false) {
   await flushLiveEdits();
   await mutationQueue;
   if (!editor.project) return;
   try {
     if (desktop) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        defaultPath: `${filename()}.bonaparte`,
-        filters: [{ name: "Bonaparte project", extensions: ["bonaparte"] }],
-      });
-      if (!path) return;
+      let path = forceDialog ? null : (editor.lastSavePath ?? rememberedPath());
+      if (!path || forceDialog) {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        path = await save({
+          defaultPath: `${filename()}.bonaparte`,
+          filters: [{ name: "Bonaparte project", extensions: ["bonaparte"] }],
+        });
+        if (!path) return;
+      }
       await invoke("save_project_file", { path });
+      rememberPath(path);
     } else {
       const text = await command<string>("save_project");
       download(new Blob([text], { type: "application/json" }), `${filename()}.bonaparte`);
@@ -1400,12 +1426,14 @@ export async function openProject() {
         multiple: false,
         filters: [{ name: "Bonaparte project", extensions: ["bonaparte", "json"] }],
       });
-      if (typeof path === "string")
+      if (typeof path === "string") {
+        rememberPath(path);
         await queued(async () => {
           editor.documentEpoch++;
           accept(await invoke<Snapshot>("open_project_file", { path }), false);
           editor.currentTime = 0;
         });
+      }
     } catch (error) {
       notify(String(error), true);
     }
@@ -1527,6 +1555,46 @@ export async function importImage(file?: File) {
     editor.imageImporting = false;
   }
 }
+/** Lottie sniffing: a .json file whose shape matches Bodymovin. */
+function isLottieJson(file: File): boolean {
+  if (!/\.json$/i.test(file.name) || file.size > 32 * 1024 * 1024 || file.size < 16) return false;
+  return true; // cheap pass — the engine validates the real signature
+}
+
+/** Lottie import: Bodymovin JSON becomes ONE assembled animated group. */
+export async function importLottieFile(file: File) {
+  const comp = activeComp();
+  if (!comp) return;
+  try {
+    if (file.size > 32 * 1024 * 1024)
+      throw new Error("Lottie files must be smaller than 32 MB.");
+    editor.imageImporting = true;
+    notify("Importing Lottie ⚡ every layer arrives assembled and animated.");
+    const json = await file.text();
+    await queued(async () =>
+      accept(
+        await command<Snapshot | SnapshotPatch>("import_lottie", {
+          delta: !!editor.deltaProtocol,
+          baseRevision: editor.revision,
+          compId: comp.id,
+          name: file.name.replace(/\.(lottie|json)$/i, ""),
+          json,
+        }),
+      ),
+    );
+    const latest = activeComp();
+    const group = latest?.layer_order.at(-1);
+    if (group != null) {
+      editor.selected = group;
+      editor.multiSelected = [];
+    }
+  } catch (error) {
+    notify(String(error), true);
+  } finally {
+    editor.imageImporting = false;
+  }
+}
+
 /** Vector import: SVG geometry becomes editable shape layers (one per
  * element), scaled to fit the comp without upscaling. */
 export async function importSvg(file?: File) {
@@ -1767,7 +1835,11 @@ export async function importAnyFile(file?: File) {
     input.click();
     return;
   }
-  if (/\.svg$/i.test(file.name) || file.type === "image/svg+xml") await importSvg(file);
+  if (/\.lottie$/i.test(file.name) || file.type === "application/lottie+json") {
+    await importLottieFile(file);
+  } else if (isLottieJson(file)) {
+    await importLottieFile(file);
+  } else if (/\.svg$/i.test(file.name) || file.type === "image/svg+xml") await importSvg(file);
   else if (/\.obj$/i.test(file.name) || file.type === "model/obj") await importObj(file);
   else if (file.type.startsWith("video/") || /\.(mp4|m4v|webm|mov|mkv|avi)$/i.test(file.name))
     await importVideo(file);

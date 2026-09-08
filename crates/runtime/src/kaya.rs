@@ -249,7 +249,12 @@ pub fn transcribe(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn narrate(_text: &str, _provider: &str, _api_key: &str, _voice: &str) -> Result<Narration, String> {
+pub fn narrate(
+    _text: &str,
+    _provider: &str,
+    _api_key: &str,
+    _voice: &str,
+) -> Result<Narration, String> {
     Err("The narrator runs on the desktop engine".into())
 }
 

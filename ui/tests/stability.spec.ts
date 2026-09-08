@@ -409,15 +409,20 @@ test("late edit acknowledgements do not replace newer focused text", async ({ pa
   await expect(input).toHaveValue("BEFORE");
 });
 
-test("native color-picker input and shape dimensions update without change events", async ({
+test("circular color wheel and shape dimensions update without change events", async ({
   page,
   request,
 }) => {
   await boot(page, request);
-  await page.getByLabel("Shape fill color", { exact: true }).evaluate((input: HTMLInputElement) => {
-    input.value = "#2233ff";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  // The wheel replaces the native color input: open it, click the hue ring's
+  // blue corner, then the saturated corner of the SV square.
+  await page.getByLabel("Shape fill color — open the circular picker").click();
+  const wheel = page.getByLabel("Circular color picker");
+  await expect(wheel).toBeVisible();
+  const box = (await wheel.boundingBox())!;
+  await page.mouse.click(box.x + 17, box.y + 129); // hue ring at 240 (blue)
+  await page.mouse.click(box.x + 158, box.y + 18); // SV square corner: sat 1, val 1 -> #0000ff
+  await page.getByLabel("Close color picker").click();
   await expect.poll(async () => (await subject(request)).kind.Shape.color[2]).toBe(1);
   await expect.poll(async () => (await subject(request)).kind.Shape.color[0]).toBeLessThan(0.05);
   const width = page.getByLabel("Shape width", { exact: true });

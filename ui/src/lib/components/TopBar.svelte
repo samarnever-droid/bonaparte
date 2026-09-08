@@ -92,7 +92,10 @@
             ><Icon name="folder" />Open project…<kbd>⌘ O</kbd></button
           >
           <button onclick={() => run(saveProject)}
-            ><Icon name="save" />Save project…<kbd>⌘ S</kbd></button
+            ><Icon name="save" />Save project<kbd>⌘ S</kbd></button
+          >
+          <button onclick={() => run(() => saveProject(true))}
+            ><Icon name="save" />Save project as…<kbd>⇧ ⌘ S</kbd></button
           >
           <hr />
           <button onclick={() => run(() => (editor.dialog = { kind: "composition", compId: null }))}
