@@ -506,6 +506,23 @@ pub struct EmbeddedImage {
     pub rgba_base64: Arc<str>,
 }
 
+/// A sampled video track. The browser decodes keyframes at import (so the
+/// runtime needs no codec of its own) and playback picks the last sample at
+/// or before the playhead, modulo `duration`. Frames are RGBA like
+/// [`EmbeddedImage`], downscaled at import; `times_millis` are the ascending
+/// sample timestamps (one entry per frame).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddedVideo {
+    pub width: u32,
+    pub height: u32,
+    pub fps: crate::FrameRate,
+    pub duration: Time,
+    /// Sample timestamps in milliseconds, ascending, one per frame.
+    pub times_millis: Arc<[u32]>,
+    /// RGBA frames (width*height*4 bytes each), base64-encoded.
+    pub frames_base64: Arc<[Arc<str>]>,
+}
+
 /// An asset in the media library. `slot` marks it as a template placeholder
 /// (template ecosystem, ARCHITECTURE.md); `perception` is the import-time
 /// measurement card that gives no-vision AI quantitative sight
@@ -521,6 +538,9 @@ pub struct MediaAsset {
     pub embedded: Option<EmbeddedImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::EmbeddedAudio>,
+    /// Sampled video frames for `MediaKind::Video` assets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<EmbeddedVideo>,
     /// If present, this asset is a template placeholder slot the user fills
     /// with their own media.
     pub slot: Option<SlotDef>,

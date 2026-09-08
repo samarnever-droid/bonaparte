@@ -1545,6 +1545,7 @@ mod tests {
             slot: None,
             alias: Some("logo".into()),
             perception: None,
+            video: None,
         };
 
         history.commit(&mut p, Op::AddMedia { asset }).unwrap();

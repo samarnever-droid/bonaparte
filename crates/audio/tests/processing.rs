@@ -33,6 +33,7 @@ fn fixture(samples: Vec<f32>) -> (Project, CompId, Bank) {
         slot: None,
         alias: None,
         perception: None,
+        video: None,
     });
     let mut t = AudioTrack::new("track", "Input");
     t.clips

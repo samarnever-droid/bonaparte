@@ -30,6 +30,7 @@ fn create_base_project() -> (Project, CompId, LayerId, MediaId) {
         slot: None,
         alias: Some("logo".into()),
         perception: None,
+        video: None,
     });
     (p, comp, layer, media)
 }

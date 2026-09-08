@@ -21,7 +21,10 @@
     snapAudio,
     crossfadeAudio,
     addMixBus,
+    reverseAudio,
+    normalizeAudio,
   } from "../audio/actions";
+  import { openContextMenu, type ContextMenuItem } from "../store.svelte";
   import {
     AUDIO_RATE,
     trimLeft,
@@ -208,6 +211,84 @@
       editor.audioSelection = { track: d.target, clip: d.next.id };
   }
   const shown = (clip: AudioClip) => (drag?.original.id === clip.id ? drag.next : clip);
+  function clipMenu(e: MouseEvent, track: AudioTrack, clip: AudioClip) {
+    e.preventDefault();
+    e.stopPropagation();
+    editor.audioSelection = { track: track.id, clip: clip.id };
+    const items: ContextMenuItem[] = [
+      { label: "Split at playhead", icon: "scissors", run: () => void splitAudio() },
+      { label: "Duplicate clip", icon: "copy", run: () => void duplicateAudio() },
+      { label: "Crossfade with neighbor", icon: "wave", run: () => void crossfadeAudio() },
+      { label: "Reverse clip", icon: "rewind", run: () => void reverseAudio() },
+      { label: "Normalize peaks", icon: "graph", run: () => void normalizeAudio() },
+      { separator: true },
+      {
+        label: clip.muted ? "Unmute clip" : "Mute clip",
+        icon: clip.muted ? "eye" : "eye-off",
+        run: () =>
+          void editAudio(clip.muted ? "Unmuted clip" : "Muted clip", (a) => {
+            const c = a.tracks.find((t) => t.id === track.id)?.clips.find((c) => c.id === clip.id);
+            if (c) c.muted = !clip.muted;
+          }),
+      },
+      { separator: true },
+      { label: "Delete clip", icon: "trash", danger: true, run: () => void deleteAudio() },
+    ];
+    openContextMenu(e, items);
+  }
+  function trackMenu(e: MouseEvent, track: AudioTrack) {
+    e.preventDefault();
+    editor.audioSelection = { track: track.id, clip: null };
+    const items: ContextMenuItem[] = [
+      {
+        label: track.muted ? "Unmute track" : "Mute track",
+        icon: track.muted ? "eye" : "eye-off",
+        run: () =>
+          void editAudio(track.muted ? "Unmuted track" : "Muted track", (a) => {
+            const t = a.tracks.find((t) => t.id === track.id);
+            if (t) t.muted = !track.muted;
+          }),
+      },
+      {
+        label: track.solo ? "Unsolo track" : "Solo track",
+        icon: "star",
+        run: () =>
+          void editAudio(track.solo ? "Unsoloed track" : "Soloed track", (a) => {
+            const t = a.tracks.find((t) => t.id === track.id);
+            if (t) t.solo = !track.solo;
+          }),
+      },
+      {
+        label: track.locked ? "Unlock track" : "Lock track",
+        icon: track.locked ? "unlock" : "lock",
+        run: () =>
+          void editAudio(track.locked ? "Unlocked track" : "Locked track", (a) => {
+            const t = a.tracks.find((t) => t.id === track.id);
+            if (t) t.locked = !track.locked;
+          }),
+      },
+      { separator: true },
+      { label: "Add marker at playhead", icon: "target", run: () => void addMarker() },
+      { label: "New audio track", icon: "plus", run: () => void addAudioTrack() },
+      { label: "Import audio file…", icon: "upload", run: () => void importAudio() },
+    ];
+    openContextMenu(e, items);
+  }
+  function laneMenu(e: MouseEvent, track: AudioTrack) {
+    e.preventDefault();
+    editor.audioSelection = { track: track.id, clip: null };
+    openContextMenu(e, [
+      { label: "Add marker at playhead", icon: "target", run: () => void addMarker() },
+      {
+        label: "Import audio here…",
+        icon: "upload",
+        run: () => void importAudio(undefined, track.id),
+      },
+      { separator: true },
+      { label: "New audio track", icon: "plus", run: () => void addAudioTrack() },
+      { label: "New mix bus", icon: "graph", run: () => void addMixBus() },
+    ]);
+  }
   function pointLine(clip: AudioClip) {
     const points = [
       { frame: 0, value: envelope(clip.gain_points, 0, clip.gain_db) },
@@ -393,6 +474,8 @@
           class="track-label sticky"
           class:selected={editor.audioSelection?.track === track.id}
           style={`--track-color:${track.color}`}
+          role="group"
+          oncontextmenu={(e) => trackMenu(e, track)}
         >
           <button
             class="track-select"
@@ -461,6 +544,10 @@
           data-audio-track={track.id}
           class:muted={track.muted}
           class:drop-target={drag && drag.target === track.id && drag.track !== track.id}
+          role="group"
+          oncontextmenu={(e) => {
+            if (e.target === e.currentTarget) laneMenu(e, track);
+          }}
         >
           {#each beats as beat}<span
               class:major={beat.major}
@@ -479,6 +566,7 @@
               title={`${clip.name} · ${clip.duration_frames} samples · Alt-drag to slip source; Shift bypasses snap`}
               style={`left:${pct(clip.start_frame)}%;width:${Math.max(0.015, pct(clip.duration_frames))}%;--track-color:${track.color}`}
               onpointerdown={(e) => begin(e, track, original)}
+              oncontextmenu={(e) => clipMenu(e, track, original)}
               onkeydown={(e) => {
                 if (e.key === "Enter") editor.audioSelection = { track: track.id, clip: clip.id };
                 e.stopPropagation();

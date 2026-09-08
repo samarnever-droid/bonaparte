@@ -82,7 +82,12 @@
     });
   });
   const trackWidth = $derived(
-    (Math.max(320, bodyWidth - LABEL_WIDTH) * zoom * viewDuration) / Math.max(1, fitDuration),
+    // Hard cap = safety net: a logic bug must never request a multi-megapixel
+    // grid (it bricks the whole page when it does).
+    Math.min(
+      120000,
+      (Math.max(320, bodyWidth - LABEL_WIDTH) * zoom * viewDuration) / Math.max(1, fitDuration),
+    ),
   );
   function durationOp(c: Comp, end: number): Op | null {
     if (end <= c.duration) return null;
@@ -171,6 +176,17 @@
     if (!cal) return 0;
     return snapToFrame((e.clientX - cal.left) / cal.perTick, comp.fps);
   }
+  /** The timeline is a horizontally scrolling world; a plain vertical wheel
+   * should scroll IT, not anything else. */
+  function wheelScroll(e: WheelEvent) {
+    const node = scroll;
+    if (!node) return;
+    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (dx !== 0 && node.scrollWidth > node.clientWidth) {
+      e.preventDefault();
+      node.scrollLeft += dx;
+    }
+  }
   function rulerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     pause();
@@ -180,8 +196,13 @@
     ruler?.setPointerCapture(e.pointerId);
     scrub(timeAt(e));
   }
+  let panelEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    const node = scroll;
+    // Observe the panel, NOT the scroller: the scroller sizes itself after its
+    // content, so feeding its width into trackWidth creates a feedback loop
+    // (any viewDuration > fitDuration makes the content — then the whole page —
+    // grow exponentially: the classic "infinite scroll").
+    const node = panelEl;
     if (!node) return;
     const ro = new ResizeObserver((entries) => (bodyWidth = entries[0].contentRect.width));
     ro.observe(node);
@@ -460,7 +481,7 @@
   }
 </script>
 
-<section class="panel timeline" aria-label="Timeline">
+<section class="panel timeline" bind:this={panelEl} aria-label="Timeline">
   <div class="timeline-header">
     <button
       class="timeline-tab"
@@ -597,7 +618,7 @@
       </div>
     </div>
   {:else}
-    <div class="timeline-scroll" bind:this={scroll}>
+    <div class="timeline-scroll" bind:this={scroll} onwheel={wheelScroll}>
       {#if comp}
         <div
           class="timeline-grid"
@@ -955,6 +976,8 @@
   .timeline-scroll {
     overflow: auto;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
     flex: 1;
     position: relative;
   }

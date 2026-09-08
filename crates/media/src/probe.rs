@@ -384,6 +384,7 @@ pub fn probe_asset(
         slot: None,
         alias: None,
         perception,
+        video: None,
     })
 }
 

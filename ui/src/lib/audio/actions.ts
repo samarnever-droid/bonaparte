@@ -61,9 +61,9 @@ export async function importAudio(file?: File, trackId?: string) {
   }
   const comp = activeComp();
   if (!comp) return;
-  if (file.size > 32 * 1024 * 1024) {
+  if (file.size > 128 * 1024 * 1024) {
     notify(
-      "Audio import is limited to 32 MiB per encoded file in this portable-project milestone.",
+      "That file is over the 128 MB import size. Trim or compress it first — the project itself stays portable either way.",
       true,
     );
     return;

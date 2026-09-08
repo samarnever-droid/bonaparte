@@ -107,3 +107,50 @@ fn test_cache_clear_cleans_ram_and_disk() {
     assert_eq!(cache.ram_count(), 0);
     assert!(cache.frame_rgba(media, Time(0)).is_none());
 }
+
+mod hot_tier {
+    use super::*;
+
+    #[test]
+    fn atr_hot_tier_keeps_frames_readable_beyond_slot_capacity() {
+        let cache = DiskPlaybackCache::with_temp_dir(2).unwrap();
+        // 8 frames, only 2 RAM slots: the rest must live in the Atra hot tier.
+        for i in 0..8i64 {
+            let px = vec![i as u8; 4 * 8 * 8];
+            cache
+                .insert_frame(MediaId(i as u64), Time(i * 1000), 8, 8, &px)
+                .unwrap();
+        }
+        // Slot tier must be flat-bounded...
+        assert!(cache.ram_count() <= 2);
+        // ...but every frame is still readable (hot tier or disk), and the
+        // ones that fell out of RAM are served by the hot tier.
+        for i in 0..8i64 {
+            let view = cache
+                .get_frame_view(MediaId(i as u64), Time(i * 1000))
+                .unwrap();
+            assert_eq!(view.width, 8);
+            assert_eq!(view.rgba[0], i as u8);
+        }
+        let stats = cache.hot_stats();
+        assert!(
+            stats.items >= 6,
+            "hot tier should hold evicted slots' frames"
+        );
+        assert!(
+            stats.hits >= 1,
+            "re-reads past the slot cap must hit the hot tier"
+        );
+    }
+
+    #[test]
+    fn clear_empties_the_hot_tier_too() {
+        let cache = DiskPlaybackCache::with_temp_dir(2).unwrap();
+        cache
+            .insert_frame(MediaId(1), Time(0), 4, 4, &[0u8; 64])
+            .unwrap();
+        cache.clear().unwrap();
+        assert_eq!(cache.hot_stats().items, 0);
+        assert!(cache.get_frame_view(MediaId(1), Time(0)).is_none());
+    }
+}

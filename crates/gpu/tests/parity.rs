@@ -123,6 +123,7 @@ fn opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames() {
             slot: None,
             alias: None,
             perception: None,
+            video: None,
         });
         let id = p.insert_layer(
             c,

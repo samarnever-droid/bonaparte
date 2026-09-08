@@ -29,6 +29,7 @@
     importAnyFile,
     openProjectFile,
     notify,
+    applyOp,
   } from "./lib/store.svelte";
   import { ticksPerFrame } from "./lib/model";
   let timelineHeight = $state(252),
@@ -93,6 +94,19 @@
     if (mod && key === "y") {
       e.preventDefault();
       void redoOp();
+      return;
+    }
+    if (mod && (e.key === "[" || e.key === "]")) {
+      e.preventDefault();
+      const comp = activeComp();
+      const id = editor.selected;
+      if (!comp || !id) return;
+      const order = comp.layer_order;
+      const idx = order.indexOf(id);
+      // [ brings the layer toward the top row, ] sends it down.
+      const target = Math.max(0, Math.min(order.length - 1, idx + (e.key === "[" ? 1 : -1)));
+      if (target !== idx)
+        void applyOp({ type: "reorderLayer", comp: comp.id, layer: id, newIndex: target });
       return;
     }
     if (mod && key === "d") {
@@ -308,6 +322,8 @@
   }
   .timeline-region {
     min-height: 0;
+    min-width: 0;
+    overflow: hidden;
     position: relative;
     display: flex;
     flex-direction: column;

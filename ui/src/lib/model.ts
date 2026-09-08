@@ -2,13 +2,7 @@ import type { AudioArrangement, AudioAsset } from "./audio/model";
 /// Wire types matching bonaparte-model. Struct fields are snake_case; Op fields camelCase.
 export const TICKS_PER_SEC = 120_000;
 export type Color = [number, number, number, number];
-export type Property =
-  | "Position"
-  | "Scale"
-  | "Rotation"
-  | "Opacity"
-  | "AnchorPoint"
-  | "Z";
+export type Property = "Position" | "Scale" | "Rotation" | "Opacity" | "AnchorPoint" | "Z";
 /** The comp's 3D perspective camera; fov <= 0 disables projection (pure 2D). */
 export interface Camera3D {
   position: [number, number];
@@ -27,10 +21,7 @@ export interface Turntable {
 export const DEFAULT_CAMERA: Camera3D = { position: [0, 0], z: 0, fov: 0, focus: 0, dof: 0 };
 export const DEFAULT_TURNTABLE: Turntable = { enabled: false, period: 12 };
 export type PropValue = { Scalar: number } | { Vec2: [number, number] };
-export type Easing =
-  | "Linear"
-  | "Hold"
-  | { Bezier: { p1: [number, number]; p2: [number, number] } };
+export type Easing = "Linear" | "Hold" | { Bezier: { p1: [number, number]; p2: [number, number] } };
 export interface Keyframe {
   time: number;
   value: PropValue;
@@ -73,7 +64,14 @@ export interface TextStyle {
 }
 export type LayerKind =
   | { Solid: { color: Color } }
-  | { Shape: { color: Color; generator: string | null; style: ShapeStyle; points?: [number, number][][] } }
+  | {
+      Shape: {
+        color: Color;
+        generator: string | null;
+        style: ShapeStyle;
+        points?: [number, number][][];
+      };
+    }
   | { Text: { text: string; size: number; style: TextStyle } }
   | { Footage: { media: number } }
   | { PreComp: { comp: number } }
@@ -162,6 +160,14 @@ export interface MediaAsset {
   kind: "Image" | { Video: { fps: FrameRate; duration: number } } | { Audio: { duration: number } };
   embedded?: { width: number; height: number; rgba_base64: string };
   audio?: AudioAsset;
+  video?: {
+    width: number;
+    height: number;
+    fps: FrameRate;
+    duration: number;
+    times_millis: number[];
+    frames_base64: string[];
+  };
   slot: unknown;
   alias: string | null;
   perception: unknown;

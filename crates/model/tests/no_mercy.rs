@@ -108,6 +108,7 @@ fn seeded_op_flood_survives_and_undoes_cleanly() {
                     slot: None,
                     alias: None,
                     perception: None,
+                    video: None,
                 },
             },
         )

@@ -329,8 +329,7 @@
             </select></label
           ><label
             >Color space<select bind:value={outputSpace} disabled={editor.exporting}>
-              {#each spaces as space}<option value={space.id}
-                  >{space.label} — {space.note}</option
+              {#each spaces as space}<option value={space.id}>{space.label} — {space.note}</option
                 >{/each}</select
             ></label
           >
@@ -387,16 +386,15 @@
         <div class="export-live mono">
           <span>{p.framesDone}/{p.totalFrames} frames</span>
           <span>{p.fps > 0 ? `${p.fps.toFixed(1)} fps` : "warming up…"}</span>
-          <span>{p.canceled
+          <span
+            >{p.canceled
               ? "canceling…"
               : p.stage === 2
                 ? "packing file…"
-                : `ETA ${etaLabel(p.etaSec)}`}</span>
-          <span>elapsed {etaLabel(p.elapsedSec)}</span>
-          <button
-            class="export-cancel"
-            onclick={() => void cancelExport()}>Cancel export</button
+                : `ETA ${etaLabel(p.etaSec)}`}</span
           >
+          <span>elapsed {etaLabel(p.elapsedSec)}</span>
+          <button class="export-cancel" onclick={() => void cancelExport()}>Cancel export</button>
         </div>
         <p class="modal-note">
           <Icon name="info" size={12} /><span
@@ -417,8 +415,7 @@
           disabled={editor.exporting ||
             !comp ||
             (format === "mp4" && (!editor.ffmpeg || !!(comp.width % 2) || !!(comp.height % 2)))}
-          onclick={() =>
-            void exportFile(format, { bitDepth, outputSpace })}
+          onclick={() => void exportFile(format, { bitDepth, outputSpace })}
           ><Icon name="download" size={14} />{editor.exporting
             ? "Exporting…"
             : `Export ${format.toUpperCase()}`}</button
@@ -464,7 +461,7 @@
       <h2 id="dialog-title">Keep your flow.</h2>
       <p class="dialog-subtitle">A few shortcuts between an idea and a frame.</p>
       <div class="shortcut-list">
-        {#each [["Space", "Play / pause"], ["← / →", "Step one frame"], ["Shift + ← / →", "Step ten frames"], ["Home / End", "First / last frame"], ["V / H", "Selection / hand tool"], ["G", "Composition guides"], ["K", "Keyframe graph property or position"], ["1 / 2 / 3", "Design / Color / Animate workspace"], ["Ctrl/⌘ + S", "Save project"], ["Ctrl/⌘ + O", "Open project"], ["Ctrl/⌘ + D", "Duplicate selected layer"], ["Ctrl/⌘ + Z", "Undo"], ["Ctrl/⌘ + Shift + Z", "Redo"]] as shortcut}<div
+        {#each [["Space", "Play / pause"], ["← / →", "Step one frame"], ["Shift + ← / →", "Step ten frames"], ["Home / End", "First / last frame"], ["Ctrl/⌘ + [ / ]", "Move layer up / down"], ["V / H", "Selection / hand tool"], ["G", "Composition guides"], ["K", "Keyframe graph property or position"], ["1 / 2 / 3", "Design / Color / Animate workspace"], ["Ctrl/⌘ + S", "Save project"], ["Ctrl/⌘ + O", "Open project"], ["Ctrl/⌘ + D", "Duplicate selected layer"], ["Ctrl/⌘ + Z", "Undo"], ["Ctrl/⌘ + Shift + Z", "Redo"], ["Right-click", "Context menus everywhere — timeline, audio, assets"]] as shortcut}<div
           >
             <span>{shortcut[1]}</span><kbd>{shortcut[0]}</kbd>
           </div>{/each}

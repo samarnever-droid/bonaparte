@@ -11,6 +11,7 @@
     importAnyFile,
     applyOp,
     newLayer,
+    addMediaToComp,
   } from "../store.svelte";
   import { formatFps, timeToSecs } from "../model";
   import { create3dScene } from "../three-d";
@@ -141,20 +142,39 @@
         >
       </div>
       {#each assets as asset (asset.id)}
-        <div class="asset-item">
-          <Icon name={asset.audio ? "wave" : "image"} size={16} /><span class="truncate"
-            >{asset.name}</span
-          ><span class="spacer"></span><small class="mono">{asset.embedded?.width ?? ""}</small>
+        <div class="asset-item" class:reusable={!!comp}>
+          <Icon
+            name={asset.audio
+              ? "wave"
+              : typeof asset.kind === "object" && "Video" in asset.kind
+                ? "film"
+                : "image"}
+            size={16}
+          /><button
+            class="asset-add"
+            aria-label={`Add ${asset.name} to the composition`}
+            title="Add to composition"
+            disabled={!comp}
+            onclick={() => void addMediaToComp(asset.id)}><Icon name="plus" size={12} /></button
+          ><button
+            class="asset-name truncate"
+            aria-label={`Reuse ${asset.name}`}
+            title="Click to add to the composition"
+            disabled={!comp}
+            onclick={() => void addMediaToComp(asset.id)}>{asset.name}</button
+          ><span class="spacer"></span><small class="mono"
+            >{asset.embedded?.width ?? asset.video?.width ?? ""}</small
+          >
         </div>
       {/each}
       <button class="import-zone" onclick={() => void importAnyFile()} disabled={!comp}>
         <span class="import-icon"><Icon name="upload" size={16} /></span>
         <span
           ><strong>Bring your ideas in</strong><small
-            >Drop an image, SVG, or 3D model, or <em>browse files</em></small
+            >Drop a video, image, audio, SVG, or 3D model, or <em>browse files</em></small
           ></span
         >
-        <span class="formats mono">PNG · JPG · WEBP · SVG · OBJ</span>
+        <span class="formats mono">MP4 · PNG · JPG · WEBP · SVG · OBJ · WAV</span>
       </button>
       <div class="create-section">
         <div class="section-title upper">Start with a layer</div>
@@ -392,6 +412,35 @@
   .comp-details button {
     margin-left: auto;
     color: #949792;
+  }
+  .asset-item.reusable {
+    cursor: pointer;
+  }
+  .asset-add {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: #a1a49e;
+    opacity: 0;
+    transition:
+      opacity 0.12s ease,
+      background-color 0.12s ease;
+  }
+  .asset-item.reusable:hover .asset-add,
+  .asset-item.reusable:focus-within .asset-add {
+    opacity: 1;
+  }
+  .asset-add:hover {
+    background: #ffffff14;
+    color: #e6e8e4;
+  }
+  .asset-name {
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
   }
   .asset-item {
     display: flex;

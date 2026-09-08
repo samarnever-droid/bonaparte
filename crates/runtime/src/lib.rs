@@ -196,12 +196,52 @@ pub fn commit_grouped(
 #[derive(Clone, Default)]
 pub struct DecodedImages {
     pub frames: BTreeMap<MediaId, Arc<CpuFrame>>,
+    /// Decoded sample tracks of video assets, keyed by media id.
+    pub videos: BTreeMap<MediaId, VideoFrames>,
 }
+
+/// Decoded sample frames of one video asset: ascending sample times (ms)
+/// and one RGBA frame each. Playback maps the playhead to the last sample
+/// at or before it, modulo the clip duration.
+#[derive(Clone)]
+pub struct VideoFrames {
+    pub frames: Vec<Arc<CpuFrame>>,
+    pub times_ms: Vec<u32>,
+    pub duration_ms: u32,
+}
+
+impl VideoFrames {
+    fn sample_at(&self, ms: u32) -> &Arc<CpuFrame> {
+        let ms = if self.duration_ms > 0 {
+            ms % self.duration_ms
+        } else {
+            0
+        };
+        let idx = match self.times_ms.binary_search(&ms) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        &self.frames[idx.min(self.frames.len() - 1)]
+    }
+}
+
 impl MediaFrames for DecodedImages {
-    fn shared_frame(&self, media: MediaId, _time: Time) -> Option<Arc<CpuFrame>> {
+    fn shared_frame(&self, media: MediaId, time: Time) -> Option<Arc<CpuFrame>> {
+        if let Some(video) = self.videos.get(&media) {
+            let ms = time.0.clamp(0, i64::from(u32::MAX)) as u32;
+            return Some(video.sample_at(ms).clone());
+        }
         self.frames.get(&media).cloned()
     }
-    fn frame_rgba(&self, media: MediaId, _time: Time) -> Option<FrameView<'_>> {
+    fn frame_rgba(&self, media: MediaId, time: Time) -> Option<FrameView<'_>> {
+        if let Some(video) = self.videos.get(&media) {
+            let frame = video.sample_at(time.0.clamp(0, i64::from(u32::MAX)) as u32);
+            return Some(FrameView {
+                width: frame.width,
+                height: frame.height,
+                rgba: &frame.rgba,
+            });
+        }
         let frame = self.frames.get(&media)?;
         Some(FrameView {
             width: frame.width,
@@ -216,10 +256,59 @@ pub fn decode_embedded_frames(project: &Project) -> Result<DecodedImages, String
     images.refresh(project)?;
     Ok(images)
 }
+
+const VIDEO_DECODE_PREFIX: &str = "Invalid video encoding: ";
+
+fn decode_video_frames(
+    width: u32,
+    height: u32,
+    sources: &[Arc<str>],
+) -> Result<Vec<Arc<CpuFrame>>, String> {
+    let expected = width as usize * height as usize * 4;
+    let mut frames = Vec::with_capacity(sources.len());
+    for source in sources {
+        let bytes = STANDARD
+            .decode(source.as_ref())
+            .map_err(|e| format!("{VIDEO_DECODE_PREFIX}{e}"))?;
+        if bytes.len() != expected {
+            return Err(format!(
+                "{VIDEO_DECODE_PREFIX}expected {expected} bytes of RGBA, got {}",
+                bytes.len()
+            ));
+        }
+        frames.push(Arc::new(CpuFrame::from_rgba(width, height, bytes)));
+    }
+    Ok(frames)
+}
 impl DecodedImages {
     fn refresh(&mut self, project: &Project) -> Result<(), String> {
         self.frames.retain(|id, _| project.media.contains_key(id));
+        self.videos.retain(|id, _| project.media.contains_key(id));
         for (id, asset) in &project.media {
+            if let Some(video) = &asset.video {
+                if self.videos.contains_key(id) {
+                    continue;
+                }
+                if video.frames_base64.len() != video.times_millis.len() {
+                    return Err(format!(
+                        "{VIDEO_DECODE_PREFIX}{} frames but {} timestamps",
+                        video.frames_base64.len(),
+                        video.times_millis.len()
+                    ));
+                }
+                let frames =
+                    decode_video_frames(video.width, video.height, video.frames_base64.as_ref())?;
+                let duration_ms = video.duration.0.clamp(0, i64::from(u32::MAX)) as u32;
+                self.videos.insert(
+                    *id,
+                    VideoFrames {
+                        frames,
+                        times_ms: video.times_millis.to_vec(),
+                        duration_ms,
+                    },
+                );
+                continue;
+            }
             if self.frames.contains_key(id) {
                 continue;
             }
@@ -504,6 +593,7 @@ impl EditorSession {
                     slot: None,
                     alias: None,
                     perception: None,
+                    video: None,
                 };
                 let mut layer = Layer::new(
                     &image.name,
@@ -525,6 +615,115 @@ impl EditorSession {
                     ],
                 };
                 // Decode/validate on a candidate first, keeping import atomic on malformed data.
+                let mut candidate = self.project.clone();
+                op.clone()
+                    .apply(&mut candidate)
+                    .map_err(|e| e.to_string())?;
+                candidate.validate()?;
+                decode_embedded_frames(&candidate)?;
+                commit(&mut self.project, &mut self.history, &self.registry, op)?;
+                self.changed()
+            }
+            "import_video" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct SampleFrame {
+                    time_ms: u32,
+                    rgba_base64: String,
+                }
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Import {
+                    name: String,
+                    comp_id: CompId,
+                    width: u32,
+                    height: u32,
+                    fps_num: u32,
+                    fps_den: u32,
+                    duration_ticks: i64,
+                    poster_rgba_base64: String,
+                    frames: Vec<SampleFrame>,
+                }
+                let video: Import = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                if video.frames.is_empty() {
+                    return Err("Video import needs at least one sampled frame".into());
+                }
+                if video.width == 0 || video.height == 0 {
+                    return Err("Video dimensions must be non-zero".into());
+                }
+                let comp = self
+                    .project
+                    .comp(video.comp_id)
+                    .ok_or("Composition not found")?;
+                let comp_duration = comp.duration;
+                let clip_duration = Time(video.duration_ticks.max(1).min(comp_duration.0));
+                // Fit the poster's aspect inside the composition, like images.
+                let scale = (comp.width as f32 / video.width.max(1) as f32)
+                    .min(comp.height as f32 / video.height.max(1) as f32)
+                    .min(1.0)
+                    * 100.0;
+                let times: Vec<u32> = video.frames.iter().map(|f| f.time_ms).collect();
+                if !times.windows(2).all(|w| w[0] < w[1]) {
+                    return Err("Video frame timestamps must be strictly ascending".into());
+                }
+                let asset = MediaAsset {
+                    id: MediaId(0),
+                    name: video.name.clone(),
+                    path: None,
+                    kind: MediaKind::Video {
+                        fps: FrameRate {
+                            num: video.fps_num.max(1),
+                            den: video.fps_den.max(1),
+                        },
+                        duration: clip_duration,
+                    },
+                    // The poster doubles as the library thumbnail and lets the
+                    // asset be reused as a still image anywhere.
+                    embedded: Some(EmbeddedImage {
+                        width: video.width,
+                        height: video.height,
+                        rgba_base64: video.poster_rgba_base64.into(),
+                    }),
+                    audio: None,
+                    slot: None,
+                    alias: None,
+                    perception: None,
+                    video: Some(EmbeddedVideo {
+                        width: video.width,
+                        height: video.height,
+                        fps: FrameRate {
+                            num: video.fps_num.max(1),
+                            den: video.fps_den.max(1),
+                        },
+                        duration: clip_duration,
+                        times_millis: times.into(),
+                        frames_base64: video
+                            .frames
+                            .into_iter()
+                            .map(|f| -> Arc<str> { f.rgba_base64.into() })
+                            .collect(),
+                    }),
+                };
+                let mut layer = Layer::new(
+                    &asset.name.clone(),
+                    LayerKind::Footage {
+                        media: self.project.next_media,
+                    },
+                    Time::ZERO,
+                    clip_duration,
+                );
+                layer.transform.scale = [scale, scale];
+                let op = Op::Batch {
+                    label: format!("Imported {}", asset.name),
+                    ops: vec![
+                        Op::AddMedia { asset },
+                        Op::AddLayer {
+                            comp: video.comp_id,
+                            layer,
+                        },
+                    ],
+                };
+                // Atomic like images: decode every sampled frame on a candidate.
                 let mut candidate = self.project.clone();
                 op.clone()
                     .apply(&mut candidate)

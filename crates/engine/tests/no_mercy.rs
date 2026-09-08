@@ -627,6 +627,7 @@ fn media_injection_edge_cases() {
         slot: None,
         alias: None,
         perception: None,
+        video: None,
     });
     add(
         &mut p,
@@ -670,6 +671,7 @@ fn media_injection_edge_cases() {
         slot: None,
         alias: None,
         perception: None,
+        video: None,
     });
     add(
         &mut p2,

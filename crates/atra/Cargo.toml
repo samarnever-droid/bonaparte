@@ -1,0 +1,5 @@
+[package]
+name = "atra"
+version = "0.1.0"
+edition = "2021"
+description = "Atra — sharded seqlock-read cache engine core (the owner's Meridian engine, integrated as Bonaparte's media frame cache)"

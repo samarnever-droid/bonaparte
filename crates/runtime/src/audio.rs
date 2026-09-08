@@ -149,6 +149,7 @@ impl EditorSession {
             slot: None,
             alias: None,
             perception: None,
+            video: None,
         };
         commit(
             &mut self.project,

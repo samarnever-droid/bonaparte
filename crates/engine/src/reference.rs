@@ -1231,6 +1231,7 @@ mod tests {
             slot: None,
             alias: None,
             perception: None,
+            video: None,
         });
         let mut layer = Layer::new(
             "img",

@@ -42,12 +42,31 @@ struct LruState {
     next_unallocated: usize,
 }
 
-/// Two-tier playback cache with strictly capped RAM and disk spillover.
+/// Byte budget of the Atra hot tier (tier 0). At the sampled-video frame
+/// sizes we ship (~0.2 MB) this holds hundreds of frames — far beyond the
+/// slot count — so timeline scrubs stop hitting the disk tier.
+const HOT_TIER_BYTES: usize = 96 * 1024 * 1024;
+
+/// Observability for the Atra hot tier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HotStats {
+    pub items: u64,
+    pub hits: u64,
+    pub misses: u64,
+    pub hit_ratio: f64,
+    pub evictions: u64,
+}
+
+/// Three-tier playback cache: Atra hot tier (tier 0, byte-budgeted,
+/// lock-free probe reads) -> LRU RAM slots (tier 1, slot-capped) ->
+/// disk files (tier 2). The slot tier keeps the architecture's flat-RAM
+/// guarantee; the hot tier multiplies effective scrub depth for free.
 pub struct DiskPlaybackCache {
     cache_dir: PathBuf,
     capacity: usize,
     slots: Vec<UnsafeCell<FrameSlot>>,
     tracker: Mutex<LruState>,
+    hot: atra::Engine,
 }
 
 unsafe impl Send for DiskPlaybackCache {}
@@ -73,6 +92,13 @@ impl DiskPlaybackCache {
                 map: HashMap::with_capacity(capacity),
                 lru: VecDeque::with_capacity(capacity),
                 next_unallocated: 0,
+            }),
+            hot: atra::Engine::new(atra::EngineOptions {
+                shard_hint: None,
+                total_entries: capacity.max(16) * 64,
+                cores: None,
+                memory_bytes: HOT_TIER_BYTES,
+                min_buckets: 1024,
             }),
         })
     }
@@ -134,6 +160,34 @@ impl DiskPlaybackCache {
         self.cache_dir.join(format!("{}_{}.raw", media.0, time.0))
     }
 
+    fn hot_key(media: MediaId, time: Time) -> [u8; 16] {
+        let mut key = [0u8; 16];
+        key[0..8].copy_from_slice(&media.0.to_le_bytes());
+        key[8..16].copy_from_slice(&time.0.to_le_bytes());
+        key
+    }
+
+    fn hot_value(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut value = Vec::with_capacity(8 + rgba.len());
+        value.extend_from_slice(&width.to_le_bytes());
+        value.extend_from_slice(&height.to_le_bytes());
+        value.extend_from_slice(rgba);
+        value
+    }
+
+    /// Atra hot-tier observability (hit ratio tells you how often scrubs
+    /// avoid the disk tier entirely).
+    pub fn hot_stats(&self) -> HotStats {
+        let s = self.hot.stats();
+        HotStats {
+            items: s.items,
+            hits: s.hits,
+            misses: s.misses,
+            hit_ratio: s.hit_ratio,
+            evictions: s.evictions,
+        }
+    }
+
     /// Insert a decoded frame into the two-tier cache (written to disk and loaded into RAM).
     pub fn insert_frame(
         &self,
@@ -156,8 +210,13 @@ impl DiskPlaybackCache {
         file.write_all(rgba)?;
         file.flush()?;
 
-        // 2. Put into RAM store (Tier 1)
+        // 2. Put into RAM store (Tier 1) and the Atra hot tier (Tier 0).
         self.put_into_ram(media, time, width, height, rgba);
+        self.hot.set(
+            &Self::hot_key(media, time),
+            &Self::hot_value(width, height, rgba),
+        );
+        self.hot.sweep();
 
         Ok(())
     }
@@ -232,7 +291,27 @@ impl DiskPlaybackCache {
             }
         }
 
-        // Slow path: check disk and load into a RAM slot
+        // Hot path: the Atra tier keeps frames that fell out of the slot
+        // tier, so scrubbing back avoids the disk entirely.
+        let hot_key = Self::hot_key(media, time);
+        if let Some(bytes) = self.hot.get(&hot_key) {
+            if bytes.len() >= 8 {
+                let width = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+                let height = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                let expected = (width * height * 4) as usize;
+                if bytes.len() == 8 + expected {
+                    let slot_idx = self.put_into_ram(media, time, width, height, &bytes[8..]);
+                    let slot = unsafe { &*self.slots[slot_idx].get() };
+                    return Some(FrameView {
+                        width: slot.width,
+                        height: slot.height,
+                        rgba: &slot.rgba,
+                    });
+                }
+            }
+        }
+
+        // Slow path: check disk and load into a RAM slot (+ hot tier)
         let disk_path = self.frame_disk_path(media, time);
         if !disk_path.is_file() {
             return None;
@@ -250,6 +329,9 @@ impl DiskPlaybackCache {
         file.read_exact(&mut rgba).ok()?;
 
         let slot_idx = self.put_into_ram(media, time, width, height, &rgba);
+        self.hot
+            .set(&hot_key, &Self::hot_value(width, height, &rgba));
+
         let slot = unsafe { &*self.slots[slot_idx].get() };
 
         Some(FrameView {
@@ -259,8 +341,9 @@ impl DiskPlaybackCache {
         })
     }
 
-    /// Clear all RAM slots and disk cache files.
+    /// Clear all RAM slots, the hot tier, and disk cache files.
     pub fn clear(&self) -> std::io::Result<()> {
+        self.hot.flush();
         let mut tracker = self.tracker.lock().unwrap();
         tracker.map.clear();
         tracker.lru.clear();

@@ -23,9 +23,9 @@ pub mod time;
 pub mod validation;
 
 pub use document::{
-    AssetRole, BlendMode, Camera, Comp, EffectiveTransform, EmbeddedImage, Layer, LayerKind,
-    MediaAsset, MediaKind, PerceptionCard, Project, Property, ShapeStyle, SlotDef, StaticTransform,
-    TextStyle, Turntable,
+    AssetRole, BlendMode, Camera, Comp, EffectiveTransform, EmbeddedImage, EmbeddedVideo, Layer,
+    LayerKind, MediaAsset, MediaKind, PerceptionCard, Project, Property, ShapeStyle, SlotDef,
+    StaticTransform, TextStyle, Turntable,
 };
 pub use ids::{CompId, LayerId, MediaId};
 pub use keyframe::{Easing, Keyframe, PropValue, Track};

@@ -3,6 +3,7 @@ import { command, binary, desktop, invoke } from "./bridge";
 import { saveRecovery, readRecovery } from "./persistence";
 import { clearGeometryCache } from "./geometry";
 import { AudioTransport, type AudioMeter, type AudioChunkMeta } from "./audio/transport";
+import { planAllocation } from "./media/autoAlloc";
 import { AUDIO_RATE, emptyAudio, type AudioArrangement } from "./audio/model";
 import {
   parsePreviewPacket,
@@ -294,10 +295,11 @@ async function reconcileExternalEdits(): Promise<boolean> {
     if (editor.pending > 1 || editor.playing || pendingLive !== null) return;
     if (typeof document !== "undefined" && document.hidden) return;
     const snapshot = (await command<Snapshot | SnapshotPatch>("state", {})) as
-      | Snapshot
-      | SnapshotPatch;
+      Snapshot | SnapshotPatch;
     if (snapshot.revision !== editor.revision) accept(snapshot);
-  }).then(() => true).catch(() => false);
+  })
+    .then(() => true)
+    .catch(() => false);
 }
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 export function startReconciling() {
@@ -369,10 +371,7 @@ export async function init() {
       if (recovery) {
         try {
           state = await command<Snapshot>("open_project", { json: recovery });
-          setTimeout(
-            () => notify("Restored your unsaved work from the last session."),
-            600,
-          );
+          setTimeout(() => notify("Restored your unsaved work from the last session."), 600);
           notify("Your last session was recovered.");
         } catch {
           notify("The saved recovery could not be opened. Your original file is unchanged.", true);
@@ -1558,12 +1557,145 @@ export async function vectorizeImage(compId: number, layerId: number) {
     notify(String(error), true);
   }
 }
+const rgbaToBase64 = (pixels: Uint8ClampedArray | Uint8Array): string => {
+  let raw = "";
+  for (let i = 0; i < pixels.length; i += 8192)
+    raw += String.fromCharCode(...pixels.subarray(i, i + 8192));
+  return btoa(raw);
+};
+
+function seekVideo(el: HTMLVideoElement, time: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      el.removeEventListener("seeked", done);
+      clearTimeout(guard);
+      resolve();
+    };
+    const guard = setTimeout(done, 2500); // stalled streams still make progress
+    el.addEventListener("seeked", done);
+    el.currentTime = time;
+  });
+}
+
+/** Video import: the browser decodes; we sample keyframes, and the
+ * auto-allocation engine decides how many frames at what resolution the
+ * project should carry. One line of "here's the plan" and it just works. */
+export async function importVideo(file?: File) {
+  if (!file) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v";
+    input.onchange = () => {
+      const selected = input.files?.[0];
+      if (selected) void importVideo(selected);
+    };
+    input.click();
+    return;
+  }
+  const comp = activeComp();
+  if (!comp) return;
+  const url = URL.createObjectURL(file);
+  editor.imageImporting = true;
+  notify("Importing video… reading it with the browser's own decoder.");
+  try {
+    const el = document.createElement("video");
+    el.preload = "auto";
+    el.muted = true;
+    el.src = url;
+    await new Promise<void>((resolve, reject) => {
+      el.onloadedmetadata = () => resolve();
+      el.onerror = () =>
+        reject(new Error("This video could not be decoded here. Try an MP4 (H.264) or WebM."));
+      setTimeout(() => reject(new Error("Video metadata timed out.")), 15000);
+    });
+    const duration = Number.isFinite(el.duration) ? el.duration : 0;
+    const width = el.videoWidth,
+      height = el.videoHeight;
+    if (!duration || !width || !height)
+      throw new Error("This file has no readable video track (audio-only or broken).");
+    const plan = planAllocation({ kind: "video", bytes: file.size, width, height, duration });
+    const scaleW = Math.min(width, plan.sampleWidth);
+    const scaleH = Math.max(2, Math.round(height * (scaleW / width)));
+    const canvas = document.createElement("canvas");
+    canvas.width = scaleW;
+    canvas.height = scaleH;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+    const grab = async (t: number) => {
+      await seekVideo(el, Math.max(0, Math.min(duration - 0.04, t)));
+      ctx.drawImage(el, 0, 0, scaleW, scaleH);
+      return rgbaToBase64(ctx.getImageData(0, 0, scaleW, scaleH).data);
+    };
+    const frames: { timeMs: number; rgbaBase64: string }[] = [];
+    for (let i = 0; i < plan.sampleCount; i++) {
+      const t = (i / plan.sampleCount) * duration;
+      frames.push({ timeMs: Math.round(t * 1000), rgbaBase64: await grab(t) });
+    }
+    const posterBase64 = await grab(duration * 0.2);
+    const durationTicks = Math.max(TICKS_PER_SEC / 30, Math.round(duration * TICKS_PER_SEC));
+    await queued(async () => {
+      accept(
+        await command<Snapshot | SnapshotPatch>("import_video", {
+          compId: comp.id,
+          name: file.name,
+          width: scaleW,
+          height: scaleH,
+          fpsNum: 30,
+          fpsDen: 1,
+          durationTicks,
+          posterRgbaBase64: posterBase64,
+          frames,
+        }),
+      );
+    });
+    notify(`Video imported — auto-allocated: ${plan.note}`);
+  } catch (e) {
+    notify(String(e instanceof Error ? e.message : e), true);
+  } finally {
+    editor.imageImporting = false;
+    URL.revokeObjectURL(url);
+  }
+}
+/** Reuse any library asset in the active composition: images and videos
+ * become footage layers, audio lands as a clip on a track. */
+export async function addMediaToComp(mediaId: number) {
+  const asset = editor.project?.media[String(mediaId)];
+  const comp = activeComp();
+  if (!asset || !comp) return;
+  if (asset.audio) {
+    const { addAssetClip } = await import("./audio/actions");
+    await addAssetClip(mediaId);
+    return;
+  }
+  const dims = asset.embedded ?? asset.video;
+  const width = dims?.width ?? comp.width;
+  const height = dims?.height ?? comp.height;
+  const scale = Math.min(comp.width / width, comp.height / height, 1) * 100;
+  const videoDuration =
+    typeof asset.kind === "object" && "Video" in asset.kind ? (asset.kind.Video.duration ?? 0) : 0;
+  const duration = Math.max(
+    TICKS_PER_SEC / 30,
+    Math.min(comp.duration, videoDuration || comp.duration),
+  );
+  const layer = newLayer({ Footage: { media: mediaId } }, asset.name, duration);
+  layer.start = editor.currentTime;
+  layer.transform.scale = [scale, scale];
+  const ok = await applyOp({
+    type: "batch",
+    label: `Added ${asset.name}`,
+    ops: [{ type: "addLayer", comp: comp.id, layer }],
+  });
+  if (ok) {
+    editor.selected = layer.id;
+    notify(`${asset.name} added to ${comp.name}.`);
+  }
+}
 /** One front door for drops and browse: routes a file to the right importer. */
 export async function importAnyFile(file?: File) {
   if (!file) {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/png,image/jpeg,image/webp,image/svg+xml,.svg,.obj,audio/*";
+    input.accept =
+      "image/png,image/jpeg,image/webp,image/svg+xml,.svg,.obj,audio/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov";
     input.multiple = true;
     input.onchange = () => {
       for (const selected of Array.from(input.files ?? [])) void importAnyFile(selected);
@@ -1573,7 +1705,12 @@ export async function importAnyFile(file?: File) {
   }
   if (/\.svg$/i.test(file.name) || file.type === "image/svg+xml") await importSvg(file);
   else if (/\.obj$/i.test(file.name) || file.type === "model/obj") await importObj(file);
-  else if (file.type.startsWith("audio/") || /\.(wav|mp3|flac|ogg|oga|aif|aiff|m4a|aac)$/i.test(file.name)) {
+  else if (file.type.startsWith("video/") || /\.(mp4|m4v|webm|mov|mkv|avi)$/i.test(file.name))
+    await importVideo(file);
+  else if (
+    file.type.startsWith("audio/") ||
+    /\.(wav|mp3|flac|ogg|oga|aif|aiff|m4a|aac)$/i.test(file.name)
+  ) {
     const { importAudio } = await import("./audio/actions");
     await importAudio(file);
   } else if (file.type.startsWith("image/")) await importImage(file);
@@ -1643,7 +1780,13 @@ export function layerContextItems(layerId: number): ContextMenuItem[] {
     {
       label: layer.locked ? "Unlock" : "Lock",
       icon: layer.locked ? "unlock" : "lock",
-      run: () => void applyOp({ type: "setLayerLocked", comp: comp.id, layer: layerId, locked: !layer.locked }),
+      run: () =>
+        void applyOp({
+          type: "setLayerLocked",
+          comp: comp.id,
+          layer: layerId,
+          locked: !layer.locked,
+        }),
     },
     {
       label: layer.visible ? "Hide" : "Show",
@@ -1826,7 +1969,11 @@ export async function exportFile(
   if (!comp) return;
   editor.exporting = true;
   editor.exportProgress = null;
-  const args: Record<string, unknown> = { compId: comp.id, time: editor.currentTime, bypassEffects: false };
+  const args: Record<string, unknown> = {
+    compId: comp.id,
+    time: editor.currentTime,
+    bypassEffects: false,
+  };
   if (format === "png") {
     if (options.bitDepth) args.bitDepth = options.bitDepth;
     if (options.outputSpace) args.outputSpace = options.outputSpace;
@@ -1862,8 +2009,7 @@ export async function exportFile(
         const elapsedMs = raw.startedMs > 0 ? Math.max(0, Date.now() - raw.startedMs) : 0;
         // The parallel pipeline needs a moment before the encoder stream is
         // steady — early samples produce absurd ETAs, so wait for real flow.
-        const rate =
-          elapsedMs > 1500 && done >= 4 ? done / (elapsedMs / 1000) : 0;
+        const rate = elapsedMs > 1500 && done >= 4 ? done / (elapsedMs / 1000) : 0;
         const eta = rate > 0 ? (total - done) / rate : 0;
         etaSmoothed = etaSmoothed === 0 ? eta : etaSmoothed * 0.7 + eta * 0.3;
         editor.exportProgress = {

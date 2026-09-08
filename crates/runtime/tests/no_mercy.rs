@@ -60,6 +60,7 @@ fn media_asset(name: &str, w: u32, h: u32) -> MediaAsset {
         slot: None,
         alias: None,
         perception: None,
+        video: None,
     }
 }
 
