@@ -99,14 +99,14 @@ pub fn handle_request(session: &mut McpSession, req: JsonRpcRequest) -> Option<J
                 let err_msg = call_result
                     .content
                     .first()
-                    .map(|c| c.text.as_str())
+                    .map(|c| c.text.as_deref().unwrap_or(""))
                     .unwrap_or("Tool execution failed");
                 JsonRpcResponse::error(id, JsonRpcError::internal_error(err_msg))
             } else {
                 let text = call_result
                     .content
                     .first()
-                    .map(|c| c.text.as_str())
+                    .map(|c| c.text.as_deref().unwrap_or(""))
                     .unwrap_or("");
                 let result_value = serde_json::from_str::<serde_json::Value>(text)
                     .unwrap_or_else(|_| json!({ "result": text }));

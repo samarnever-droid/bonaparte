@@ -21,6 +21,11 @@ pub struct EmbeddedAudio {
     /// ascending. Absent until the user runs beat detection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_grid: Option<Arc<[f64]>>,
+    /// Kaya transcript: word-level timings from speech recognition —
+    /// `word`, `start_ms`, `dur_ms`. First-class project data so Kinetic,
+    /// captions and AI agents can read exactly what was said when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kaya_words: Option<Arc<[KayaWord]>>,
     pub sha256: String,
     pub frames: u64,
     pub channels: u16,
@@ -194,6 +199,14 @@ impl AudioTrack {
         }
     }
 }
+/// One timed word of a Kaya transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KayaWord {
+    pub word: String,
+    pub start_ms: f64,
+    pub dur_ms: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioMarker {
     pub id: String,

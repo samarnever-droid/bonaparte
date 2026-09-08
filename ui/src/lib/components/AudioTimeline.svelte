@@ -246,6 +246,11 @@
               !!editor.project?.media[String(clip.media)]?.audio?.beat_grid?.length,
           }),
       },
+      {
+        label: "Kaya ⚡ speech & narrator",
+        icon: "wave",
+        run: () => (editor.dialog = { kind: "kaya", assetId: clip.media }),
+      },
       { separator: true },
       {
         label: clip.muted ? "Unmute clip" : "Mute clip",

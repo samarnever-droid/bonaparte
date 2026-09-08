@@ -13,3 +13,5 @@ miniz_oxide = "0.8"
 crc32fast = "1.4"
 bonaparte-runtime = { path = "../runtime" } # shared persistence, validation and export service
 bonaparte-effects = { path = "../effects" } # manifest discovery for automation
+bonaparte-audio = { path = "../audio" } # audio.extract: inline mixdown for audio-native models
+base64 = "0.22" # inline image/audio content blocks

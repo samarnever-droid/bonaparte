@@ -109,6 +109,15 @@
         void applyOp({ type: "reorderLayer", comp: comp.id, layer: id, newIndex: target });
       return;
     }
+    if (mod && key === "a") {
+      e.preventDefault();
+      const comp = activeComp();
+      if (comp && editor.timelineMode !== "audio") {
+        editor.selected = comp.layer_order[comp.layer_order.length - 1] ?? null;
+        editor.multiSelected = comp.layer_order.filter((id) => id !== editor.selected);
+      }
+      return;
+    }
     if (mod && key === "d") {
       e.preventDefault();
       if (editor.timelineMode === "audio") {
@@ -124,6 +133,11 @@
         if (editor.playing || editor.audioStarting) pause();
         else void play();
       }
+      return;
+    }
+    if (e.key === "Escape" && !editor.interaction && !editor.timelineGesture) {
+      editor.multiSelected = [];
+      if (editor.selected != null) editor.selected = null;
       return;
     }
     const comp = activeComp();

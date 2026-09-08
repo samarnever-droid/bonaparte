@@ -5,13 +5,13 @@ use std::path::Path;
 
 use bonaparte_effects::registry::builtin_registry;
 use bonaparte_engine::reference::render_comp;
-use bonaparte_model::{FrameRate, LayerId, Op, Project, Time};
+use bonaparte_model::{CompId, FrameRate, LayerId, Op, Project, Time};
 use bonaparte_runtime::{decode_embedded_frames, RenderInput};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::png::encode_png;
-use crate::protocol::{ToolCallResult, ToolDefinition};
+use crate::protocol::{TextContent, ToolCallResult, ToolDefinition};
 use crate::session::McpSession;
 
 /// Converts an f64 fps to a rational FrameRate.
@@ -166,6 +166,35 @@ pub fn list_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["output_path"]
             }),
         },
+        ToolDefinition {
+            name: "frame.view".to_string(),
+            description: "THE FRAME VIEWER — see the composition with your own vision. Renders the composition at one timestamp (or an evenly-spaced storyboard) and returns actual PNG images INLINE in this conversation: a vision-native model looks at the real pixels, not a description. Cheapest way to check design, layout, text, color or progress.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "comp_id": { "type": "integer", "description": "Composition ID (defaults to active comp)" },
+                    "time": { "type": "number", "description": "Single timestamp in seconds" },
+                    "count": { "type": "integer", "description": "Storyboard mode: N frames evenly spaced across the range (1-12, default 4)" },
+                    "start_time": { "type": "number", "description": "Storyboard range start in seconds (default 0)" },
+                    "end_time": { "type": "number", "description": "Storyboard range end in seconds (default comp duration)" },
+                    "width": { "type": "integer", "description": "Downscaled width in pixels for token economy (16-1024, default 512; height preserves aspect)" }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "audio.extract".to_string(),
+            description: "THE AUDIO EXTRACTOR — hear the mix with your own audio sense. Renders the composition's audio for a time range and returns a WAV file INLINE (base64) plus a loudness summary: an audio-native model listens to the actual mix — music, voice, silence — instead of guessing from metadata.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "comp_id": { "type": "integer", "description": "Composition ID (defaults to active comp)" },
+                    "start_secs": { "type": "number", "description": "Range start in seconds (default 0)" },
+                    "duration_secs": { "type": "number", "description": "Seconds of audio to extract (default: min(comp length, 20); cap 30)" },
+                    "rate": { "type": "integer", "description": "Sample rate 8000-48000 (default 16000 — plenty for listening)" },
+                    "mono": { "type": "boolean", "description": "Mix down to mono (default true — half the tokens)" }
+                }
+            }),
+        },
     ]
 }
 
@@ -272,7 +301,7 @@ pub fn editor_describe(
             "export_png": "POST /api/export_png {compId, time}",
             "describe": "POST /api/describe — this document",
         },
-        "mcp_tools": ["project.info", "op.apply", "ops.propose", "effects.list", "editor.describe", "export.lut", "comp.render", "history.undo", "history.redo", "debug.panic"],
+        "mcp_tools": ["project.info", "op.apply", "ops.propose", "effects.list", "editor.describe", "export.lut", "comp.render", "frame.view", "audio.extract", "history.undo", "history.redo", "debug.panic"],
         "effects": effects,
         "project": {
             "name": project.name,
@@ -317,6 +346,8 @@ pub fn execute_tool(
         "history.undo" => tool_history_undo(session, args),
         "history.redo" => tool_history_redo(session, args),
         "comp.render" => tool_comp_render(session, args),
+    "frame.view" => tool_frame_view(session, args),
+    "audio.extract" => tool_audio_extract(session, args),
         unknown => ToolCallResult::error(format!("Unknown tool: '{unknown}'")),
     }
 }
@@ -324,6 +355,248 @@ pub fn execute_tool(
 // ---------------------------------------------------------------------------
 // Tool Implementations
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Vision-Native MCP: the frame viewer and the audio extractor
+// ---------------------------------------------------------------------------
+
+/// Nearest-neighbour RGBA downscale — cheap, deterministic, good enough for
+/// a model to read layout, text and color. Aspect is preserved.
+fn downscale_rgba(width: u32, height: u32, rgba: &[u8], target_w: u32) -> (u32, u32, Vec<u8>) {
+    let target_w = target_w.clamp(16, 1024).min(width);
+    if target_w == width {
+        return (width, height, rgba.to_vec());
+    }
+    let target_h = ((u64::from(height) * u64::from(target_w)) / u64::from(width)).max(1) as u32;
+    let mut out = vec![0u8; (target_w as usize) * (target_h as usize) * 4];
+    for y in 0..target_h {
+        let sy = (u64::from(y) * u64::from(height) / u64::from(target_h)) as u32;
+        for x in 0..target_w {
+            let sx = (u64::from(x) * u64::from(width) / u64::from(target_w)) as u32;
+            let src = ((sy as usize * width as usize) + sx as usize) * 4;
+            let dst = ((y as usize * target_w as usize) + x as usize) * 4;
+            out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+        }
+    }
+    (target_w, target_h, out)
+}
+
+fn resolve_comp_id(session: &McpSession, comp_id: Option<u64>) -> Result<CompId, String> {
+    match comp_id {
+        Some(id) => {
+            if session.project.comp(CompId(id)).is_some() {
+                Ok(CompId(id))
+            } else {
+                Err(format!("Composition {id} does not exist"))
+            }
+        }
+        None => session
+            .active_comp
+            .or_else(|| session.project.comps.keys().next().copied())
+            .ok_or_else(|| "The project has no compositions".to_string()),
+    }
+}
+
+fn tool_frame_view(session: &McpSession, args: serde_json::Value) -> ToolCallResult {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct View {
+        comp_id: Option<u64>,
+        time: Option<f64>,
+        count: Option<usize>,
+        start_time: Option<f64>,
+        end_time: Option<f64>,
+        width: Option<u32>,
+    }
+    let v: View = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return ToolCallResult::error(format!("Invalid arguments for frame.view: {e}")),
+    };
+    let comp_id = match resolve_comp_id(session, v.comp_id) {
+        Ok(c) => c,
+        Err(e) => return ToolCallResult::error(e),
+    };
+    let comp = session.project.comp(comp_id).expect("resolved comp");
+    let duration_secs = comp.duration.as_secs_f64();
+    let times: Vec<f64> = if let Some(t) = v.time {
+        if !t.is_finite() || t < 0.0 || t > duration_secs + 1.0 {
+            return ToolCallResult::error(format!(
+                "time must be within the composition (0–{duration_secs:.3}s)"
+            ));
+        }
+        vec![t.min(duration_secs)]
+    } else {
+        let count = v.count.unwrap_or(4).clamp(1, 12);
+        let start = v.start_time.unwrap_or(0.0).max(0.0);
+        let end = v.end_time.unwrap_or(duration_secs).min(duration_secs);
+        if end <= start {
+            return ToolCallResult::error("end_time must be greater than start_time");
+        }
+        (0..count)
+            .map(|i| start + (end - start) * i as f64 / count.max(2) as f64)
+            .collect()
+    };
+    let target = v.width.unwrap_or(512);
+    let frames = match decode_embedded_frames(&session.project) {
+        Ok(f) => f,
+        Err(e) => return ToolCallResult::error(e),
+    };
+    let mut meta = Vec::with_capacity(times.len());
+    let mut blocks = Vec::with_capacity(times.len() + 1);
+    for t in &times {
+        let frame = match render_comp(&session.project, comp_id, Time::from_secs_f64(*t), &frames) {
+            Ok(f) => f,
+            Err(e) => return ToolCallResult::error(format!("Render failed: {e}")),
+        };
+        let (w, h, rgba) = downscale_rgba(frame.width, frame.height, &frame.rgba, target);
+        let png = match encode_png(w, h, &rgba) {
+            Ok(b) => b,
+            Err(e) => return ToolCallResult::error(format!("PNG encoding error: {e}")),
+        };
+        meta.push(json!({
+            "time_secs": t,
+            "width": w,
+            "height": h,
+        }));
+        use base64::Engine;
+        blocks.push(TextContent::image(
+            "image/png",
+            base64::engine::general_purpose::STANDARD.encode(&png),
+        ));
+    }
+    blocks.insert(
+        0,
+        TextContent::text(
+            json!({
+                "view": "storyboard",
+                "comp": comp.name,
+                "frames": meta,
+                "note": "The images above are the actual composition — inspect them visually."
+            })
+            .to_string(),
+        ),
+    );
+    ToolCallResult::rich(blocks)
+}
+
+fn tool_audio_extract(session: &mut McpSession, args: serde_json::Value) -> ToolCallResult {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Extract {
+        comp_id: Option<u64>,
+        start_secs: Option<f64>,
+        duration_secs: Option<f64>,
+        rate: Option<u32>,
+        mono: Option<bool>,
+    }
+    let e: Extract = match serde_json::from_value(args) {
+        Ok(e) => e,
+        Err(err) => {
+            return ToolCallResult::error(format!("Invalid arguments for audio.extract: {err}"))
+        }
+    };
+    let comp_id = match resolve_comp_id(session, e.comp_id) {
+        Ok(c) => c,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    let comp = session.project.comp(comp_id).expect("resolved comp");
+    let comp_secs = comp.duration.as_secs_f64();
+    let rate = e.rate.unwrap_or(16_000).clamp(8_000, 48_000);
+    let mono = e.mono.unwrap_or(true);
+    let start = e.start_secs.unwrap_or(0.0).max(0.0);
+    let duration = e
+        .duration_secs
+        .unwrap_or_else(|| comp_secs.min(20.0))
+        .clamp(0.1, 30.0)
+        .min((comp_secs - start).max(0.1));
+    if start >= comp_secs {
+        return ToolCallResult::error(format!(
+            "start_secs {start} is past the composition ({comp_secs:.3}s)"
+        ));
+    }
+    // Live session's decoded cache when hosted (avoids re-decode); fresh otherwise.
+    let sources = match &session.live {
+        Some(live) => live.lock().expect("live session").audio.clone(),
+        None => match bonaparte_runtime::decode_project_audio(&session.project) {
+            Ok(s) => s,
+            Err(err) => return ToolCallResult::error(err),
+        },
+    };
+    let plan = match bonaparte_audio::MixPlan::new(&session.project, comp_id, &sources) {
+        Ok(p) => p,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    let start_frame = (start * rate as f64).round() as i64;
+    let frame_count = (duration * rate as f64).round() as usize;
+    let block = match plan.render(start_frame, frame_count, rate) {
+        Ok(b) => b,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    // The mix renders stereo interleaved; mix down when asked.
+    let (channels, samples): (u16, Vec<f32>) = if mono {
+        let stereo = &block.samples;
+        let mut m = Vec::with_capacity(stereo.len() / 2);
+        for pair in stereo.chunks(2) {
+            m.push(match pair {
+                [l, r] => (l + r) * 0.5,
+                [only] => *only,
+                _ => 0.0,
+            });
+        }
+        (1, m)
+    } else {
+        (2, block.samples.clone())
+    };
+    let peak = samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    let rms = if samples.is_empty() {
+        0.0
+    } else {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    };
+    // 16-bit PCM WAV.
+    let mut wav = Vec::with_capacity(44 + samples.len() * 2);
+    let data_len = samples.len() * 2;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+    wav.extend_from_slice(&(channels * 2).to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for s in &samples {
+        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        wav.extend_from_slice(&v.to_le_bytes());
+    }
+    let db = |x: f32| {
+        if x > 0.0 {
+            20.0 * (x as f64).log10()
+        } else {
+            -96.0
+        }
+    };
+    let meta = json!({
+        "comp": comp.name,
+        "start_secs": start,
+        "duration_secs": duration,
+        "sampleRate": rate,
+        "channels": channels,
+        "peakDb": (db(peak) * 10.0).round() / 10.0,
+        "rmsDb": (db(rms) * 10.0).round() / 10.0,
+        "note": "The audio block above is the actual mix — listen to it."
+    });
+    use base64::Engine;
+    ToolCallResult::rich(vec![
+        TextContent::text(meta.to_string()),
+        TextContent::audio(
+            "audio/wav",
+            base64::engine::general_purpose::STANDARD.encode(&wav),
+        ),
+    ])
+}
 
 #[derive(Deserialize)]
 struct CreateProjectArgs {

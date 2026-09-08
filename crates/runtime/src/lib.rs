@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex};
 pub mod audio;
 pub mod color;
 pub mod interaction;
+pub mod kaya;
 mod patch;
 pub mod preview;
 pub use audio::{decode_project_audio, AudioChunkRequest, DecodedAudios};
@@ -769,6 +770,130 @@ impl EditorSession {
                     r
                 })
             }
+            "disassemble" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Explode {
+                    comp_id: u64,
+                    layer_id: u64,
+                }
+                let x: Explode = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let comp_id = CompId(x.comp_id);
+                let layer_id = LayerId(x.layer_id);
+                {
+                    let comp = self.project.comp(comp_id).ok_or("Composition not found")?;
+                    let layer = comp.layers.get(&layer_id).ok_or("Layer not found")?;
+                    if layer.locked {
+                        return Err("Unlock the layer first".into());
+                    }
+                    let LayerKind::PreComp { comp: child_id } = &layer.kind else {
+                        return Err("Disassemble works on assembled groups (PreComp layers)".into());
+                    };
+                    if self.project.comp(*child_id).is_none() {
+                        return Err("The assembled composition is missing".into());
+                    }
+                }
+                let parent_index = self
+                    .project
+                    .comp(comp_id)
+                    .unwrap()
+                    .layer_order
+                    .iter()
+                    .position(|id| *id == layer_id)
+                    .unwrap_or(0);
+                let (parent_layer, child_comp) = {
+                    let comp = self.project.comp(comp_id).unwrap();
+                    let parent = comp.layers[&layer_id].clone();
+                    let child_id = match &parent.kind {
+                        LayerKind::PreComp { comp: c } => *c,
+                        _ => unreachable!("checked above"),
+                    };
+                    let child = self.project.comp(child_id).unwrap().clone();
+                    (parent, child)
+                };
+                if child_comp.layer_order.len() > 256 {
+                    return Err("Disassemble caps at 256 layers — the group is too big".into());
+                }
+                // Compose the parent's static transform onto each child:
+                // position rotates/scales with the parent, scale/rotation/
+                // opacity multiply. Group parents are typically a plain fit-
+                // scale, so this is exact for the assembled-import case.
+                let pt = &parent_layer.transform;
+                let (rad, sin, cos) = (
+                    pt.rotation.to_radians(),
+                    pt.rotation.to_radians().sin(),
+                    pt.rotation.to_radians().cos(),
+                );
+                let mut ops: Vec<Op> = Vec::new();
+                ops.push(Op::RemoveLayer {
+                    comp: comp_id,
+                    layer: layer_id,
+                });
+                for cid in &child_comp.layer_order {
+                    let mut child = child_comp.layers[cid].clone();
+                    let ct = &mut child.transform;
+                    let local = [
+                        ct.position[0] * pt.scale[0] / 100.0,
+                        ct.position[1] * pt.scale[1] / 100.0,
+                    ];
+                    ct.position = [
+                        pt.position[0] + local[0] * cos - local[1] * sin,
+                        pt.position[1] + local[0] * sin + local[1] * cos,
+                    ];
+                    ct.scale = [
+                        ct.scale[0] * pt.scale[0] / 100.0,
+                        ct.scale[1] * pt.scale[1] / 100.0,
+                    ];
+                    ct.rotation += rad.to_degrees();
+                    ct.opacity = (ct.opacity * pt.opacity).clamp(0.0, 1.0);
+                    // The child ran in sub-comp time; it now runs in parent
+                    // time, offset by where the group sat on the timeline.
+                    child.start = Time(parent_layer.start.0 + child.start.0);
+                    if !parent_layer.effects.is_empty() {
+                        let mut effects = parent_layer.effects.clone();
+                        effects.extend(child.effects.clone());
+                        child.effects = effects;
+                    }
+                    if !child.tracks.is_empty() {
+                        for track in child.tracks.values_mut() {
+                            for key in &mut track.keys {
+                                key.time = Time(parent_layer.start.0 + key.time.0);
+                            }
+                        }
+                    }
+                    child.name = format!("{} · {}", parent_layer.name, child.name);
+                    ops.push(Op::AddLayer {
+                        comp: comp_id,
+                        layer: child,
+                    });
+                }
+                // Rebuild the exact stacking order: children take the parent's
+                // old slot, ascending (AddLayer appended them at the end).
+                for i in 0..child_comp.layer_order.len() {
+                    // The id to move: the i-th appended child. AddLayer
+                    // allocated deterministically from next_layer upward.
+                    let assigned =
+                        LayerId(self.project.next_layer.0 + u64::try_from(i).unwrap_or(0));
+                    ops.push(Op::ReorderLayer {
+                        comp: comp_id,
+                        layer: assigned,
+                        new_index: parent_index + i,
+                    });
+                }
+                ops.push(Op::RemoveComp {
+                    comp: child_comp.id,
+                });
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::Batch {
+                        label: format!("Disassembled {}", parent_layer.name),
+                        ops,
+                    },
+                )?;
+                self.changed()
+            }
             "kinetic_lyrics" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -861,8 +986,7 @@ impl EditorSession {
                 let bold = true;
                 let space_w = bonaparte_engine::typography::measure_text(" ", size, bold, 0.0)[0];
                 let y = comp.height as f32 * 0.80;
-                let ms_tick = TICKS_PER_SEC as f64 / 1000.0;
-                let to_t = |ms: f64| (ms * ms_tick).round() as i64;
+                let to_t = |ms: f64| (ms * TICKS_PER_SEC as f64 / 1000.0).round() as i64;
                 // Downbeat test: the persisted grid is rotated so index 0 is a
                 // downbeat — position does the meter.
                 let is_downbeat = |t: f64| -> bool {
@@ -1057,7 +1181,6 @@ impl EditorSession {
                 let comp_id = CompId(d.comp_id);
                 let comp = self.project.comp(comp_id).ok_or("Composition not found")?;
                 let comp_end_tick = comp.duration.0;
-                let ms_tick = TICKS_PER_SEC as f64 / 1000.0;
                 // Events: downbeats by default (grid index 0 is a downbeat).
                 let comp_frames =
                     comp_end_tick * bonaparte_model::AUDIO_RATE as i64 / TICKS_PER_SEC as i64;
@@ -1156,6 +1279,163 @@ impl EditorSession {
                         o.insert("events".into(), json!(count));
                         o.insert("mediaId".into(), json!(media.0));
                         o.insert("flavor".into(), json!(d.flavor));
+                    }
+                    r
+                })
+            }
+            "plugins.list" => {
+                let manifests = kaya::plugin_manifests();
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert(
+                            "plugins".into(),
+                            serde_json::to_value(manifests).unwrap_or(json!([])),
+                        );
+                    }
+                    r
+                })
+            }
+            "kaya.analyze" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Analyze {
+                    asset_id: u64,
+                }
+                let a: Analyze = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let media = MediaId(a.asset_id);
+                let source = self
+                    .audio
+                    .sources
+                    .get(&media)
+                    .cloned()
+                    .or_else(|| {
+                        decode_project_audio(&self.project)
+                            .ok()
+                            .and_then(|d| d.sources.get(&media).cloned())
+                    })
+                    .ok_or("Kaya analyzes decoded audio — import it first")?;
+                let sense = kaya::scene_sense(source.as_ref(), bonaparte_model::AUDIO_RATE)?;
+                let words_on_asset = self
+                    .project
+                    .media
+                    .get(&media)
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.kaya_words.clone());
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("bpm".into(), json!(sense.bpm));
+                        o.insert("beats".into(), json!(sense.beats));
+                        o.insert(
+                            "silence".into(),
+                            json!(sense
+                                .silence
+                                .iter()
+                                .map(|(a, b)| json!({"startMs": a, "durMs": b}))
+                                .collect::<Vec<_>>()),
+                        );
+                        o.insert("annotation".into(), json!({
+                            "silence": sense.silence_annotation,
+                            "words": words_on_asset.map(|w| kaya::annotate(&w)).unwrap_or_default(),
+                        }));
+                    }
+                    r
+                })
+            }
+            "kaya.transcribe" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Transcribe {
+                    asset_id: u64,
+                    #[serde(default)]
+                    openai_key: String,
+                }
+                let t: Transcribe = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let media = MediaId(t.asset_id);
+                let source = self
+                    .audio
+                    .sources
+                    .get(&media)
+                    .cloned()
+                    .or_else(|| {
+                        decode_project_audio(&self.project)
+                            .ok()
+                            .and_then(|d| d.sources.get(&media).cloned())
+                    })
+                    .ok_or("Kaya transcribes decoded audio — import it first")?;
+                let words = kaya::transcribe(source.as_ref(), &t.openai_key)?;
+                let annotation = kaya::annotate(&words);
+                let count = words.len();
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::SetMediaTranscript {
+                        media,
+                        words: words.into(),
+                    },
+                )?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("words".into(), json!(count));
+                        o.insert("annotation".into(), json!(annotation));
+                    }
+                    r
+                })
+            }
+            "narrator.speak" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Narrate {
+                    comp_id: u64,
+                    text: String,
+                    start_secs: f64,
+                    #[serde(default)]
+                    provider: String,
+                    #[serde(default)]
+                    api_key: String,
+                    #[serde(default)]
+                    voice: String,
+                }
+                let n: Narrate = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let narration = kaya::narrate(&n.text, &n.provider, &n.api_key, &n.voice)?;
+                let (embedded, decoded) = bonaparte_media::audio::decode(&narration.audio)?;
+                let start_frame =
+                    (n.start_secs * bonaparte_model::AUDIO_RATE as f64).round() as i64;
+                let prepared = audio::prepare_import(json!({
+                    "compId": n.comp_id,
+                    "name": format!("Narration ⚡ ({})", narration.provider),
+                    "dataBase64": STANDARD.encode(&narration.audio),
+                    "startFrame": start_frame.max(0),
+                }))?;
+                let result = self.import_audio(prepared)?;
+                let media = result
+                    .get("importedAudio")
+                    .and_then(|i| i.get("mediaId"))
+                    .and_then(|m| m.as_u64())
+                    .ok_or("Narration import lost its asset id")?;
+                let plan = kaya::narration_plan(
+                    &n.text,
+                    n.start_secs * 1000.0,
+                    embedded.frames as f64 / bonaparte_model::AUDIO_RATE as f64 * 1000.0,
+                );
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::SetMediaTranscript {
+                        media: MediaId(media),
+                        words: plan.into(),
+                    },
+                )?;
+                self.audio.refresh(&self.project)?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("mediaId".into(), json!(media));
+                        o.insert("provider".into(), json!(narration.provider));
+                        o.insert(
+                            "durationSecs".into(),
+                            json!(embedded.frames as f64 / bonaparte_model::AUDIO_RATE as f64),
+                        );
                     }
                     r
                 })
@@ -1410,28 +1690,60 @@ impl EditorSession {
                 let duration = comp.duration;
                 let comp_w = comp.width as f32;
                 let comp_h = comp.height as f32;
-                let (doc_w, doc_h, mut layers) =
+                let (doc_w, doc_h, layers) =
                     svg_layers(&import.svg, duration.0).map_err(|e| e.to_string())?;
-                // Fit the drawing inside the comp, never upscaling.
+                // ASSEMBLED import: every path lands inside one sub-composition
+                // and the comp gets a single PreComp layer — the artwork moves,
+                // scales and right-clicks as ONE object. Disassemble explodes
+                // it back into layers (command: "disassemble").
                 let scale = (comp_w / doc_w.max(1.0))
                     .min(comp_h / doc_h.max(1.0))
                     .min(1.0);
-                for layer in &mut layers {
-                    layer.transform.scale = [scale * 100.0, scale * 100.0];
-                    layer.transform.position = [
-                        layer.transform.position[0] * scale,
-                        layer.transform.position[1] * scale,
-                    ];
+                // Poster-sized docs get folded into a sane sub-comp: the art
+                // scales inside the group instead of blowing comp limits.
+                const CHILD_CAP: f32 = 4000.0;
+                let inner = (CHILD_CAP / doc_w.max(1.0))
+                    .min(CHILD_CAP / doc_h.max(1.0))
+                    .min(1.0);
+                let child_id = CompId(self.project.next_comp.0);
+                let mut ops: Vec<Op> = vec![Op::CreateComp {
+                    name: format!("{} (SVG)", import.name),
+                    width: (doc_w * inner).ceil().max(1.0) as u32,
+                    height: (doc_h * inner).ceil().max(1.0) as u32,
+                    fps: comp.fps,
+                    duration,
+                }];
+                for layer in layers {
+                    let mut layer = layer;
+                    if inner < 1.0 {
+                        layer.transform.position = [
+                            layer.transform.position[0] * inner,
+                            layer.transform.position[1] * inner,
+                        ];
+                        layer.transform.scale = [
+                            layer.transform.scale[0] * inner,
+                            layer.transform.scale[1] * inner,
+                        ];
+                    }
+                    ops.push(Op::AddLayer {
+                        comp: child_id,
+                        layer,
+                    });
                 }
+                let mut assembled = Layer::new(
+                    import.name.clone(),
+                    LayerKind::PreComp { comp: child_id },
+                    Time::ZERO,
+                    duration,
+                );
+                assembled.transform.scale = [scale * 100.0, scale * 100.0];
+                ops.push(Op::AddLayer {
+                    comp: import.comp_id,
+                    layer: assembled,
+                });
                 let op = Op::Batch {
-                    label: format!("Imported {}", import.name),
-                    ops: layers
-                        .into_iter()
-                        .map(|layer| Op::AddLayer {
-                            comp: import.comp_id,
-                            layer,
-                        })
-                        .collect(),
+                    label: format!("Imported {} (assembled)", import.name),
+                    ops,
                 };
                 let mut candidate = self.project.clone();
                 op.clone()

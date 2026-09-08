@@ -15,6 +15,7 @@
   } from "../store.svelte";
   import ExportRunner from "./ExportRunner.svelte";
   import { generateKinetic } from "../kinetic";
+  import { kayaKeys, saveKayaKeys, kayaAnalyze, kayaTranscribe, narratorSpeak } from "../kaya-client";
 
   /** "—" under a second, otherwise "12s" / "1m 03s". */
   function etaLabel(seconds: number): string {
@@ -42,6 +43,21 @@
   let lyricSync = $state(true);
   let lyricFoley = $state(true);
   let lyricBusy = $state(false);
+  let kayaOpenAi = $state("");
+  let kayaSarvam = $state("");
+  let kayaEleven = $state("");
+  let kayaNarration = $state("Hi, I am the Bonaparte narrator.");
+  let kayaProvider = $state<"sarvam" | "elevenlabs">("sarvam");
+  let kayaStart = $state(0);
+  let kayaBusy = $state(false);
+
+  $effect(() => {
+    if (editor.dialog?.kind !== "kaya") return;
+    const keys = kayaKeys();
+    kayaOpenAi = keys.openaiKey ?? "";
+    kayaSarvam = keys.sarvamKey ?? "";
+    kayaEleven = keys.elevenLabsKey ?? "";
+  });
   const spaces = [
     { id: "srgb", label: "sRGB", note: "standard screens" },
     { id: "display-p3", label: "Display P3", note: "wide gamut, modern displays" },
@@ -159,7 +175,9 @@
                 ? "bolt"
                 : editor.dialog?.kind === "lyrics"
                   ? "bolt"
-                  : "plus"}
+                  : editor.dialog?.kind === "kaya"
+                    ? "wave"
+                    : "plus"}
           size={20}
         />
       </div>
@@ -522,6 +540,99 @@
             });
           }}>Generate ⚡<Icon name="bolt" size={13} /></button
         >
+      </div>
+    {:else if editor.dialog?.kind === "kaya"}
+      {@const assetId = editor.dialog.assetId}
+      <h2 id="dialog-title">Kaya ⚡ hears the timeline.</h2>
+      <p class="dialog-subtitle">
+        Word-level transcription, scene sense, and a narrator — your keys stay
+        in this browser, never in the project.
+      </p>
+      <div class="dialog-actions" style="justify-content:flex-start;gap:8px;margin:0 0 12px">
+        <button
+          type="button"
+          class="btn ghost"
+          disabled={kayaBusy}
+          onclick={() => void kayaAnalyze(assetId).then(() => close())}
+        >Analyze rhythm & silence<Icon name="graph" size={13} /></button>
+      </div>
+      <label class="form-label" for="kaya-openai">OpenAI key (Whisper transcription)</label>
+      <input
+        id="kaya-openai"
+        class="field"
+        type="password"
+        placeholder="sk-…"
+        bind:value={kayaOpenAi}
+      />
+      <div class="dialog-actions" style="justify-content:flex-start;gap:8px;margin:8px 0 12px">
+        <button
+          type="button"
+          class="btn ghost"
+          disabled={kayaBusy || !kayaOpenAi}
+          title={kayaOpenAi ? "" : "Paste an OpenAI key first"}
+          onclick={() => {
+            saveKayaKeys({ ...kayaKeys(), openaiKey: kayaOpenAi });
+            kayaBusy = true;
+            void kayaTranscribe(assetId, kayaOpenAi).then(() => {
+              kayaBusy = false;
+              close();
+            });
+          }}
+        >Transcribe word-by-word<Icon name="wave" size={13} /></button>
+      </div>
+      <label class="form-label" for="kaya-narration">Narrator</label>
+      <textarea
+        id="kaya-narration"
+        class="field"
+        rows="3"
+        aria-label="Narration text"
+        bind:value={kayaNarration}
+      ></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <select
+          class="field"
+          aria-label="Narrator provider"
+          style="flex:1"
+          bind:value={kayaProvider}
+        >
+          <option value="sarvam">Sarvam AI · Bulbul</option>
+          <option value="elevenlabs">ElevenLabs</option>
+        </select>
+        <input
+          class="field"
+          type="number"
+          min="0"
+          step="0.1"
+          aria-label="Start at seconds"
+          style="width:110px"
+          bind:value={kayaStart}
+        />
+      </div>
+      <div class="dialog-actions" style="margin-top:10px">
+        <button type="button" class="btn ghost" onclick={close}>Close</button>
+        <button
+          type="button"
+          class="btn primary"
+          disabled={kayaBusy}
+          onclick={() => {
+            saveKayaKeys({
+              openaiKey: kayaOpenAi,
+              sarvamKey: kayaSarvam,
+              elevenLabsKey: kayaEleven,
+            });
+            if (kayaProvider === "sarvam" && kayaSarvam) saveKayaKeys({ ...kayaKeys(), sarvamKey: kayaSarvam });
+            if (kayaProvider === "elevenlabs" && kayaEleven) saveKayaKeys({ ...kayaKeys(), elevenLabsKey: kayaEleven });
+            kayaBusy = true;
+            void narratorSpeak({
+              text: kayaNarration,
+              startSecs: Number(kayaStart) || 0,
+              provider: kayaProvider,
+            }).then(() => {
+              kayaBusy = false;
+              close();
+            });
+          }}
+        >Speak ⚡<Icon name="bolt" size={13} /></button>
       </div>
     {:else if editor.dialog?.kind === "shortcuts"}
       <h2 id="dialog-title">Keep your flow.</h2>

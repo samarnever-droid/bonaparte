@@ -64,6 +64,9 @@ class EditorState {
   project = $state.raw(null as Project | null);
   activeComp = $state(null as number | null);
   selected = $state(null as number | null);
+  /** Multi-selection overlay (Shift/Ctrl-click, marquee, mod+A). The
+   * primary selection stays `selected` so single-object paths are stable. */
+  multiSelected = $state([] as number[]);
   currentTime = $state(144000);
   playing = $state(false);
   renderSeq = $state(0);
@@ -129,6 +132,7 @@ class EditorState {
       | { kind: "export" | "shortcuts" | "new-project" }
       | { kind: "rename-layer"; compId: number; layerId: number; name: string }
       | { kind: "lyrics"; assetId: number; hasGrid: boolean }
+      | { kind: "kaya"; assetId: number }
       | null,
   );
   exporting = $state(false);
@@ -184,6 +188,39 @@ export function activeComp(): Comp | null {
 }
 export function selectedLayer(): Layer | null {
   return activeComp()?.layers[String(editor.selected)] ?? null;
+}
+
+/** Every selected layer id — primary first, extras after, deduped. */
+export function selectionIds(): number[] {
+  const comp = activeComp();
+  if (!comp) return [];
+  const ids = new Set<number>();
+  if (editor.selected != null && comp.layers[String(editor.selected)]) {
+    ids.add(editor.selected);
+  }
+  for (const id of editor.multiSelected) {
+    if (comp.layers[String(id)]) ids.add(id);
+  }
+  return [...ids];
+}
+
+/** Muscle-memory selection: plain click = replace, Shift/Ctrl/⌘-click =
+ * toggle the row in the multi-selection without dropping the primary. */
+export function selectLayerAdvanced(layerId: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
+  if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    // The current primary joins the overlay set, the clicked row toggles,
+    // and the clicked row becomes the new primary (kept out of the list).
+    const set = new Set(editor.multiSelected);
+    if (editor.selected != null) set.add(editor.selected);
+    if (set.has(layerId)) set.delete(layerId);
+    else set.add(layerId);
+    editor.selected = layerId;
+    set.delete(layerId);
+    editor.multiSelected = [...set];
+  } else {
+    editor.selected = layerId;
+    editor.multiSelected = [];
+  }
 }
 export function clone<T>(value: T): T {
   try {
@@ -898,20 +935,46 @@ export function flushLiveEdits(): Promise<boolean> {
 }
 
 export async function duplicateSelected() {
-  const layer = selectedLayer(),
-    comp = activeComp();
-  if (!layer || !comp || layer.locked) return;
-  const copy = clone(layer);
-  copy.name += " copy";
-  if (await applyOp({ type: "addLayer", comp: comp.id, layer: copy }))
-    editor.selected = (editor.project?.next_layer ?? 1) - 1;
+  const comp = activeComp();
+  if (!comp) return;
+  const ids = selectionIds().filter((id) => !comp.layers[String(id)]?.locked);
+  if (!ids.length) return;
+  for (const id of ids) {
+    const layer = comp.layers[String(id)];
+    if (!layer) continue;
+    const copy = clone(layer);
+    copy.name += " copy";
+    if (await applyOp({ type: "addLayer", comp: comp.id, layer: copy }))
+      editor.selected = (editor.project?.next_layer ?? 1) - 1;
+  }
+  editor.multiSelected = [];
 }
 export async function deleteSelected() {
-  const layer = selectedLayer(),
-    comp = activeComp();
-  if (!layer || !comp || layer.locked) return;
-  await applyOp({ type: "removeLayer", comp: comp.id, layer: layer.id });
+  const comp = activeComp();
+  if (!comp) return;
+  const ids = selectionIds().filter((id) => !comp.layers[String(id)]?.locked);
+  if (!ids.length) return;
+  for (const id of ids) {
+    await applyOp({ type: "removeLayer", comp: comp.id, layer: id });
+  }
+  editor.multiSelected = [];
 }
+/** Explode an assembled group (PreComp) back into individual layers. */
+export async function disassembleLayer(layerId: number) {
+  const comp = activeComp();
+  if (!comp) return;
+  await queued(async () => {
+    accept(
+      await command<Snapshot | SnapshotPatch>("disassemble", {
+        delta: !!editor.deltaProtocol,
+        baseRevision: editor.revision,
+        compId: comp.id,
+        layerId,
+      }),
+    );
+  });
+}
+
 export async function setProperty(layerId: number, property: Property, value: PropValue) {
   const comp = activeComp();
   if (!comp) return;
@@ -1755,6 +1818,7 @@ export function layerContextItems(layerId: number): ContextMenuItem[] {
   const layer = comp?.layers[String(layerId)];
   if (!comp || !layer) return [];
   const index = comp.layer_order.indexOf(layerId);
+  const assembled = "PreComp" in layer.kind;
   return [
     {
       label: "Duplicate",
@@ -1765,6 +1829,16 @@ export function layerContextItems(layerId: number): ContextMenuItem[] {
         void duplicateSelected();
       },
     },
+    ...(assembled
+      ? [
+          {
+            label: "Disassemble into layers",
+            icon: "layers",
+            disabled: layer.locked,
+            run: () => void disassembleLayer(layerId),
+          },
+        ]
+      : []),
     {
       label: "Rename…",
       icon: "type",

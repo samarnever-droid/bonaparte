@@ -6,7 +6,8 @@ fn mcp_discovers_manifests_and_applies_the_same_persistent_effect_stack() {
     let mut session = McpSession::new();
     let catalog = execute_tool(&mut session, "effects.list", json!({}));
     assert!(!catalog.is_error);
-    let catalog: Value = serde_json::from_str(&catalog.content[0].text).unwrap();
+    let catalog: Value =
+        serde_json::from_str(&catalog.content[0].text.as_deref().unwrap()).unwrap();
     assert!(catalog["effects"]
         .as_array()
         .unwrap()
@@ -28,7 +29,7 @@ fn mcp_discovers_manifests_and_applies_the_same_persistent_effect_stack() {
         .is_error
     );
     let saved = execute_tool(&mut session, "project.save", json!({}));
-    let value: Value = serde_json::from_str(&saved.content[0].text).unwrap();
+    let value: Value = serde_json::from_str(&saved.content[0].text.as_deref().unwrap()).unwrap();
     assert!(!execute_tool(&mut session, "project.open", json!({"json":value["json"]})).is_error);
     assert_eq!(
         session
@@ -57,7 +58,7 @@ fn mcp_bad_effect_proposals_and_requested_missing_comp_fail_explicitly() {
         "ops.propose",
         json!({"ops":[Op::AddLayer{comp:c,layer}]}),
     );
-    let result: Value = serde_json::from_str(&result.content[0].text).unwrap();
+    let result: Value = serde_json::from_str(&result.content[0].text.as_deref().unwrap()).unwrap();
     assert_eq!(result["valid"], false);
     assert!(session.project.comp(c).unwrap().layers.is_empty());
     assert_eq!(session.target_comp(Some(9999)), None);

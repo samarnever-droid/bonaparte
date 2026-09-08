@@ -299,6 +299,7 @@ pub fn decode(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), String
             codec: audio.codec,
             peak: audio.peak,
             beat_grid: audio.beat_grid,
+            kaya_words: audio.kaya_words,
         };
         return Ok((external, source));
     }
@@ -457,6 +458,7 @@ fn metadata(bytes: &[u8], hash: &str, info: &SourceInfo) -> EmbeddedAudio {
         data_base64: Arc::from(STANDARD.encode(bytes)),
         astra_chunks: None,
         beat_grid: None,
+        kaya_words: None,
         sha256: hash.into(),
         frames: info.frames,
         channels: info.channels,

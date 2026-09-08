@@ -95,7 +95,7 @@ fn test_project_create_and_info() {
     let info_res = execute_tool(&mut session, "project.info", json!({}));
     assert!(!info_res.is_error);
     let info: serde_json::Value =
-        serde_json::from_str(&info_res.content[0].text).expect("Valid JSON");
+        serde_json::from_str(&info_res.content[0].text.as_deref().unwrap()).expect("Valid JSON");
     assert_eq!(info["project_name"], "Commercial_Spot");
     assert_eq!(info["comp_count"], 1);
 
@@ -150,7 +150,8 @@ fn test_op_apply_and_history_undo_redo() {
     // Undo
     let undo_res = execute_tool(&mut session, "history.undo", json!({}));
     assert!(!undo_res.is_error);
-    let undo_val: serde_json::Value = serde_json::from_str(&undo_res.content[0].text).unwrap();
+    let undo_val: serde_json::Value =
+        serde_json::from_str(&undo_res.content[0].text.as_deref().unwrap()).unwrap();
     assert_eq!(undo_val["undone"], true);
 
     let comp_after_undo = session.project.comp(comp_id).unwrap();
@@ -159,7 +160,8 @@ fn test_op_apply_and_history_undo_redo() {
     // Redo
     let redo_res = execute_tool(&mut session, "history.redo", json!({}));
     assert!(!redo_res.is_error);
-    let redo_val: serde_json::Value = serde_json::from_str(&redo_res.content[0].text).unwrap();
+    let redo_val: serde_json::Value =
+        serde_json::from_str(&redo_res.content[0].text.as_deref().unwrap()).unwrap();
     assert_eq!(redo_val["redone"], true);
 
     let comp_after_redo = session.project.comp(comp_id).unwrap();
@@ -197,7 +199,8 @@ fn test_ops_propose_dry_run_does_not_mutate_session() {
         "Propose failed: {:?}",
         propose_res.content
     );
-    let val: serde_json::Value = serde_json::from_str(&propose_res.content[0].text).unwrap();
+    let val: serde_json::Value =
+        serde_json::from_str(&propose_res.content[0].text.as_deref().unwrap()).unwrap();
     assert_eq!(val["valid"], true);
     assert_eq!(val["applied_count"], 2);
     let descs = val["descriptions"].as_array().unwrap();

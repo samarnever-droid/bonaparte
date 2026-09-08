@@ -46,7 +46,15 @@ fn svg_import_creates_fitted_layers_and_renders() {
     let order = state["project"]["comps"]["1"]["layer_order"]
         .as_array()
         .unwrap();
-    assert_eq!(order.len(), 2, "rect + circle layers, got {}", order.len());
+    assert_eq!(order.len(), 1, "ONE assembled PreComp group");
+    let group = state["project"]["comps"]["1"]["layers"][order[0].to_string()].clone();
+    let child_id = group["kind"]["PreComp"]["comp"].as_u64().unwrap();
+    let child = &state["project"]["comps"][&child_id.to_string()];
+    assert_eq!(
+        child["layer_order"].as_array().unwrap().len(),
+        2,
+        "rect + circle live inside the group"
+    );
     // Render succeeds and produces real pixels.
     let frame = s
         .render_input(serde_json::from_value(json!({"compId":1,"time":0})).unwrap())
@@ -71,18 +79,20 @@ fn svg_import_fits_inside_comp_and_never_upscales() {
     s.command("import_svg", json!({"name":"big.svg","svg":big,"compId":1}))
         .unwrap();
     let comp = s.project.comp(CompId(1)).unwrap();
-    let mut max_reach = 0.0f32;
-    for id in &comp.layer_order {
-        let layer = s.project.layer(CompId(1), *id).unwrap();
-        let scale = layer.transform.scale[0] / 100.0;
-        assert!(scale <= 1.0, "no upscale, got {scale}");
-        let reach = (layer.transform.position[0].abs() + 80.0 * scale)
-            .max(layer.transform.position[1].abs());
-        max_reach = max_reach.max(reach);
-    }
+    // The fit scale lives on the assembled group; the drawing must fit.
+    assert_eq!(comp.layer_order.len(), 1);
+    let group = s.project.layer(CompId(1), comp.layer_order[0]).unwrap();
+    let scale = group.transform.scale[0] / 100.0;
+    assert!(scale <= 1.0, "no upscale, got {scale}");
+    let child_id = match &group.kind {
+        LayerKind::PreComp { comp: c } => *c,
+        other => panic!("expected PreComp, got {other:?}"),
+    };
+    let child = s.project.comp(child_id).unwrap();
+    let group_w = child.width as f32 * scale;
     assert!(
-        max_reach <= 320.0,
-        "drawing stays inside the comp width, reach {max_reach}"
+        group_w <= 320.0,
+        "drawing stays inside the comp width: {group_w}"
     );
 }
 
@@ -155,13 +165,13 @@ fn imports_undo_in_one_step_and_round_trip_through_save() {
         .unwrap();
     s.command("import_obj", json!({"name":"m.obj","obj":OBJ,"compId":1}))
         .unwrap();
-    assert_eq!(layer_count(&s), 4);
+    assert_eq!(layer_count(&s), 3, "1 assembled SVG group + 2 OBJ layers");
     s.command("undo", json!({})).unwrap();
-    assert_eq!(layer_count(&s), 2, "OBJ batch undoes whole");
+    assert_eq!(layer_count(&s), 1, "OBJ batch undoes whole");
     s.command("undo", json!({})).unwrap();
-    assert_eq!(layer_count(&s), 0, "SVG batch undoes whole");
+    assert_eq!(layer_count(&s), 0, "SVG assembly undoes whole");
     s.command("redo", json!({})).unwrap();
-    assert_eq!(layer_count(&s), 2);
+    assert_eq!(layer_count(&s), 1);
     // Round-trip: save → reopen → layers intact.
     let serialized = s
         .command("save_project", json!({}))
@@ -170,16 +180,24 @@ fn imports_undo_in_one_step_and_round_trip_through_save() {
         .unwrap()
         .to_owned();
     let reopened = EditorSession::new(parse_project(&serialized).unwrap()).unwrap();
-    assert_eq!(layer_count(&reopened), 2);
-    let points_shapes = reopened
+    assert_eq!(layer_count(&reopened), 1);
+    // The assembled group survives serialization with its vector children.
+    let reopened_comp = reopened.project.comp(CompId(1)).unwrap();
+    let LayerKind::PreComp { comp: child_id } = &reopened
         .project
-        .comp(CompId(1))
+        .layer(CompId(1), reopened_comp.layer_order[0])
         .unwrap()
+        .kind
+    else {
+        panic!("group must survive save/reopen");
+    };
+    let child = reopened.project.comp(*child_id).unwrap();
+    let points_shapes = child
         .layer_order
         .iter()
         .filter(|id| {
             matches!(
-                &reopened.project.layer(CompId(1), **id).unwrap().kind,
+                &child.layers[id].kind,
                 LayerKind::Shape { points, .. } if !points.is_empty()
             )
         })

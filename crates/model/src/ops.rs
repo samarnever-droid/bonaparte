@@ -214,6 +214,11 @@ pub enum Op {
         /// Beat times in milliseconds, ascending.
         beats_ms: Arc<[f64]>,
     },
+    /// Attach a Kaya word-level transcript to an audio asset.
+    SetMediaTranscript {
+        media: MediaId,
+        words: Arc<[crate::KayaWord]>,
+    },
     AddMedia {
         asset: MediaAsset,
     },
@@ -644,6 +649,21 @@ impl Op {
                 }
                 Ok(())
             }
+            Op::SetMediaTranscript { media, words } => {
+                let asset = project
+                    .media
+                    .get_mut(&media)
+                    .ok_or_else(|| ModelError::Invalid("Media asset not found".into()))?;
+                match &mut asset.audio {
+                    Some(audio) => audio.kaya_words = Some(words),
+                    None => {
+                        return Err(ModelError::Invalid(
+                            "Transcripts attach to audio assets only".into(),
+                        ))
+                    }
+                }
+                Ok(())
+            }
             Op::AddMedia { asset } => {
                 project.insert_media(asset);
                 Ok(())
@@ -712,6 +732,18 @@ impl Op {
                 Ok(Op::SetMediaBeatGrid {
                     media: *media,
                     beats_ms: previous,
+                })
+            }
+            Op::SetMediaTranscript { media, .. } => {
+                let previous = project
+                    .media
+                    .get(media)
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.kaya_words.clone())
+                    .unwrap_or_default();
+                Ok(Op::SetMediaTranscript {
+                    media: *media,
+                    words: previous,
                 })
             }
             Op::SetCamera { comp, .. } => {
@@ -1020,6 +1052,7 @@ impl Op {
             ),
             Op::SetCompAudio { .. } => "Edited audio timeline".into(),
             Op::SetMediaBeatGrid { .. } => "Detected the beat grid".into(),
+            Op::SetMediaTranscript { .. } => "Transcribed the audio (Kaya)".into(),
             Op::SetCamera { .. } => "Moved the 3D camera".into(),
             Op::SetTurntable { enabled, .. } => {
                 if *enabled {

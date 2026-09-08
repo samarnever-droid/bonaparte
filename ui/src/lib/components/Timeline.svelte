@@ -25,6 +25,8 @@
     deleteKeyframe,
     type ContextMenuItem,
     focusCameraOnSelection,
+    selectLayerAdvanced,
+    selectionIds,
   } from "../store.svelte";
   import { arrangeInDepth } from "../three-d";
   import { layerIcon, layerColor } from "../geometry";
@@ -724,7 +726,7 @@
               <button
                 class="layer-name"
                 aria-label={`Select layer ${layer.name}`}
-                onclick={() => (editor.selected = layer.id)}
+onclick={(e) => selectLayerAdvanced(layer.id, e)}
                 oncontextmenu={(e) => layerMenu(e, layer.id)}
                 ><Icon name={layerIcon(layer)} size={11} /><span class="truncate">{layer.name}</span
                 ></button
@@ -739,7 +741,12 @@
                   }}>ƒx</button
                 >{/if}
             </div>
-            <div class="track-cell" class:selected={editor.selected === layer.id}>
+            <div
+              class="track-cell"
+              class:selected={editor.selected === layer.id}
+              class:multi-selected={editor.selected !== layer.id &&
+                selectionIds().includes(layer.id)}
+            >
               {#each ticks as tick}<span
                   class="track-gridline"
                   style={`left:${percent(tick.time)}%`}
@@ -1172,6 +1179,10 @@
     border-bottom: 1px solid #2e312c;
     overflow: hidden;
     background: #1e201d;
+  }
+  .track-cell.multi-selected {
+    background: color-mix(in srgb, var(--accent, #7c6cff) 14%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent, #7c6cff);
   }
   .track-cell.selected {
     background: #30332e;

@@ -115,12 +115,47 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
-/// Text content block in MCP tool call response.
+/// Content block in MCP tool call responses. Text is the classic block;
+/// `image` and `audio` blocks (mimeType + base64 data) feed vision- and
+/// audio-native models natively — the model SEES the frame, it does not
+/// read a description of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextContent {
     #[serde(rename = "type")]
     pub kind: String,
-    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+impl TextContent {
+    pub fn text(value: impl Into<String>) -> Self {
+        Self {
+            kind: "text".into(),
+            text: Some(value.into()),
+            mime_type: None,
+            data: None,
+        }
+    }
+    pub fn image(mime_type: &str, base64_data: impl Into<String>) -> Self {
+        Self {
+            kind: "image".into(),
+            text: None,
+            mime_type: Some(mime_type.into()),
+            data: Some(base64_data.into()),
+        }
+    }
+    pub fn audio(mime_type: &str, base64_data: impl Into<String>) -> Self {
+        Self {
+            kind: "audio".into(),
+            text: None,
+            mime_type: Some(mime_type.into()),
+            data: Some(base64_data.into()),
+        }
+    }
 }
 
 /// MCP Tool call response object conforming to MCP spec.
@@ -134,10 +169,15 @@ pub struct ToolCallResult {
 impl ToolCallResult {
     pub fn success(text: impl Into<String>) -> Self {
         Self {
-            content: vec![TextContent {
-                kind: "text".into(),
-                text: text.into(),
-            }],
+            content: vec![TextContent::text(text)],
+            is_error: false,
+        }
+    }
+
+    /// Multi-block result: leading text plus inline image/audio blocks.
+    pub fn rich(blocks: Vec<TextContent>) -> Self {
+        Self {
+            content: blocks,
             is_error: false,
         }
     }
@@ -149,10 +189,7 @@ impl ToolCallResult {
 
     pub fn error(text: impl Into<String>) -> Self {
         Self {
-            content: vec![TextContent {
-                kind: "text".into(),
-                text: text.into(),
-            }],
+            content: vec![TextContent::text(text)],
             is_error: true,
         }
     }

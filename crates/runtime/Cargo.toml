@@ -20,3 +20,6 @@ base64 = "0.22" # portable embedded images and binary exports over native JSON I
 png = "0.18" # lossless still-frame export without FFmpeg
 tempfile = "3" # atomic media export preserves an existing file if rendering fails
 bonaparte-audio = { path = "../audio" } # one mixer for streamed playback, WAV and AAC export
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "2", default-features = false, features = ["tls", "gzip", "json"] } # plugin HTTP (Kaya: Whisper + TTS providers), rustls — no OpenSSL
