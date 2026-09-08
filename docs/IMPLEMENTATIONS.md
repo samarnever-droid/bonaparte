@@ -180,6 +180,46 @@ fresh-clone `git am` verified tree-identical.
 
 ---
 
+## Update 7 — `6a94fd5` · Beat Cut ⚡: one-click music-video editing (16 files, +629)
+
+The Premiere jaw-dropper: drop a music track, right-click it, **Detect
+beats** — then **Cut video to beat** and watch the timeline edit itself.
+
+- **Detection** (`crates/audio/src/beats.rs`, pure DSP, no deps, no ML):
+  RMS onset envelope (`DecodedAudio::onset_envelope` reads the decode-cache
+  mmap at 200 buckets/s) → adaptive-threshold onset picking (200 ms rolling
+  mean + variance floor, 100 ms refractory) → autocorrelation tempo over
+  60–190 BPM with **octave folding** (a perfectly periodic train scores
+  equally at the measure level; the half-lag wins whenever it scores ≥ 85%)
+  → phase-locked grid (slide one period, keep the offset with the most
+  onset energy) → meter anchored at the earliest strongest onset, bars
+  tiled in 4/4 from it.
+- **Persistence**: `Op::SetMediaBeatGrid` stores the grid rotated so index 0
+  is always a downbeat (position alone reads the meter); markers named
+  `beat-*` paint the arrangement ruler for free.
+- **Remix cut**: one Footage clip per beat span (≤128, ≥100 ms), source
+  windows walking the footage on a golden-ratio sequence — real jump cuts —
+  with downbeat clips scaled 108%. The original layer stays untouched
+  underneath; undo is one step.
+- **Pulse cut**: no cuts — `Property::Scale` keyframes pop the layer on
+  every beat (104; 112 on downbeats) with a 70 ms Bezier snap-back.
+- **Enabler**: `LayerKind::Footage` gains `source_start` (serde-defaulted)
+  and media time became layer-local + offset (reference.rs sampling,
+  preview.rs) — clips now start at their own beginning, consistent with
+  PreComp. Old projects load unchanged.
+- Tests: 3 detection tests (120 BPM + downbeat spacing, 90 BPM,
+  non-rhythmic/too-short rejection); 3 runtime e2e tests — detect → cut →
+  **jump-cut offsets proven to differ**, downbeat pops counted, pulse track
+  keys asserted, single-step undo; `ui/tests/beat_cut.spec.ts` drives the
+  full browser flow (drop video + click track → clip menu → detect → grid
+  + markers in state → cut → ≥4 Beat layers with differing `source_start`
+  → engine still renders PNG).
+
+Gates: fmt · workspace **361/361** (+6) · wasm · svelte-check **0** ·
+Playwright **91/91**.
+
+---
+
 ## What "storage" means now
 
 | Tier | Mechanism | Holds |
