@@ -8,8 +8,9 @@ use bonaparte_engine::reference::{render_comp_with_registry, Frame, FrameView, M
 use bonaparte_model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 pub mod audio;
 pub mod color;
@@ -21,6 +22,49 @@ pub use preview::{PreviewJob, PreviewRenderer, PreviewRequest};
 
 pub const PROJECT_VERSION: u32 = 4;
 pub const MAX_PROJECT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Live export telemetry, shared with the UI through the `export_progress`
+/// command and flipped by `export_cancel`. Process-global: one export at a
+/// time, exactly like the single temp-file pipeline it describes.
+pub struct ExportTelemetry {
+    pub active: AtomicBool,
+    pub canceled: AtomicBool,
+    pub frames_done: AtomicU64,
+    pub total_frames: AtomicU64,
+    /// 0 = idle, 1 = rendering + encoding, 2 = finalizing.
+    pub stage: AtomicU8,
+    pub started_ms: AtomicU64,
+    pub last_frame_ms: AtomicU64,
+}
+pub static EXPORT_TELEMETRY: ExportTelemetry = ExportTelemetry {
+    active: AtomicBool::new(false),
+    canceled: AtomicBool::new(false),
+    frames_done: AtomicU64::new(0),
+    total_frames: AtomicU64::new(0),
+    stage: AtomicU8::new(0),
+    started_ms: AtomicU64::new(0),
+    last_frame_ms: AtomicU64::new(0),
+};
+
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Snapshot for the `export_progress` bridge command.
+pub fn export_progress_json() -> Value {
+    json!({
+        "active": EXPORT_TELEMETRY.active.load(Ordering::Relaxed),
+        "canceled": EXPORT_TELEMETRY.canceled.load(Ordering::Relaxed),
+        "framesDone": EXPORT_TELEMETRY.frames_done.load(Ordering::Relaxed),
+        "totalFrames": EXPORT_TELEMETRY.total_frames.load(Ordering::Relaxed),
+        "stage": EXPORT_TELEMETRY.stage.load(Ordering::Relaxed),
+        "startedMs": EXPORT_TELEMETRY.started_ms.load(Ordering::Relaxed),
+        "lastFrameMs": EXPORT_TELEMETRY.last_frame_ms.load(Ordering::Relaxed),
+    })
+}
 
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
@@ -606,6 +650,14 @@ impl EditorSession {
                 commit(&mut self.project, &mut self.history, &self.registry, op)?;
                 self.changed()
             }
+            "export_progress" => Ok(export_progress_json()),
+            "export_cancel" => {
+                EXPORT_TELEMETRY.canceled.store(true, Ordering::Relaxed);
+                Ok(json!({
+                    "canceled": true,
+                    "active": EXPORT_TELEMETRY.active.load(Ordering::Relaxed),
+                }))
+            }
             "vectorize_image" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -903,23 +955,191 @@ impl RenderInput {
             config.audio_wav = Some(wav.to_path_buf());
             audio_temp = Some(wav);
         }
-        let mut stats = bonaparte_media::export::export_mp4_stream(&config, |_, time| {
-            let mut frame = render_comp_with_registry(
-                &self.project,
-                self.comp_id,
-                start + time,
-                &self.images,
-                &self.registry,
-            )
-            .map_err(|e| e.to_string())?;
-            flatten_on_black(&mut frame);
-            Ok(frame.rgba)
+        // One export at a time; the telemetry slot is process-global.
+        if EXPORT_TELEMETRY
+            .active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("An export is already running — cancel it first".into());
+        }
+        EXPORT_TELEMETRY.canceled.store(false, Ordering::Relaxed);
+        EXPORT_TELEMETRY.frames_done.store(0, Ordering::Relaxed);
+        EXPORT_TELEMETRY
+            .total_frames
+            .store(count as u64, Ordering::Relaxed);
+        EXPORT_TELEMETRY.stage.store(1, Ordering::Relaxed);
+        EXPORT_TELEMETRY
+            .started_ms
+            .store(unix_now_ms(), Ordering::Relaxed);
+        EXPORT_TELEMETRY.last_frame_ms.store(0, Ordering::Relaxed);
+        let result = self.run_export_pipeline(&config, count, start, tpf);
+        let outcome = match result {
+            Ok(stats) => match temp.persist(path) {
+                Ok(()) => {
+                    drop(audio_temp);
+                    let mut stats = stats;
+                    stats.output_path = path.to_path_buf();
+                    Ok(stats)
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e),
+        };
+        EXPORT_TELEMETRY.stage.store(0, Ordering::Relaxed);
+        EXPORT_TELEMETRY.active.store(false, Ordering::Relaxed);
+        outcome
+    }
+
+    /// Render every frame through a parallel worker pool while the encoder
+    /// consumes strictly in order. Rendering dominates export time, so this
+    /// multiplies throughput by the core count; ffmpeg still sees one
+    /// sequential RGBA stream. Progress/cancel ride the global telemetry.
+    fn run_export_pipeline(
+        &self,
+        config: &bonaparte_media::export::ExportConfig,
+        count: usize,
+        start: Time,
+        tpf: i64,
+    ) -> Result<bonaparte_media::export::ExportStats, String> {
+        let frame_bytes = (config.width as usize) * (config.height as usize) * 4;
+        let hardware = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        // Cap workers by a 64 MB render buffer so 4K exports stay sane.
+        let memory_slots = ((64 * 1024 * 1024) / frame_bytes.max(1)).clamp(1, 16);
+        let workers = hardware.min(8).max(1).min(memory_slots);
+        let canceled = || {
+            EXPORT_TELEMETRY
+                .canceled
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        if workers <= 1 || count <= 1 {
+            return bonaparte_media::export::export_mp4_stream(config, |_index, time| {
+                if canceled() {
+                    return Err("Export canceled".into());
+                }
+                let mut frame = render_comp_with_registry(
+                    &self.project,
+                    self.comp_id,
+                    start + time,
+                    &self.images,
+                    &self.registry,
+                )
+                .map_err(|e| e.to_string())?;
+                flatten_on_black(&mut frame);
+                EXPORT_TELEMETRY
+                    .frames_done
+                    .store(_index as u64 + 1, Ordering::Relaxed);
+                EXPORT_TELEMETRY
+                    .last_frame_ms
+                    .store(unix_now_ms(), Ordering::Relaxed);
+                Ok(frame.rgba)
+            })
+            .map_err(|e| e.to_string());
+        }
+
+        struct Shared {
+            /// Finished frames keyed by index (workers complete out of order)
+            /// plus the number of frames currently being rendered.
+            queue: Mutex<(VecDeque<(usize, Vec<u8>)>, usize)>,
+            cv: Condvar,
+        }
+        let shared = Arc::new(Shared {
+            queue: Mutex::new((VecDeque::new(), 0)),
+            cv: Condvar::new(),
+        });
+        let next_job = AtomicUsize::new(0);
+        let first_error: Mutex<Option<String>> = Mutex::new(None);
+        let alive = AtomicUsize::new(workers);
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let shared = Arc::clone(&shared);
+                let next = &next_job;
+                let error_slot = &first_error;
+                let alive = &alive;
+                scope.spawn(move || {
+                    loop {
+                        if canceled() {
+                            break;
+                        }
+                        let job = next.fetch_add(1, Ordering::SeqCst);
+                        if job >= count {
+                            break;
+                        }
+                        shared.queue.lock().unwrap().1 += 1;
+                        let rendered = render_comp_with_registry(
+                            &self.project,
+                            self.comp_id,
+                            start + Time((job as i64) * tpf),
+                            &self.images,
+                            &self.registry,
+                        )
+                        .map(|mut frame| {
+                            flatten_on_black(&mut frame);
+                            frame.rgba
+                        })
+                        .map_err(|e| e.to_string());
+                        {
+                            let mut guard = shared.queue.lock().unwrap();
+                            guard.1 -= 1;
+                            match rendered {
+                                Ok(rgba) => guard.0.push_back((job, rgba)),
+                                Err(e) => {
+                                    if !canceled() {
+                                        let mut slot = error_slot.lock().unwrap();
+                                        if slot.is_none() {
+                                            *slot = Some(e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        shared.cv.notify_all();
+                    }
+                    alive.fetch_sub(1, Ordering::SeqCst);
+                    shared.cv.notify_all();
+                });
+            }
+
+            let consume = |index: usize, _time: Time| -> Result<Vec<u8>, String> {
+                loop {
+                    if canceled() {
+                        return Err("Export canceled".into());
+                    }
+                    let mut guard = shared.queue.lock().unwrap();
+                    if let Some(pos) = guard.0.iter().position(|(i, _)| *i == index) {
+                        let (_, rgba) = guard.0.remove(pos).unwrap();
+                        drop(guard);
+                        EXPORT_TELEMETRY
+                            .frames_done
+                            .store(index as u64 + 1, Ordering::Relaxed);
+                        EXPORT_TELEMETRY
+                            .last_frame_ms
+                            .store(unix_now_ms(), Ordering::Relaxed);
+                        return Ok(rgba);
+                    }
+                    let idle = guard.0.is_empty() && guard.1 == 0;
+                    let dead = alive.load(Ordering::SeqCst) == 0;
+                    if idle && dead {
+                        let msg = first_error
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| "Frame rendering stopped early".into());
+                        return Err(msg);
+                    }
+                    let (waited, _timeout) = shared
+                        .cv
+                        .wait_timeout(guard, std::time::Duration::from_millis(40))
+                        .unwrap();
+                    drop(waited);
+                }
+            };
+            bonaparte_media::export::export_mp4_stream(config, consume).map_err(|e| e.to_string())
         })
-        .map_err(|e| e.to_string())?;
-        temp.persist(path).map_err(|e| e.to_string())?;
-        drop(audio_temp);
-        stats.output_path = path.to_path_buf();
-        Ok(stats)
     }
 }
 

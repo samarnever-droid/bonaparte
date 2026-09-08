@@ -42,6 +42,23 @@ import {
 } from "./model";
 import { cameraAt, effectiveDepth } from "./geometry";
 
+/** Live export telemetry mirrored from the Rust runtime's `export_progress`,
+ * with client-side rate math (percent, fps, ETA) for the export HUD. */
+export interface ExportProgress {
+  active: boolean;
+  canceled: boolean;
+  framesDone: number;
+  totalFrames: number;
+  /** 0 idle · 1 rendering+encoding · 2 finalizing. */
+  stage: number;
+  startedMs: number;
+  lastFrameMs: number;
+  percent: number;
+  elapsedSec: number;
+  etaSec: number;
+  fps: number;
+}
+
 class EditorState {
   project = $state.raw(null as Project | null);
   activeComp = $state(null as number | null);
@@ -113,6 +130,7 @@ class EditorState {
       | null,
   );
   exporting = $state(false);
+  exportProgress = $state(null as ExportProgress | null);
   recovery = $state("Ready" as string);
   interaction = $state.raw<null | {
     layer: number;
@@ -1807,11 +1825,52 @@ export async function exportFile(
   const comp = activeComp();
   if (!comp) return;
   editor.exporting = true;
+  editor.exportProgress = null;
   const args: Record<string, unknown> = { compId: comp.id, time: editor.currentTime, bypassEffects: false };
   if (format === "png") {
     if (options.bitDepth) args.bitDepth = options.bitDepth;
     if (options.outputSpace) args.outputSpace = options.outputSpace;
   }
+  // MP4 exports stream real telemetry from the Rust runtime: poll it every
+  // 200 ms and smooth the rate so the ETA does not twitch.
+  let poller: ReturnType<typeof setInterval> | null = null;
+  let sawCanceled = false;
+  const watchProgress = () => {
+    let etaSmoothed = 0;
+    const tick = async () => {
+      try {
+        const raw = await command<{
+          active: boolean;
+          canceled: boolean;
+          framesDone: number;
+          totalFrames: number;
+          stage: number;
+          startedMs: number;
+          lastFrameMs: number;
+        }>("export_progress");
+        if (raw.canceled) sawCanceled = true;
+        const total = Math.max(1, raw.totalFrames);
+        const done = Math.min(raw.framesDone, total);
+        const elapsedMs = raw.startedMs > 0 ? Math.max(0, Date.now() - raw.startedMs) : 0;
+        const rate = elapsedMs > 500 ? done / (elapsedMs / 1000) : 0;
+        const eta = rate > 0 ? (total - done) / rate : 0;
+        etaSmoothed = etaSmoothed === 0 ? eta : etaSmoothed * 0.7 + eta * 0.3;
+        editor.exportProgress = {
+          ...raw,
+          framesDone: done,
+          totalFrames: total,
+          percent: (done / total) * 100,
+          elapsedSec: elapsedMs / 1000,
+          etaSec: etaSmoothed,
+          fps: rate,
+        };
+      } catch {
+        /* the export request owns the bridge; keep the last sample */
+      }
+    };
+    void tick();
+    poller = setInterval(() => void tick(), 200);
+  };
   try {
     if (desktop) {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -1820,6 +1879,7 @@ export async function exportFile(
         filters: [{ name: format.toUpperCase(), extensions: [format] }],
       });
       if (!path) return;
+      if (format === "mp4") watchProgress();
       await invoke(
         format === "mp4"
           ? "export_video_file"
@@ -1829,6 +1889,7 @@ export async function exportFile(
         { args, path },
       );
     } else {
+      if (format === "mp4") watchProgress();
       const data = await binary(
         format === "mp4" ? "export_video" : format === "wav" ? "export_wav" : "export_png",
         args,
@@ -1847,8 +1908,23 @@ export async function exportFile(
     );
     editor.dialog = null;
   } catch (error) {
-    notify(String(error), true);
+    const message = String(error);
+    if (sawCanceled || message.includes("cancel")) notify("Export canceled.");
+    else notify(message, true);
   } finally {
+    if (poller) clearInterval(poller);
     editor.exporting = false;
+    editor.exportProgress = null;
+  }
+}
+/** Ask the Rust runtime to stop the running export at the next frame
+ * boundary; the temp file is cleaned up and nothing partial is saved. */
+export async function cancelExport() {
+  if (!editor.exporting) return;
+  try {
+    await command("export_cancel", {});
+    notify("Canceling export…");
+  } catch (error) {
+    notify(String(error), true);
   }
 }

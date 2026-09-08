@@ -282,6 +282,7 @@ pub fn editor_describe(
             "animate": "batch a setValue for t=0 with an addKeyframe, scrub by setting nothing (time lives on keyframes), then addKeyframe at a later tick with the end value",
             "grade": "setLayerEffects with builtin.color_grade (exposure/contrast/saturation/temperature/lift_color/gain_color) or export a .cube via MCP export.lut",
             "diorama": "setCamera {fov:500, dof:0.8} + setValue Z on layers; setTurntable for the one-click orbit",
+            "export": "export_video renders on every core in parallel and streams to ffmpeg; poll export_progress {framesDone,totalFrames,stage,startedMs} for live percent/ETA and call export_cancel to stop cleanly at the next frame boundary",
             "parent": "setLayerParent child->parent then animate the parent; children follow",
             "import": "editor commands import_svg {name, svg, compId} (SVG text → editable vector shape layers, auto-fitted, never upscaled), import_obj {name, obj, compId} (OBJ text → per-group wireframe layers with Z depth; scale them and animate Z for parallax), and vectorize_image {compId, layerId, maxColors?} (trace an embedded image layer into editable vector shapes)",
         },

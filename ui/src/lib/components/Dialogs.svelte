@@ -9,9 +9,18 @@
     selectComp,
     newProject,
     exportFile,
+    cancelExport,
     saveProject,
     hasAudio,
   } from "../store.svelte";
+  import ExportRunner from "./ExportRunner.svelte";
+
+  /** "—" under a second, otherwise "12s" / "1m 03s". */
+  function etaLabel(seconds: number): string {
+    if (!seconds || seconds < 1) return "—";
+    if (seconds < 60) return `${Math.ceil(seconds)}s`;
+    return `${Math.floor(seconds / 60)}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  }
   import { formatFps, timeToSecs, secsToTime, ticksPerFrame, type Color } from "../model";
   const comp = $derived(activeComp());
   let element = $state<HTMLDialogElement | null>(null);
@@ -357,9 +366,47 @@
         >
           H.264 needs even canvas dimensions. Adjust composition settings or export PNG.
         </p>{/if}
-      {#if editor.exporting}<div class="export-progress">
+      {#if editor.exporting && editor.exportProgress}
+        {@const p = editor.exportProgress}
+        <ExportRunner progress={p} />
+        <div
+          class="export-meter"
+          role="progressbar"
+          aria-label="Export progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={Math.round(Math.min(100, p.percent))}
+        >
+          <div
+            class="export-meter-fill"
+            class:packing={p.stage === 2}
+            style={`width:${Math.min(100, p.percent)}%`}
+          ></div>
+          <span class="export-meter-num mono">{Math.floor(Math.min(100, p.percent))}%</span>
+        </div>
+        <div class="export-live mono">
+          <span>{p.framesDone}/{p.totalFrames} frames</span>
+          <span>{p.fps > 0 ? `${p.fps.toFixed(1)} fps` : "warming up…"}</span>
+          <span>{p.canceled
+              ? "canceling…"
+              : p.stage === 2
+                ? "packing file…"
+                : `ETA ${etaLabel(p.etaSec)}`}</span>
+          <span>elapsed {etaLabel(p.elapsedSec)}</span>
+          <button
+            class="export-cancel"
+            onclick={() => void cancelExport()}>Cancel export</button
+          >
+        </div>
+        <p class="modal-note">
+          <Icon name="info" size={12} /><span
+            >Frames render on every CPU core in parallel and stream straight into the encoder. Your
+            source project remains editable after export.</span
+          >
+        </p>
+      {:else if editor.exporting}<div class="export-progress">
           <span class="spinner"></span><span
-            >Rendering and encoding…<small
+            >Rendering…<small
               >Your source project remains editable after export. Keep this window open.</small
             ></span
           >
@@ -727,6 +774,66 @@
     font-size: 10px;
     font-weight: 400;
     color: #c4c7c0;
+  }
+  .export-meter {
+    position: relative;
+    height: 30px;
+    background: #191b18;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  .export-meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: linear-gradient(90deg, #5c7d45, #9dc37f);
+    transition: width 0.18s linear;
+  }
+  .export-meter-fill.packing {
+    background: linear-gradient(90deg, #4c7d8d, #6db3d9);
+  }
+  .export-meter-num {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    color: #f2f5ec;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  }
+  .export-live {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-3, #8b9284);
+    margin-top: 8px;
+  }
+  .export-live span::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-3, #8b9284);
+    margin-right: 6px;
+    vertical-align: 2px;
+  }
+  .export-cancel {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: #222422;
+    color: var(--text-2, #c9c4b4);
+    cursor: pointer;
+  }
+  .export-cancel:hover {
+    color: #e26d5a;
+    border-color: #e26d5a;
   }
   .export-progress {
     margin-top: 20px;
