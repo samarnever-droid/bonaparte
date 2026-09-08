@@ -314,6 +314,59 @@ contract; 3 new runtime tests.
 Gates: fmt · workspace **387/387** (+18) · wasm · svelte-check **0** ·
 Playwright **95/95**.
 
+## Update 10 — `2d2a82f` · The Vault + first-class Lottie + desktop feel
+
+Three threads: a shared asset brain, a real animation interchange format,
+and the feel of a native desktop app.
+
+**The Vault** — one global shelf for every project (human *and* AI agents
+use the exact same commands):
+- `crates/runtime/src/vault.rs`: fixed folders `logos / images / audio /
+  video / lottie / fonts / effects`; root is `$BONAPARTE_VAULT` else
+  `~/.bonaparte/vault`; `list` (newest-first, bytes + mtime, dotfiles
+  skipped), `save` (2 GiB cap), `read` (256 MiB cap). Names are the final
+  path component, sanitized to `[A-Za-z0-9._ ()+- ]` — `../escape/name.svg`
+  lands as a plain `name.svg`; folders are whitelisted, so nothing escapes
+  the shelf.
+- Commands `vault_list` / `vault_save` / `vault_read`; the UI gets a
+  Vault button on the Assets header: folder-grouped listing, per-folder
+  upload, click a file and it flows through the normal import pipeline
+  (assembled-import rules apply). Drop anything in once, use it in every
+  project.
+
+**Lottie (Bodymovin) import — "Larry" is first-class**:
+- `crates/engine/src/import_lottie.rs` parses Bodymovin v5 JSON: shapes
+  (ellipse / rect / path → native geometry, fill + stroke styles), solids
+  from hex, and **animated** position / scale / rotation / opacity →
+  native keyframe tracks with real Bezier easing (`o`/`i` control points,
+  x clamped to [0, 1], y to [-0.5, 1.5]), positions center-relative, each
+  keyframe carrying its own segment-start value. Precomps (ty 0), images
+  (2), nulls (3) and text (5) are skipped and reported by kind.
+- The `import_lottie` command assembles the result like SVG: one
+  PreComp group in the parent (fit-scaled, oversized docs folded under a
+  4000-unit inner cap), while the generated sub-comp keeps **Lottie's own
+  timeline** — clamping it to the parent used to silently drop trailing
+  keyframes. Explicit disassemble explodes it; one undo regroups.
+- `.lottie` / `.json` sniffing on drop and file open. Reply carries
+  `{layers, skipped, skippedKinds}`.
+
+**Desktop feel**:
+- Silent save: `⌘/Ctrl+S` writes straight to the last path — no OS dialog
+  once one exists; `⇧⌘S` / menu = Save As; a 60-second autosave sweeps up
+  unsaved work.
+- Touchpad: pinch (`ctrl/⌘ + wheel`) zooms anchored at the cursor
+  (10–800 %, free of the fixed ladder — the zoom readout shows arbitrary
+  values), two-finger scroll pans.
+- Bonaparte's own **circular HSV color wheel** (`ColorWheel.svelte`)
+  replaces the native browser color input in every color field: hue ring +
+  saturation/value square + alpha slider, full pointer-captured dragging;
+  the square's corners win hit-testing over the ring band (they overlap).
+
+Gates: fmt · workspace **395/395** (+8) · wasm · svelte-check **0** ·
+Playwright **99/99** (+4).
+
+---
+
 ---
 
 ## What "storage" means now
