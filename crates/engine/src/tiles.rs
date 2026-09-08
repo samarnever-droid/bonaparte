@@ -187,7 +187,7 @@ impl TileGrid {
                     .unwrap_or([comp.width as f32, comp.height as f32]);
                 (size[0], size[1])
             }
-            LayerKind::Footage { media } => {
+            LayerKind::Footage { media, .. } => {
                 if let Some(view) = frames.frame_rgba(*media, time) {
                     (view.width as f32, view.height as f32)
                 } else {

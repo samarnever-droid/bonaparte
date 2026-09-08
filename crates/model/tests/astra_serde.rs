@@ -8,6 +8,7 @@ fn sample(astra_chunks: Option<Arc<[String]>>) -> EmbeddedAudio {
     EmbeddedAudio {
         data_base64: Arc::from(""),
         astra_chunks,
+        beat_grid: None,
         sha256: "a".repeat(64),
         frames: 48_000,
         channels: 2,

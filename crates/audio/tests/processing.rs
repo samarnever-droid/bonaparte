@@ -22,6 +22,7 @@ fn fixture(samples: Vec<f32>) -> (Project, CompId, Bank) {
         audio: Some(EmbeddedAudio {
             data_base64: Arc::from("AAAA"),
             astra_chunks: None,
+            beat_grid: None,
             sha256: "0".repeat(64),
             frames: frames as u64,
             channels: 2,

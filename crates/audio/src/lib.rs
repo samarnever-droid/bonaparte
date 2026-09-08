@@ -1,6 +1,7 @@
 //! Pure, deterministic float audio mixer. No devices, files, threads or FFmpeg.
 //! Every output sample has an absolute time; chunk size and seeking do not reset
 //! envelope/resampler state. Playback and export call this exact implementation.
+pub mod beats;
 mod dsp;
 mod graph;
 use bonaparte_model::*;

@@ -167,6 +167,68 @@ export async function splitAudio() {
     ),
   );
 }
+/** Topmost video (footage) layer of the active comp — Beat Cut's target. */
+function topFootageLayer(): number | null {
+  const comp = activeComp();
+  if (!comp) return null;
+  for (let i = comp.layer_order.length - 1; i >= 0; i--) {
+    const layer = comp.layers[comp.layer_order[i]];
+    if ("Footage" in layer.kind) return layer.id;
+  }
+  return null;
+}
+
+/** Analyze the selected music clip: tempo + beat grid, painted on the ruler. */
+export async function detectBeats() {
+  const s = editor.audioSelection,
+    comp = activeComp();
+  if (!s?.clip || !comp) return;
+  const clip = comp.audio?.tracks
+    .find((t) => t.id === s.track)
+    ?.clips.find((c) => c.id === s.clip);
+  if (!clip) return;
+  await queued(async () => {
+    const reply = await command<Snapshot | SnapshotPatch>(
+      "analyze_beats",
+      { delta: !!editor.deltaProtocol, baseRevision: editor.revision, compId: comp.id, assetId: clip.media },
+    );
+    accept(reply);
+    const extra = reply as { bpm?: number; beats?: number; strong?: number };
+    notify(
+      `Detected ${extra.bpm ?? "?"} BPM — ${extra.beats ?? 0} beats, ${extra.strong ?? 0} downbeats. ⚡ Cut video to beat from the clip menu.`,
+    );
+  });
+}
+
+/** Slice the topmost video layer into beat-length clips (remix) or pulse it. */
+export async function cutToBeat(style: "remix" | "pulse" = "remix") {
+  const s = editor.audioSelection,
+    comp = activeComp();
+  if (!s?.clip || !comp) return;
+  const clip = comp.audio?.tracks
+    .find((t) => t.id === s.track)
+    ?.clips.find((c) => c.id === s.clip);
+  const videoLayer = topFootageLayer();
+  if (!clip) return;
+  if (videoLayer == null) {
+    notify("Import or drop a video first — Beat Cut slices a video layer.", true);
+    return;
+  }
+  await queued(async () => {
+    const reply = await command<Snapshot | SnapshotPatch>(
+      "cut_to_beat",
+      { delta: !!editor.deltaProtocol, baseRevision: editor.revision, compId: comp.id, audioAsset: clip.media, videoLayer, style },
+    );
+    accept(reply);
+    const extra = reply as { segments?: number };
+    notify(
+      style === "pulse"
+        ? `Beat pulse: ${extra.segments ?? 0} beats animated. The video plays through, the beat pops.`
+        : `Cut ${extra.segments ?? 0} video clips to the beat ⚡ Every downbeat jumps and pops.`,
+    );
+  });
+}
+
 export async function deleteAudio() {
   const s = editor.audioSelection;
   if (!s) return;

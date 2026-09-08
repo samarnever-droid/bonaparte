@@ -512,12 +512,17 @@ pub fn prepare_scene_with_transform(
                         size,
                     )
                 }
-                LayerKind::Footage { media } => {
-                    let pixels = if let Some(pixels) = frames.shared_frame(*media, time) {
+                LayerKind::Footage {
+                    media,
+                    source_start,
+                } => {
+                    // Media time is layer-local + source offset (see reference.rs).
+                    let media_time = Time(time.0 - layer.start.0 + source_start.0);
+                    let pixels = if let Some(pixels) = frames.shared_frame(*media, media_time) {
                         pixels
                     } else {
                         let f = frames
-                            .frame_rgba(*media, time)
+                            .frame_rgba(*media, media_time)
                             .ok_or(RenderError::MediaUnavailable(*media))?;
                         Arc::new(CpuFrame::from_rgba(f.width, f.height, f.rgba.to_vec()))
                     };

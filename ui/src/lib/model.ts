@@ -73,7 +73,7 @@ export type LayerKind =
       };
     }
   | { Text: { text: string; size: number; style: TextStyle } }
-  | { Footage: { media: number } }
+  | { Footage: { media: number; source_start?: number } }
   | { PreComp: { comp: number } }
   | { Adjustment: Record<string, never> };
 export type EffectValue =

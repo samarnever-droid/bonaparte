@@ -50,7 +50,10 @@ fn test_all_five_layer_kinds_render() {
     // Layer 3: Footage (Green 2x2 image)
     let mut footage = Layer::new(
         "footage",
-        LayerKind::Footage { media: MediaId(42) },
+        LayerKind::Footage {
+            media: MediaId(42),
+            source_start: Time::ZERO,
+        },
         Time::ZERO,
         Time(100),
     );

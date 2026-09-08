@@ -198,7 +198,7 @@ impl Project {
                     LayerKind::PreComp { comp: child } if !self.comps.contains_key(&child) => {
                         return Err("Referenced composition is missing".into())
                     }
-                    LayerKind::Footage { media } if !self.media.contains_key(&media) => {
+                    LayerKind::Footage { media, .. } if !self.media.contains_key(&media) => {
                         return Err("Referenced media is missing".into())
                     }
                     _ => {}

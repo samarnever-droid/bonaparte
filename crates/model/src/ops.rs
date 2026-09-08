@@ -12,6 +12,7 @@
 //! every new `Op` variant.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::document::{BlendMode, Comp, Layer, LayerKind, MediaAsset, Project, Property};
 use crate::effect::EffectInstance;
@@ -205,6 +206,14 @@ pub enum Op {
     },
     /// Register a media asset (ID allocated on apply). Perception cards and
     /// aliases ride on the asset.
+    /// Persist a detected beat grid (Beat Cut) on an audio asset. The grid
+    /// is analysis output, not user geometry — one op so it's undoable and
+    /// patch-streams like any other edit.
+    SetMediaBeatGrid {
+        media: MediaId,
+        /// Beat times in milliseconds, ascending.
+        beats_ms: Arc<[f64]>,
+    },
     AddMedia {
         asset: MediaAsset,
     },
@@ -620,6 +629,21 @@ impl Op {
                     .insert(new_index.min(c.layer_order.len()), item);
                 Ok(())
             }
+            Op::SetMediaBeatGrid { media, beats_ms } => {
+                let asset = project
+                    .media
+                    .get_mut(&media)
+                    .ok_or_else(|| ModelError::Invalid("Media asset not found".into()))?;
+                match &mut asset.audio {
+                    Some(audio) => audio.beat_grid = Some(beats_ms),
+                    None => {
+                        return Err(ModelError::Invalid(
+                            "Beat grids attach to audio assets only".into(),
+                        ))
+                    }
+                }
+                Ok(())
+            }
             Op::AddMedia { asset } => {
                 project.insert_media(asset);
                 Ok(())
@@ -678,6 +702,18 @@ impl Op {
                     ModelError::Invalid("Timeline shift overflows time range".into())
                 })?),
             }),
+            Op::SetMediaBeatGrid { media, .. } => {
+                let previous = project
+                    .media
+                    .get(media)
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.beat_grid.clone())
+                    .unwrap_or_default();
+                Ok(Op::SetMediaBeatGrid {
+                    media: *media,
+                    beats_ms: previous,
+                })
+            }
             Op::SetCamera { comp, .. } => {
                 let c = project.comp(*comp).ok_or(ModelError::CompNotFound(*comp))?;
                 Ok(Op::SetCamera {
@@ -983,6 +1019,7 @@ impl Op {
                 delta.as_secs_f64()
             ),
             Op::SetCompAudio { .. } => "Edited audio timeline".into(),
+            Op::SetMediaBeatGrid { .. } => "Detected the beat grid".into(),
             Op::SetCamera { .. } => "Moved the 3D camera".into(),
             Op::SetTurntable { enabled, .. } => {
                 if *enabled {

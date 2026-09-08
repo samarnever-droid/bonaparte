@@ -17,6 +17,10 @@ pub struct EmbeddedAudio {
     /// projects stay light no matter how big the audio is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub astra_chunks: Option<Arc<[String]>>,
+    /// Detected beat grid (Beat Cut): beat times in milliseconds,
+    /// ascending. Absent until the user runs beat detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beat_grid: Option<Arc<[f64]>>,
     pub sha256: String,
     pub frames: u64,
     pub channels: u16,

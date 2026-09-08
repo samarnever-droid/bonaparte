@@ -129,7 +129,10 @@ fn opted_in_effect_shaders_match_cpu_on_nontrivial_rgba_frames() {
             c,
             Layer::new(
                 "Image",
-                LayerKind::Footage { media },
+                LayerKind::Footage {
+                    media,
+                    source_start: Time::ZERO,
+                },
                 Time::ZERO,
                 Time(240000),
             ),

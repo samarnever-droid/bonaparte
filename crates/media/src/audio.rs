@@ -42,6 +42,37 @@ pub struct DecodedAudio {
     levels: Vec<PeakLevel>,
     _path: PathBuf,
 }
+impl DecodedAudio {
+    /// Onset envelope for beat detection: RMS energy per time bucket,
+    /// read straight off the decoded PCM (interleaved f32, machine-local
+    /// decode cache). `buckets_per_sec` sets the analysis resolution —
+    /// `bonaparte_audio::beats::BUCKETS_PER_SEC` (200) is the default.
+    pub fn onset_envelope(&self, buckets_per_sec: u32) -> Vec<f32> {
+        let ch = self.info.channels.max(1) as usize;
+        let bps = buckets_per_sec.max(1) as usize;
+        let per_bucket = (AUDIO_RATE as usize / bps).max(1);
+        let total = self.info.frames as usize;
+        let mut out = Vec::with_capacity(total.div_ceil(per_bucket));
+        let mut frame = 0usize;
+        while frame < total {
+            let end = (frame + per_bucket).min(total);
+            let mut acc = 0.0f64;
+            let mut i = frame * ch;
+            let stop = end * ch;
+            while i < stop {
+                let s = f32::from_le_bytes(self.pcm[i * 4..i * 4 + 4].try_into().unwrap_or([0; 4]))
+                    as f64;
+                acc += s * s;
+                i += 1;
+            }
+            let n = (stop - frame * ch).max(1) as f64;
+            out.push((acc / n).sqrt() as f32);
+            frame = end;
+        }
+        out
+    }
+}
+
 impl AudioSource for DecodedAudio {
     fn frames(&self) -> u64 {
         self.info.frames
@@ -267,6 +298,7 @@ pub fn decode(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), String
             original_channels: audio.original_channels,
             codec: audio.codec,
             peak: audio.peak,
+            beat_grid: audio.beat_grid,
         };
         return Ok((external, source));
     }
@@ -424,6 +456,7 @@ fn metadata(bytes: &[u8], hash: &str, info: &SourceInfo) -> EmbeddedAudio {
     EmbeddedAudio {
         data_base64: Arc::from(STANDARD.encode(bytes)),
         astra_chunks: None,
+        beat_grid: None,
         sha256: hash.into(),
         frames: info.frames,
         channels: info.channels,

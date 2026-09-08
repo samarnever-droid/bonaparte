@@ -797,7 +797,7 @@ fn draw_layer_pixels(
                 .unwrap_or([comp.width as f32, comp.height as f32]);
             (size[0], size[1])
         }
-        LayerKind::Footage { media } => {
+        LayerKind::Footage { media, .. } => {
             if let Some(view) = frames.frame_rgba(*media, time) {
                 (view.width as f32, view.height as f32)
             } else {
@@ -1075,9 +1075,16 @@ fn draw_layer_pixels(
                             out
                         }
                     }
-                    LayerKind::Footage { media } => {
+                    LayerKind::Footage {
+                        media,
+                        source_start,
+                    } => {
+                        // Media time is layer-local (clips start at their own
+                        // beginning) offset by source_start — this is what
+                        // makes jump cuts / Beat Cut segments possible.
+                        let media_time = Time(time.0 - layer.start.0 + source_start.0);
                         let view = frames
-                            .frame_rgba(*media, time)
+                            .frame_rgba(*media, media_time)
                             .ok_or(RenderError::MediaUnavailable(*media))?;
                         let sx = ((u * view.width as f32) as u32).min(view.width.saturating_sub(1));
                         let sy =
@@ -1237,6 +1244,7 @@ mod tests {
             "img",
             LayerKind::Footage {
                 media: bonaparte_model::MediaId(1),
+                source_start: Time::ZERO,
             },
             Time::ZERO,
             Time(10 * bonaparte_model::TICKS_PER_SEC),

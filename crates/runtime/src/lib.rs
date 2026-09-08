@@ -162,6 +162,13 @@ pub fn commit(
 
 /// Machine-actionable guidance appended to every rejected op so agents (and
 /// humans) can self-correct without reading the source.
+
+/// Downbeat test for a persisted grid: `analyze_beats` rotates the grid so
+/// index 0 is always a downbeat, so position does the bookkeeping.
+fn grid_is_strong(_grid: &[f64], i: usize) -> bool {
+    i % 4 == 0
+}
+
 const APPLY_HINT: &str = "hint: properties are Position|Scale|Rotation|Opacity|AnchorPoint|Z; values are {\"Scalar\": number} or {\"Vec2\": [x, y]}; comp/layer ids must exist in /api/state; time is ticks (120000 = 1s); POST /api/describe returns the full op catalog with examples";
 pub fn commit_grouped(
     project: &mut Project,
@@ -504,6 +511,243 @@ impl EditorSession {
                 }
                 Ok(response)
             }
+            "analyze_beats" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Analyze {
+                    comp_id: u64,
+                    asset_id: u64,
+                }
+                let a: Analyze = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let media = MediaId(a.asset_id);
+                let source = self
+                    .audio
+                    .sources
+                    .get(&media)
+                    .cloned()
+                    .ok_or("Beat detection reads the decoded PCM — import the audio first")?;
+                let envelope = source.onset_envelope(bonaparte_audio::beats::BUCKETS_PER_SEC);
+                let grid = bonaparte_audio::beats::detect(
+                    &envelope,
+                    bonaparte_audio::beats::BUCKETS_PER_SEC,
+                )?;
+                let bpm = {
+                    let mut gaps: Vec<f64> =
+                        grid.beats_ms.windows(2).map(|w| w[1] - w[0]).collect();
+                    if gaps.is_empty() {
+                        grid.period_ms()
+                    } else {
+                        gaps.sort_by(|x, y| x.total_cmp(y));
+                        60_000.0 / gaps[gaps.len() / 2]
+                    }
+                };
+                // Rotate so index 0 is a downbeat: the persisted grid (and
+                // every later consumer, e.g. cut_to_beat) then reads meter
+                // straight off the position — strong = index % 4 == 0.
+                let anchor = grid.strong.iter().position(|s| *s).unwrap_or(0);
+                let mut beats_ms = grid.beats_ms.clone();
+                let mut strong = grid.strong.clone();
+                if anchor > 0 {
+                    beats_ms.rotate_left(anchor);
+                    strong.rotate_left(anchor);
+                }
+                let beats_len = beats_ms.len();
+                // Paint the grid as arrangement markers on the comp's ruler:
+                // downbeats stand out, off-beats stay subtle.
+                let comp = self
+                    .project
+                    .comp(CompId(a.comp_id))
+                    .ok_or("Composition not found")?
+                    .clone();
+                let mut audio = comp.audio.clone();
+                audio.markers.retain(|m| !m.id.starts_with("beat-"));
+                for (i, ms) in beats_ms.iter().enumerate() {
+                    let ticks = (ms / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
+                    if ticks >= comp.duration.0 {
+                        break;
+                    }
+                    audio.markers.push(AudioMarker {
+                        id: format!("beat-{ms}"),
+                        frame: ticks,
+                        name: if strong[i] {
+                            "Downbeat".into()
+                        } else {
+                            "Beat".into()
+                        },
+                    });
+                }
+                audio.markers.sort_by_key(|m| m.frame);
+                let op = Op::Batch {
+                    label: "Detect beats".into(),
+                    ops: vec![
+                        Op::SetMediaBeatGrid {
+                            media,
+                            beats_ms: beats_ms.into(),
+                        },
+                        Op::SetCompAudio {
+                            comp: CompId(a.comp_id),
+                            audio,
+                        },
+                    ],
+                };
+                commit(&mut self.project, &mut self.history, &self.registry, op)?;
+                let strong_count = strong.iter().filter(|s| **s).count();
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("bpm".into(), json!((bpm * 10.0).round() / 10.0));
+                        o.insert("beats".into(), json!(beats_len));
+                        o.insert("strong".into(), json!(strong_count));
+                    }
+                    r
+                })
+            }
+            "cut_to_beat" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Cut {
+                    comp_id: u64,
+                    audio_asset: u64,
+                    video_layer: u64,
+                    #[serde(default)]
+                    style: String,
+                }
+                let c: Cut = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let grid = self
+                    .project
+                    .media
+                    .get(&MediaId(c.audio_asset))
+                    .and_then(|m| m.audio.as_ref())
+                    .and_then(|a| a.beat_grid.clone())
+                    .ok_or("No beat grid yet — run Detect beats on the music first")?;
+                if grid.len() < 2 {
+                    return Err("Beat grid too sparse to cut".into());
+                }
+                let comp_id = CompId(c.comp_id);
+                let layer_id = LayerId(c.video_layer);
+                let comp = self.project.comp(comp_id).ok_or("Composition not found")?;
+                let layer = comp.layers.get(&layer_id).ok_or("Layer not found")?.clone();
+                let media = match &layer.kind {
+                    LayerKind::Footage { media, .. } => *media,
+                    _ => return Err("Cut to beat needs a video (footage) layer".into()),
+                };
+                let video_duration = self
+                    .project
+                    .media
+                    .get(&media)
+                    .and_then(|m| m.video.as_ref())
+                    .map(|v| v.duration.0)
+                    .unwrap_or(0);
+                let comp_end = comp.duration.0;
+                let span_start = layer.start.0.max(0);
+                let span_end = (layer.start.0 + layer.duration.0).min(comp_end);
+                if span_end - span_start < TICKS_PER_SEC / 2 {
+                    return Err("The video layer is too short to cut".into());
+                }
+                let pulse = c.style == "pulse";
+                let mut ops: Vec<Op> = Vec::new();
+                let mut segments = 0usize;
+                if pulse {
+                    // One layer, the music plays through: scale pops on every
+                    // beat, bigger on downbeats.
+                    for (i, ms) in grid.iter().enumerate() {
+                        let ticks = (ms / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
+                        if ticks < span_start || ticks >= span_end {
+                            continue;
+                        }
+                        let peak = if grid_is_strong(&grid, i) {
+                            112.0
+                        } else {
+                            104.0
+                        };
+                        let back_ms =
+                            (ms + 70.0).min((span_end as f64) / TICKS_PER_SEC as f64 * 1000.0);
+                        let back_ticks = (back_ms / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
+                        let snap = |t: i64, v: f32| Op::AddKeyframe {
+                            comp: comp_id,
+                            layer: layer_id,
+                            property: Property::Scale,
+                            key: Keyframe {
+                                time: Time(t),
+                                value: PropValue::Vec2([v, v]),
+                                easing: Easing::Bezier {
+                                    p1: [0.2, 0.8],
+                                    p2: [0.3, 1.0],
+                                },
+                            },
+                        };
+                        ops.push(snap(ticks, peak));
+                        if back_ticks > ticks {
+                            ops.push(snap(back_ticks, 100.0));
+                        }
+                        segments += 1;
+                    }
+                } else {
+                    // Remix: one clip per beat span, source windows bouncing
+                    // through the footage (golden-ratio walk), downbeat clips
+                    // pop 8% bigger. The original layer stays untouched below.
+                    for i in 0..grid.len().saturating_sub(1) {
+                        let b0 = (grid[i] / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
+                        let b1 = (grid[i + 1] / 1000.0 * TICKS_PER_SEC as f64).round() as i64;
+                        let start = b0.max(span_start);
+                        let end = b1.min(span_end);
+                        if end - start < TICKS_PER_SEC / 10 {
+                            continue;
+                        }
+                        if segments >= 128 {
+                            break;
+                        }
+                        let span = end - start;
+                        let source_start = if video_duration > span {
+                            let frac = (i as f64 * 0.618_033_988_749_894_9) % 1.0;
+                            Time((frac * (video_duration - span) as f64).round() as i64)
+                        } else {
+                            Time::ZERO
+                        };
+                        let scale = if grid_is_strong(&grid, i) {
+                            [108.0, 108.0]
+                        } else {
+                            [100.0, 100.0]
+                        };
+                        let mut seg = Layer::new(
+                            format!("Beat {}", segments + 1),
+                            LayerKind::Footage {
+                                media,
+                                source_start,
+                            },
+                            Time(start),
+                            Time(span),
+                        );
+                        seg.transform.scale = scale;
+                        ops.push(Op::AddLayer {
+                            comp: comp_id,
+                            layer: seg,
+                        });
+                        segments += 1;
+                    }
+                }
+                if segments == 0 {
+                    return Err("No beats fall inside this video layer".into());
+                }
+                if ops.len() > 256 {
+                    return Err("Beat cut exceeds 256 operations — use a shorter music span".into());
+                }
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::Batch {
+                        label: format!("Cut to beat ({segments} beats)"),
+                        ops,
+                    },
+                )?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("style".into(), json!(if pulse { "pulse" } else { "remix" }));
+                        o.insert("segments".into(), json!(segments));
+                    }
+                    r
+                })
+            }
             "save_project" => {
                 if args["compact"].as_bool() == Some(true) {
                     let text = serde_json::to_string(&ProjectFile {
@@ -599,6 +843,7 @@ impl EditorSession {
                     &image.name,
                     LayerKind::Footage {
                         media: self.project.next_media,
+                        source_start: Time::ZERO,
                     },
                     Time::ZERO,
                     duration,
@@ -708,6 +953,7 @@ impl EditorSession {
                     &asset.name.clone(),
                     LayerKind::Footage {
                         media: self.project.next_media,
+                        source_start: Time::ZERO,
                     },
                     Time::ZERO,
                     clip_duration,
@@ -875,7 +1121,7 @@ impl EditorSession {
                     .project
                     .layer(req.comp_id, req.layer_id)
                     .ok_or("Layer not found")?;
-                let LayerKind::Footage { media } = &layer.kind else {
+                let LayerKind::Footage { media, .. } = &layer.kind else {
                     return Err("Only image layers can be vectorized".into());
                 };
                 let asset = self

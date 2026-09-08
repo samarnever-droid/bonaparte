@@ -18,6 +18,9 @@ use crate::ids::{CompId, LayerId, MediaId};
 use crate::keyframe::{PropValue, Track};
 use crate::time::{FrameRate, Time};
 
+fn zero_time() -> Time {
+    Time::ZERO
+}
 fn default_visible() -> bool {
     true
 }
@@ -450,8 +453,14 @@ pub enum LayerKind {
         #[serde(default)]
         style: TextStyle,
     },
-    /// A clip or still from the media library.
-    Footage { media: MediaId },
+    /// A clip or still from the media library. `source_start` offsets the
+    /// layer's first frame into the source (jump cuts / Beat Cut segments);
+    /// media time advances with layer-local time from there.
+    Footage {
+        media: MediaId,
+        #[serde(default = "zero_time")]
+        source_start: Time,
+    },
     /// A nested composition ("Group into Comp").
     PreComp { comp: CompId },
     /// Filters all layers below it; opacity mixes the original and filtered images.

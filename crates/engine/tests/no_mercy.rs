@@ -634,7 +634,10 @@ fn media_injection_edge_cases() {
         c,
         Layer::new(
             "f",
-            LayerKind::Footage { media },
+            LayerKind::Footage {
+                media,
+                source_start: Time::ZERO,
+            },
             Time::ZERO,
             Time(TICKS_PER_SEC),
         ),
@@ -678,7 +681,10 @@ fn media_injection_edge_cases() {
         c2,
         Layer::new(
             "f",
-            LayerKind::Footage { media: m2 },
+            LayerKind::Footage {
+                media: m2,
+                source_start: Time::ZERO,
+            },
             Time::ZERO,
             Time(TICKS_PER_SEC),
         ),

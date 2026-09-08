@@ -23,6 +23,8 @@
     addMixBus,
     reverseAudio,
     normalizeAudio,
+    detectBeats,
+    cutToBeat,
   } from "../audio/actions";
   import { openContextMenu, type ContextMenuItem } from "../store.svelte";
   import {
@@ -221,6 +223,18 @@
       { label: "Crossfade with neighbor", icon: "wave", run: () => void crossfadeAudio() },
       { label: "Reverse clip", icon: "rewind", run: () => void reverseAudio() },
       { label: "Normalize peaks", icon: "graph", run: () => void normalizeAudio() },
+      { separator: true },
+      { label: "Detect beats", icon: "graph", run: () => void detectBeats() },
+      {
+        label: "Cut video to beat ⚡",
+        icon: "scissors",
+        run: () => void cutToBeat("remix"),
+      },
+      {
+        label: "Beat pulse (no cuts)",
+        icon: "star",
+        run: () => void cutToBeat("pulse"),
+      },
       { separator: true },
       {
         label: clip.muted ? "Unmute clip" : "Mute clip",

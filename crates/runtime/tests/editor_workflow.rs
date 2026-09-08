@@ -215,7 +215,10 @@ fn failed_video_render_preserves_existing_output_file() {
         c,
         Layer::new(
             "Footage",
-            LayerKind::Footage { media },
+            LayerKind::Footage {
+                media,
+                source_start: Time::ZERO,
+            },
             Time::ZERO,
             Time(4000),
         ),

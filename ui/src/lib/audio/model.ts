@@ -59,6 +59,8 @@ export interface AudioAsset {
   /** Astra extent: chunk hashes when the source streams from the store
    * instead of riding inside the project file (sources > 16 MiB). */
   astra_chunks?: string[] | null;
+  /** Detected beat grid (Beat Cut): beat times in milliseconds. */
+  beat_grid?: number[] | null;
   sha256: string;
   frames: number;
   channels: number;
