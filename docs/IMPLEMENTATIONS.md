@@ -220,6 +220,45 @@ Playwright **91/91**.
 
 ---
 
+## Update 8 — `378d56c` · Kinetic ⚡: the lyric-video subsystem (10 files, +530)
+
+The Premiere/AE jaw-dropper: right-click the music → **Lyric video ⚡** →
+type the lines → **Generate**. Words land on the beat with keyframed
+motion; synthesized impacts hit the downbeats; one undo removes it all.
+
+- **kinetic_lyrics** (`crates/runtime/src/lib.rs`): one text layer per
+  word. Phrases quantize to the beat grid (comp-visible beats only — a
+  grid longer than the comp no longer eats lines); words stagger inside
+  the phrase; three motion styles — **pop** (8 → peak 112, downbeats 120,
+  settle 100, Bezier snap), **rise** (glide up + fade in), **wave** (words
+  bob across the line). Layer ids are deterministic within the batch, so
+  word keyframes ride the same transaction — one undo, guaranteed.
+- **sound_design** + `crates/audio/src/fx.rs`: procedural Foley —
+  **impact** (95→42 Hz sweeping body + 8 ms noise transient, tanh-soft),
+  **whoosh** (rising one-pole noise, bell envelope), **riser** (band-shaped
+  noise building to a hard stop) — seeded xorshift, deterministic at the
+  engine's 48 kHz, 4 unit tests. The synthesized WAV rides the normal
+  decode pipeline into a real asset, dropped on its own **"Sound design ⚡"
+  lane** with a clip per downbeat. No sample packs, no downloads.
+- **Batch cap 256 → 2048**: Kinetic generates ~6 ops per word; the
+  atomicity proof in `foundation.rs` now pins 2049-op rejection.
+- **Domain fix found en route**: beat ruler markers and sound-design clips
+  live in the FRAMES domain (48 kHz) — markers had been sitting 2.5× too
+  far right; they now land exactly on the audio ruler.
+- **UI**: "Lyric video ⚡" in the audio clip menu opens the dialog (lines
+  textarea, motion style select, sync + auto-foley toggles); Generate runs
+  both commands and toasts the result.
+- Tests: 4 runtime e2e (grid layout + stagger + one-undo; even-spread
+  fallback without a grid; downbeat lane + synth asset + undo; helpful
+  error without a grid); 4 fx unit tests; `ui/tests/kinetic.spec.ts`
+  drives the browser flow: detect → generate → 8 word layers with 3-key
+  scale tracks → impact lane with clips → engine PNG render → double undo.
+
+Gates: fmt · workspace **369/369** (+8) · wasm · svelte-check **0** ·
+Playwright **92/92**.
+
+---
+
 ## What "storage" means now
 
 | Tier | Mechanism | Holds |
