@@ -259,6 +259,63 @@ Playwright **92/92**.
 
 ---
 
+## Update 9 — `852b3a9` · Vision-Native MCP + muscle memory + assembled SVG + Kaya ⚡
+
+Four fronts, one thesis: the editor gives AI eyes and ears, and gives
+humans the reflexes they already own.
+
+**Vision-Native MCP** — the AI selling point:
+- `frame.view` — renders the composition and returns real PNGs inline
+  (MCP image blocks): a vision-native model LOOKS at the timeline.
+  Storyboard mode (`count` frames over a range), width downscale for
+  token economy. 3 tests: inline PNG magic, storyboard spacing,
+  meta shape.
+- `audio.extract` — renders the actual mix to an inline WAV (MCP audio
+  block) + loudness summary (peak/rms dB, rate, channels): an
+  audio-native model HEARS it. Mono mixdown by default.
+- `crates/mcp/src/protocol.rs` gains image/audio content blocks
+  (`mimeType` + base64 `data`) beside text.
+
+**Muscle memory**: Shift/Ctrl/⌘-click toggles rows into a
+multi-selection overlay (`multiSelected` + `selectLayerAdvanced`), mod+A
+grabs the whole stack, Escape clears (guarded during gestures — the
+interaction proxies keep Escape), Delete/Duplicate drive every selected
+layer, rows light up. Playwright: shift-click both → delete leaves one;
+Escape → delete is a no-op.
+
+**Assembled SVG**: imports land ONE PreComp group (poster-size docs fold
+into a 4000 px-capped sub-comp with an inner scale, so the 16 MP comp
+limit never trips). Right-click → **Disassemble into layers** composes
+the group transform onto each child (position rotates/scales with the
+group, scale/rotation/opacity multiply, tracks shift by the group's
+start), restores the exact stacking slot, removes the sub-comp — one
+undo regroups. Old exploded-import tests updated to the assembled
+contract; 3 new runtime tests.
+
+**Kaya ⚡** — first plugin on the new plugin API:
+- `crates/runtime/src/kaya.rs`: plugin manifests (id, capabilities,
+  settings with `secret` kind) are the loader's contract; `plugins.list`
+  exposes them; keys live client-side and ride per-call — never in the
+  project file.
+- The Kaya line format, exactly as specced: `Hi~~1:20+2~~` — word, start
+  m:ss, duration seconds. `annotate` + `parse` round-trip.
+- `kaya.analyze` — offline scene sense: silence spans (envelope floor)
+  + tempo/downbeats (the Beat Cut engine), zero keys.
+- `kaya.transcribe` — OpenAI Whisper (`timestamp_granularities[]=word`,
+  16 kHz mono multipart) → `KayaWord[]` persisted on the asset via the
+  `SetMediaTranscript` op. Kinetic/captions/AI can read what was said
+  when.
+- `narrator.speak` — Sarvam AI Bulbul or ElevenLabs (BYO keys, ureq on
+  rustls, wasm-gated) → decoded, placed at the requested second, word
+  plan attached. HTTP lives behind `cfg(not(wasm32))` so the wasm gate
+  stays clean.
+- Kaya dialog in the audio clip menu; keys persisted to localStorage.
+
+Gates: fmt · workspace **387/387** (+18) · wasm · svelte-check **0** ·
+Playwright **95/95**.
+
+---
+
 ## What "storage" means now
 
 | Tier | Mechanism | Holds |
