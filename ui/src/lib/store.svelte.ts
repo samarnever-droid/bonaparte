@@ -1837,6 +1837,7 @@ export async function exportFile(
   let sawCanceled = false;
   const watchProgress = () => {
     let etaSmoothed = 0;
+    let lastDone = -1;
     const tick = async () => {
       try {
         const raw = await command<{
@@ -1849,10 +1850,20 @@ export async function exportFile(
           lastFrameMs: number;
         }>("export_progress");
         if (raw.canceled) sawCanceled = true;
+        // Idle runtime (or telemetry left over from a PREVIOUS export — the
+        // slot is process-global): ignore until this export's frames flow.
+        if (raw.framesDone < lastDone || (lastDone === -1 && raw.framesDone === 0 && !raw.active)) {
+          etaSmoothed = 0;
+          if (!raw.active) return;
+        }
+        lastDone = raw.framesDone;
         const total = Math.max(1, raw.totalFrames);
         const done = Math.min(raw.framesDone, total);
         const elapsedMs = raw.startedMs > 0 ? Math.max(0, Date.now() - raw.startedMs) : 0;
-        const rate = elapsedMs > 500 ? done / (elapsedMs / 1000) : 0;
+        // The parallel pipeline needs a moment before the encoder stream is
+        // steady — early samples produce absurd ETAs, so wait for real flow.
+        const rate =
+          elapsedMs > 1500 && done >= 4 ? done / (elapsedMs / 1000) : 0;
         const eta = rate > 0 ? (total - done) / rate : 0;
         etaSmoothed = etaSmoothed === 0 ? eta : etaSmoothed * 0.7 + eta * 0.3;
         editor.exportProgress = {

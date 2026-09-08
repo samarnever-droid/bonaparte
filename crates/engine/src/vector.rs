@@ -105,6 +105,24 @@ pub fn rasterize_paths(
     let mut crossings: Vec<f32> = Vec::new();
 
     for py in y0..y1 {
+        // The 2x2 subsample grid visits two sample rows (py+0.25, py+0.75).
+        // Manage the active-edge table once per ROW against that whole span
+        // — advancing per sample would rewind: samples restart at +0.25 in
+        // every pixel while the table only moves forward, so any edge whose
+        // span begins between the two sample rows went missing for the rest
+        // of the row (half-covered scanlines through polygon vertices).
+        let sy_lo = py as f32 + 0.25;
+        let sy_hi = py as f32 + 0.75;
+        if do_fill {
+            while next_edge < edges.len() && edges[next_edge].ay.min(edges[next_edge].by) <= sy_hi {
+                active.push(next_edge);
+                next_edge += 1;
+            }
+            active.retain(|&e| {
+                let e = &edges[e];
+                e.ay.max(e.by) > sy_lo
+            });
+        }
         for px_x in x0..x1 {
             let mut coverage_fill = 0u32;
             let mut coverage_stroke = 0u32;
@@ -112,17 +130,6 @@ pub fn rasterize_paths(
                 let sx = px_x as f32 + off[0];
                 let sy = py as f32 + off[1];
                 if do_fill {
-                    // Advance the active-edge table for this sample row.
-                    while next_edge < edges.len()
-                        && edges[next_edge].ay.min(edges[next_edge].by) <= sy
-                    {
-                        active.push(next_edge);
-                        next_edge += 1;
-                    }
-                    active.retain(|&e| {
-                        let e = &edges[e];
-                        e.ay.max(e.by) > sy
-                    });
                     crossings.clear();
                     for &e in &active {
                         let e = &edges[e];
