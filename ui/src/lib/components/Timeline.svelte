@@ -156,16 +156,27 @@
     }));
   });
   const percent = (time: number) => (time / viewDuration) * 100;
-  function timeAt(e: PointerEvent): number {
-    if (!ruler || !comp) return 0;
+  let dragCal: { left: number; perTick: number } | null = null;
+  function calibrate(): { left: number; perTick: number } | null {
+    if (!ruler) return null;
     const rect = ruler.getBoundingClientRect();
-    return snapToFrame(((e.clientX - rect.left) / rect.width) * viewDuration, comp.fps);
+    return { left: rect.left, perTick: rect.width / Math.max(1, viewDuration) };
+  }
+  function timeAt(e: PointerEvent): number {
+    if (!comp) return 0;
+    // Frozen for the duration of a gesture: extending viewDuration resizes the
+    // ruler mid-drag, which would otherwise remap the cursor under the pointer
+    // and corrupt dt (drag right => layer snaps back to 0).
+    const cal = dragCal ?? calibrate();
+    if (!cal) return 0;
+    return snapToFrame((e.clientX - cal.left) / cal.perTick, comp.fps);
   }
   function rulerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     pause();
     editor.timelineGesture = true;
     scrubbing = true;
+    dragCal = calibrate();
     ruler?.setPointerCapture(e.pointerId);
     scrub(timeAt(e));
   }
@@ -219,12 +230,14 @@
     row?: RowTrack,
     key?: Keyframe,
   ) {
+    console.log("[dbg] begin kind=", kind, "layer=", layer.id, "button=", e.button);
     if (e.button !== 0) return;
     e.stopPropagation();
     editor.selected = layer.id;
     if (layer.locked) return;
     pause();
     editor.timelineGesture = true;
+    dragCal = calibrate();
     if (key) scrub(key.time);
     e.preventDefault();
     dragging = {
@@ -256,6 +269,16 @@
       });
   }
   function applyDrag(e: PointerEvent) {
+    console.log(
+      "[dbg] applyDrag dragging=",
+      !!dragging,
+      "comp=",
+      !!comp,
+      "ruler=",
+      !!ruler,
+      "viewDuration=",
+      viewDuration,
+    );
     if (!dragging || !comp) return;
     const dt = timeAt(e) - dragging.mouse,
       tpf = ticksPerFrame(comp.fps);
@@ -294,6 +317,7 @@
     if (dragRaf) cancelAnimationFrame(dragRaf);
     dragRaf = 0;
     pendingPointer = null;
+    dragCal = null;
     editor.timelineGesture = false;
     window.removeEventListener("pointermove", dragMove);
     window.removeEventListener("pointerup", dragEnd);
@@ -304,6 +328,7 @@
     dragging = null;
   }
   async function dragEnd() {
+    console.log("[dbg] dragEnd pending=", !!pendingPointer, "dragging=", JSON.stringify(dragging));
     if (pendingPointer) applyDrag(pendingPointer);
     const d = dragging,
       c = comp;
@@ -638,11 +663,11 @@
             <div
               class="layer-label label-cell"
               class:selected={editor.selected === layer.id}
-              class:invisible={!layerVisibility(comp.id, layer)}
+              class:dimmed={!layerVisibility(comp.id, layer)}
             >
               <button
                 class="tiny-button"
-                aria-label={`${layerVisibility(comp.id, layer) ? "Hide" : "Show"} ${layer.name}`}
+                aria-label={`Toggle visibility of ${layer.name}`}
                 title="Toggle visibility"
                 aria-pressed={layerVisibility(comp.id, layer)}
                 onclick={() => void toggleLayerVisibility(comp.id, layer.id)}
@@ -654,7 +679,7 @@
               <button
                 class="tiny-button lock-button"
                 class:locked={layer.locked}
-                aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+                aria-label={`Toggle lock on ${layer.name}`}
                 title="Toggle lock"
                 aria-pressed={layerLocked(comp.id, layer)}
                 onclick={() => void toggleLayerLock(comp.id, layer.id)}
@@ -665,9 +690,13 @@
               >
               <button
                 class="tiny-button disclosure"
-                disabled={!animated.length}
-                title="Expand animated properties"
+                title={expanded[layer.id]
+                  ? "Collapse properties"
+                  : animated.length
+                    ? "Expand animated properties"
+                    : "No animated properties yet — press ◇ on a property to animate"}
                 aria-label={`Expand ${layer.name}`}
+                aria-expanded={!!expanded[layer.id]}
                 onclick={() => (expanded[layer.id] = !expanded[layer.id])}
                 ><Icon name={expanded[layer.id] ? "down" : "right"} size={9} /></button
               >
@@ -698,6 +727,7 @@
                 class="layer-bar"
                 class:locked={layer.locked}
                 class:hidden-layer={!layer.visible}
+                class:dragging={draggingLayer}
                 style={`left:${percent(start)}%;width:${Math.max(0.1, percent(duration))}%;--layer-color:${layerColor(layer)};background:${layerColor(layer)}26;border-color:${layerColor(layer)}77`}
                 role="button"
                 tabindex="0"
@@ -727,46 +757,53 @@
               </div>
             </div>
             {#if expanded[layer.id]}
-              {#each animated as row (`${row.prop ?? row.effectId}-${row.paramId ?? ""}`)}
-                <div class="property-label label-cell">
-                  <Icon name="keyframe" size={9} /><span class="truncate">{row.label}</span><span
-                    class="spacer"
-                  ></span>{#if row.prop}<button
-                      class="tiny-button"
-                      title="Edit easing curve"
-                      aria-label={`Graph ${row.prop} on ${layer.name}`}
-                      onclick={() => {
-                        editor.selected = layer.id;
-                        openGraph(row.prop);
-                      }}><Icon name="graph" size={11} /></button
-                    >{/if}
+              {#if animated.length}
+                {#each animated as row (`${row.prop ?? row.effectId}-${row.paramId ?? ""}`)}
+                  <div class="property-label label-cell">
+                    <Icon name="keyframe" size={9} /><span class="truncate">{row.label}</span><span
+                      class="spacer"
+                    ></span>{#if row.prop}<button
+                        class="tiny-button"
+                        title="Edit easing curve"
+                        aria-label={`Graph ${row.prop} on ${layer.name}`}
+                        onclick={() => {
+                          editor.selected = layer.id;
+                          openGraph(row.prop);
+                        }}><Icon name="graph" size={11} /></button
+                      >{/if}
+                  </div>
+                  <div class="property-track track-cell">
+                    {#each ticks as tick}<span
+                        class="track-gridline"
+                        style={`left:${percent(tick.time)}%`}
+                      ></span>{/each}{#each row.track.keys as key (key.time)}{@const dragged =
+                        dragging?.kind === "key" &&
+                        dragging.layer === layer.id &&
+                        dragging.row?.prop === row.prop &&
+                        dragging.row?.effectId === row.effectId &&
+                        dragging.row?.paramId === row.paramId &&
+                        dragging.keyTime === key.time}<button
+                        class="timeline-key"
+                        class:at-playhead={key.time === editor.currentTime}
+                        style={`left:${percent(dragged ? dragging!.nextKey! : key.time)}%`}
+                        aria-label={`${row.label} keyframe at ${timeToSecs(key.time).toFixed(2)} seconds`}
+                        title="Drag to move · double-click to edit easing"
+                        onpointerdown={(e) => begin(e, layer, "key", row, key)}
+                        ondblclick={() => {
+                          editor.selected = layer.id;
+                          if (row.prop) openGraph(row.prop);
+                          else editor.inspector = "effects";
+                        }}
+                        oncontextmenu={(e) => keyMenu(e, layer, row, key)}
+                        ><Icon name="keyframe" size={9} /></button
+                      >{/each}
+                  </div>
+                {/each}
+              {:else}
+                <div class="property-track track-cell no-tracks">
+                  <span>No animated properties — select a property and press ◇ to animate it.</span>
                 </div>
-                <div class="property-track track-cell">
-                  {#each ticks as tick}<span
-                      class="track-gridline"
-                      style={`left:${percent(tick.time)}%`}
-                    ></span>{/each}{#each row.track.keys as key (key.time)}{@const dragged =
-                      dragging?.kind === "key" &&
-                      dragging.layer === layer.id &&
-                      dragging.row?.prop === row.prop &&
-                      dragging.row?.effectId === row.effectId &&
-                      dragging.row?.paramId === row.paramId &&
-                      dragging.keyTime === key.time}<button
-                      class="timeline-key"
-                      class:at-playhead={key.time === editor.currentTime}
-                      style={`left:${percent(dragged ? dragging!.nextKey! : key.time)}%`}
-                      aria-label={`${row.label} keyframe at ${timeToSecs(key.time).toFixed(2)} seconds`}
-                      title="Drag to move · double-click to edit easing"
-                      onpointerdown={(e) => begin(e, layer, "key", row, key)}
-                      ondblclick={() => {
-                        editor.selected = layer.id;
-                        if (row.prop) openGraph(row.prop);
-                        else editor.inspector = "effects";
-                      }}
-                      oncontextmenu={(e) => keyMenu(e, layer, row, key)}><Icon name="keyframe" size={9} /></button
-                    >{/each}
-                </div>
-              {/each}
+              {/if}
             {/if}
           {/each}
           {#if !layers.length}<div class="no-layers label-cell">
@@ -1030,9 +1067,19 @@
     height: 20px;
     width: 15px;
     color: #a1a49e;
+    cursor: pointer;
+    border-radius: 4px;
+    transition:
+      color 0.12s ease,
+      background-color 0.12s ease,
+      opacity 0.12s ease;
   }
   .tiny-button:hover {
     color: #e6e8e4;
+    background: #ffffff0f;
+  }
+  .tiny-button:active {
+    background: #ffffff1a;
   }
   .lock-button {
     opacity: 0.3;
@@ -1068,6 +1115,12 @@
     text-align: left;
     font-size: 10px;
     color: #c1c4bf;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.12s ease;
+  }
+  .layer-name:hover {
+    color: #e6e8e4;
   }
   .layer-name :global(svg) {
     color: #b2b6af;
@@ -1078,8 +1131,17 @@
     color: #acb0a8;
     font-size: 12px;
   }
-  .layer-label.invisible {
+  .layer-label.dimmed {
     opacity: 0.55;
+  }
+  .no-tracks {
+    display: flex;
+    align-items: center;
+    min-height: 22px;
+    font-size: 9px;
+    color: #8a8d86;
+    font-style: italic;
+    pointer-events: none;
   }
   .track-cell {
     position: relative;
@@ -1114,6 +1176,14 @@
     padding: 0 9px;
     overflow: hidden;
     min-width: 4px;
+  }
+  .layer-bar {
+    transition: box-shadow 0.15s ease;
+  }
+  .layer-bar.dragging {
+    cursor: grabbing;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+    z-index: 3;
   }
   .layer-bar.locked {
     cursor: default;
