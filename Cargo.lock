@@ -75,6 +75,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "astra"
+version = "0.1.0"
+dependencies = [
+ "atra",
+ "sha2",
+]
+
+[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -264,6 +272,7 @@ dependencies = [
 name = "bonaparte-media"
 version = "0.5.1"
 dependencies = [
+ "astra",
  "atra",
  "base64 0.22.1",
  "bonaparte-audio",
@@ -305,6 +314,7 @@ dependencies = [
 name = "bonaparte-runtime"
 version = "0.5.1"
 dependencies = [
+ "astra",
  "base64 0.22.1",
  "bonaparte-audio",
  "bonaparte-effects",

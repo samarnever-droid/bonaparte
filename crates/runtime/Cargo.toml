@@ -13,6 +13,7 @@ bonaparte-model = { path = "../model" }
 bonaparte-engine = { path = "../engine" }
 bonaparte-effects = { path = "../effects" }
 bonaparte-media = { path = "../media" }
+astra = { path = "../astra" } # store-backed audio assertions
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22" # portable embedded images and binary exports over native JSON IPC

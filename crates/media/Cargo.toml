@@ -14,4 +14,5 @@ base64 = "0.22" # original encoded audio in portable project files
 sha2 = "0.10" # content-addressed decoded audio, never filename-based identity
 memmap2 = "0.9" # disk-backed float PCM instead of whole-source heap allocations
 atra = { path = "../atra" } # hot tier-0 frame cache: sharded probe reads, byte-budgeted eviction
+astra = { path = "../astra" } # content-addressed media store: big sources stream instead of embedding
 tempfile = "3" # bounded, atomic import and audio export intermediates

@@ -14,7 +14,14 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
-pub const MAX_AUDIO_FILE_BYTES: usize = 32 * 1024 * 1024;
+/// Sanity bound only — the real sizing policy is Astra's: sources at or
+/// under `EMBED_INLINE_LIMIT` ride inside the project file (portable),
+/// larger ones stream from the store. 2 GiB per source.
+pub const MAX_AUDIO_FILE_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// Sources at or under this size embed directly in the project file so
+/// single-file portability stays the default. Anything bigger is stored
+/// as an Astra extent.
+pub const EMBED_INLINE_LIMIT: usize = 16 * 1024 * 1024;
 const FORMATS: &str = "wav,mp3,flac,ogg,aiff,mov,aac";
 #[derive(Clone, Serialize, Deserialize)]
 struct SourceInfo {
@@ -240,7 +247,40 @@ fn mapped(path: &Path, info: SourceInfo) -> Result<DecodedAudio, String> {
 }
 pub fn decode(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), String> {
     if bytes.is_empty() || bytes.len() > MAX_AUDIO_FILE_BYTES {
-        return Err("Audio files must be nonempty and at most 32 MiB".into());
+        return Err("Audio files must be nonempty and at most 2 GiB".into());
+    }
+    // Small sources embed inline (portable project by default); bigger ones
+    // stream through the Astra store and ride the project as a hash extent.
+    if bytes.len() > EMBED_INLINE_LIMIT {
+        let report = astra()
+            .put_bytes(bytes)
+            .map_err(|e| format!("Astra store write failed: {e}"))?;
+        let (audio, source) = decode_plain(bytes)?;
+        let external = EmbeddedAudio {
+            data_base64: Arc::from(""),
+            astra_chunks: Some(Arc::from(report.chunks.into_boxed_slice())),
+            sha256: audio.sha256,
+            frames: audio.frames,
+            channels: audio.channels,
+            sample_rate: audio.sample_rate,
+            original_sample_rate: audio.original_sample_rate,
+            original_channels: audio.original_channels,
+            codec: audio.codec,
+            peak: audio.peak,
+        };
+        return Ok((external, source));
+    }
+    decode_plain(bytes)
+}
+
+/// The Astra global store accessor (media stays engine-agnostic).
+fn astra() -> &'static astra::Store {
+    astra::Store::global()
+}
+
+fn decode_plain(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), String> {
+    if bytes.is_empty() {
+        return Err("Audio files must be nonempty".into());
     }
     let hash = format!("{:x}", Sha256::digest(bytes));
     // Serialize cache creation, not playback. The original bytes are immutable.
@@ -383,6 +423,7 @@ pub fn decode(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), String
 fn metadata(bytes: &[u8], hash: &str, info: &SourceInfo) -> EmbeddedAudio {
     EmbeddedAudio {
         data_base64: Arc::from(STANDARD.encode(bytes)),
+        astra_chunks: None,
         sha256: hash.into(),
         frames: info.frames,
         channels: info.channels,
@@ -394,6 +435,24 @@ fn metadata(bytes: &[u8], hash: &str, info: &SourceInfo) -> EmbeddedAudio {
     }
 }
 pub fn decode_embedded(audio: &EmbeddedAudio) -> Result<Arc<DecodedAudio>, String> {
+    // Store-backed source: reassemble the extent through Astra's hot cache.
+    if audio.data_base64.is_empty() {
+        let Some(extent) = &audio.astra_chunks else {
+            return Err("Audio source has neither inline data nor an Astra extent".into());
+        };
+        let mut bytes = Vec::new();
+        for chunk in extent.iter() {
+            let Some(data) = astra().read_chunk(chunk) else {
+                return Err(format!("Astra chunk {chunk} is missing from the store"));
+            };
+            bytes.extend_from_slice(&data);
+        }
+        let (actual, source) = decode_plain(&bytes)?;
+        if actual.sha256 != audio.sha256 {
+            return Err("Astra extent does not match the recorded source hash".into());
+        }
+        return Ok(source);
+    }
     if audio.data_base64.len() > MAX_AUDIO_FILE_BYTES.div_ceil(3) * 4 {
         return Err("Encoded audio exceeds the import limit".into());
     }

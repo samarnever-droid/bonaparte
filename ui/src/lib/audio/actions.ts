@@ -61,13 +61,9 @@ export async function importAudio(file?: File, trackId?: string) {
   }
   const comp = activeComp();
   if (!comp) return;
-  if (file.size > 128 * 1024 * 1024) {
-    notify(
-      "That file is over the 128 MB import size. Trim or compress it first — the project itself stays portable either way.",
-      true,
-    );
-    return;
-  }
+  // No arbitrary size wall: sources above 16 MiB stream into the Astra
+  // store and the project carries a content hash, so imports stay fast
+  // and projects stay light. (2 GiB sanity bound engine-side.)
   pause();
   editor.audioImporting = true;
   editor.audioStatus = "Decoding source and building waveforms…";

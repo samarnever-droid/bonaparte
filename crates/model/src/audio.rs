@@ -9,7 +9,14 @@ pub const MAX_AUDIO_TIMELINE: i64 = AUDIO_RATE as i64 * 86_400;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddedAudio {
     /// Original encoded file, not the decoded working PCM. Arc keeps edit snapshots cheap.
+    /// Empty when the source lives in the Astra store instead (see `astra_chunks`).
     pub data_base64: Arc<str>,
+    /// Astra extent list: content-addressed chunk hashes of the original
+    /// encoded file, in order. `Some` only when the source exceeded the
+    /// inline-embed limit and streams from the Astra store instead —
+    /// projects stay light no matter how big the audio is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub astra_chunks: Option<Arc<[String]>>,
     pub sha256: String,
     pub frames: u64,
     pub channels: u16,

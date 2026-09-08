@@ -56,6 +56,9 @@ export interface AudioArrangement {
 }
 export interface AudioAsset {
   data_base64: string;
+  /** Astra extent: chunk hashes when the source streams from the store
+   * instead of riding inside the project file (sources > 16 MiB). */
+  astra_chunks?: string[] | null;
   sha256: string;
   frames: number;
   channels: number;

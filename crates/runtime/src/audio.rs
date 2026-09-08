@@ -57,8 +57,8 @@ pub struct AudioImportRequest {
     pub start_frame: i64,
 }
 pub struct PreparedAudioImport {
-    request: AudioImportRequest,
-    audio: EmbeddedAudio,
+    pub request: AudioImportRequest,
+    pub audio: EmbeddedAudio,
     pub source: Arc<DecodedAudio>,
 }
 pub fn prepare_import(args: Value) -> Result<PreparedAudioImport, String> {
@@ -70,8 +70,10 @@ pub fn prepare_import(args: Value) -> Result<PreparedAudioImport, String> {
     {
         return Err("Invalid audio import name or placement".into());
     }
+    // No size wall here: sources above the inline limit stream into the
+    // Astra store inside decode() and the project carries a hash extent.
     if request.data_base64.len() > bonaparte_media::audio::MAX_AUDIO_FILE_BYTES.div_ceil(3) * 4 {
-        return Err("Audio import exceeds 32 MiB".into());
+        return Err("Audio import exceeds the 2 GiB sanity bound".into());
     }
     let bytes = STANDARD
         .decode(request.data_base64.as_bytes())

@@ -1,0 +1,8 @@
+[package]
+name = "astra"
+version = "0.1.0"
+edition = "2021"
+description = "Astra — the dedicated workspace storage engine: content-addressed chunk store with Atra-powered hot block cache"
+[dependencies]
+atra = { path = "../atra" } # hot block cache: probe reads, byte-budgeted eviction
+sha2 = "0.10" # content addressing: chunks dedup by digest, never by name
