@@ -243,7 +243,7 @@ fn seeded_op_flood_survives_and_undoes_cleanly() {
             }
             p.validate()
                 .unwrap_or_else(|e| panic!("seed {seed:#x} step {step}: invalid doc: {e}"));
-            assert!(h.undo_len() <= 200, "history eviction broken");
+            assert!(h.undo_len() <= 1000, "history eviction broken");
         }
 
         // Undo everything that remains; the doc must return to pristine state.
@@ -342,10 +342,10 @@ fn batch_limits_are_enforced() {
 }
 
 #[test]
-fn history_evicts_at_two_hundred_and_stops_at_the_bottom() {
+fn history_evicts_at_one_thousand_and_stops_at_the_bottom() {
     let mut p = base_project();
     let mut h = History::new();
-    for i in 0..250 {
+    for i in 0..1250 {
         h.commit(
             &mut p,
             Op::RenameProject {
@@ -354,17 +354,17 @@ fn history_evicts_at_two_hundred_and_stops_at_the_bottom() {
         )
         .unwrap();
     }
-    assert_eq!(h.undo_len(), 200);
-    for _ in 0..200 {
+    assert_eq!(h.undo_len(), 1000);
+    for _ in 0..1000 {
         assert!(h.undo(&mut p).unwrap());
     }
     assert!(!h.undo(&mut p).unwrap(), "undo walked past the bottom");
-    assert_eq!(p.name, "v49", "250 edits with a 200-deep stack keeps v49");
-    for _ in 0..200 {
+    assert_eq!(p.name, "v249", "1250 edits with a 1000-deep stack keeps v249");
+    for _ in 0..1000 {
         assert!(h.redo(&mut p).unwrap());
     }
     assert!(!h.redo(&mut p).unwrap(), "redo walked past the top");
-    assert_eq!(p.name, "v249");
+    assert_eq!(p.name, "v1249");
 }
 
 #[test]

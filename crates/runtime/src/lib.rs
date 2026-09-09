@@ -23,7 +23,7 @@ pub use audio::{decode_project_audio, AudioChunkRequest, DecodedAudios};
 pub use preview::{PreviewJob, PreviewRenderer, PreviewRequest};
 
 pub const PROJECT_VERSION: u32 = 4;
-pub const MAX_PROJECT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
 
 /// Live export telemetry, shared with the UI through the `export_progress`
 /// command and flipped by `export_cancel`. Process-global: one export at a

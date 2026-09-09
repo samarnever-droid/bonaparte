@@ -220,7 +220,7 @@ impl Project {
                     || image.height == 0
                     || image.width > 4096
                     || image.height > 4096
-                    || u64::from(image.width) * u64::from(image.height) > 4_194_304
+                    || u64::from(image.width) * u64::from(image.height) > 16_777_216
                 {
                     return Err("Embedded images are limited to 4 megapixels".into());
                 }
@@ -231,8 +231,8 @@ impl Project {
                 image_bytes = image_bytes.saturating_add(expected);
             }
         }
-        if image_bytes > 48 * 1024 * 1024 {
-            return Err("Embedded media exceeds the 48 MB project budget".into());
+        if image_bytes > 256 * 1024 * 1024 {
+            return Err("Embedded media exceeds the 256 MB project budget".into());
         }
         Ok(())
     }

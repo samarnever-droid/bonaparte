@@ -264,9 +264,9 @@ impl Op {
     pub fn apply(self, project: &mut Project) -> Result<(), ModelError> {
         match self {
             Op::Batch { ops, .. } => {
-                if ops.len() > 2048 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 8192 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 2048 operations and cannot be nested".into(),
+                        "Transactions allow at most 8192 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();
@@ -694,9 +694,9 @@ impl Op {
     pub fn invert(&self, project: &Project) -> Result<Op, ModelError> {
         match self {
             Op::Batch { label, ops } => {
-                if ops.len() > 2048 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 8192 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 2048 operations and cannot be nested".into(),
+                        "Transactions allow at most 8192 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();
@@ -705,7 +705,7 @@ impl Op {
                 for op in ops {
                     history.commit(&mut candidate, op.clone())?;
                     // A transaction may contain 256 primitives, but user history
-                    // retains 200 transactions. Drain each temporary entry now so
+                    // retains 1000 transactions. Drain each temporary entry now so
                     // the history cap cannot silently discard part of an inverse.
                     inverses.push(history.undo_stack.pop().expect("just committed").op);
                 }
@@ -1197,7 +1197,7 @@ impl History {
         Self::default()
     }
 
-    /// Number of undoable entries currently retained (bounded at 200).
+    /// Number of undoable entries currently retained (bounded at 1000).
     pub fn undo_len(&self) -> usize {
         self.undo_stack.len()
     }
@@ -1258,7 +1258,7 @@ impl History {
                 edit_group: group,
             });
         }
-        if self.undo_stack.len() > 200 {
+        if self.undo_stack.len() > 1000 {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();

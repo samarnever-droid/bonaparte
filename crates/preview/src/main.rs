@@ -3,7 +3,7 @@
 //! no CORS bypass. Request logic lives in the library so it stays testable;
 //! this binary is only the HTTP transport, and its workers respawn if
 //! anything ever escapes the containment layer.
-use bonaparte_preview::safe_route;
+use bonaparte_preview::{safe_route_reply, Reply};
 use bonaparte_runtime::{EditorSession, MAX_PROJECT_BYTES};
 use std::{
     io::Read,
@@ -11,22 +11,55 @@ use std::{
 };
 use tiny_http::{Header, Method, Request, Response, Server};
 
-fn reply(request: Request, status: u16, mime: &str, bytes: Vec<u8>) {
-    let response = Response::from_data(bytes)
-        .with_status_code(status)
-        .with_header(Header::from_bytes("Content-Type", mime).expect("static header"))
-        .with_header(Header::from_bytes("Cache-Control", "no-store").expect("static header"));
-    let _ = request.respond(response);
+fn header(name: &str, value: &str) -> Header {
+    Header::from_bytes(name, value).expect("static header")
+}
+
+fn reply(request: Request, reply: Reply) {
+    match reply {
+        Reply::Bytes { status, mime, body } => {
+            let response = Response::from_data(body)
+                .with_status_code(status)
+                .with_header(header("Content-Type", mime))
+                .with_header(header("Cache-Control", "no-store"));
+            let _ = request.respond(response);
+        }
+        // Stream the export straight off disk; the handoff file goes as soon
+        // as the response is out. No length cap, no whole-file read.
+        Reply::File { mime, path } => {
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let response = Response::from_file(file)
+                        .with_header(header("Content-Type", mime))
+                        .with_header(header("Cache-Control", "no-store"));
+                    let _ = request.respond(response);
+                }
+                Err(error) => {
+                    let _ = request.respond(
+                        Response::from_data(
+                            format!("{{\"error\":\"export file unreadable: {error}\"}}")
+                                .into_bytes(),
+                        )
+                        .with_status_code(500)
+                        .with_header(header("Content-Type", "application/json")),
+                    );
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn handle(mut request: Request, session: &Arc<Mutex<EditorSession>>) {
     if request.method() == &Method::Get && request.url() == "/api/health" {
         reply(
             request,
-            200,
-            "application/json",
-            b"{\"status\":\"ok\",\"renderer\":\"Rust preview runtime\",\"previewProtocol\":3,\"mcp\":\"unified\"}"
-                .to_vec(),
+            Reply::Bytes {
+                status: 200,
+                mime: "application/json",
+                body: b"{\"status\":\"ok\",\"renderer\":\"Rust preview runtime\",\"previewProtocol\":3,\"mcp\":\"unified\"}"
+                    .to_vec(),
+            },
         );
         return;
     }
@@ -37,9 +70,11 @@ fn handle(mut request: Request, session: &Arc<Mutex<EditorSession>>) {
     if request.method() != &Method::Post || !custom_header {
         reply(
             request,
-            405,
-            "application/json",
-            b"{\"error\":\"Use the editor's same-origin POST transport\"}".to_vec(),
+            Reply::Bytes {
+                status: 405,
+                mime: "application/json",
+                body: b"{\"error\":\"Use the editor's same-origin POST transport\"}".to_vec(),
+            },
         );
         return;
     }
@@ -51,9 +86,11 @@ fn handle(mut request: Request, session: &Arc<Mutex<EditorSession>>) {
     if request.body_length().is_some_and(|n| n > MAX_PROJECT_BYTES) {
         reply(
             request,
-            400,
-            "application/json",
-            b"{\"error\":\"Request too large\"}".to_vec(),
+            Reply::Bytes {
+                status: 400,
+                mime: "application/json",
+                body: b"{\"error\":\"Request too large\"}".to_vec(),
+            },
         );
         return;
     }
@@ -67,14 +104,15 @@ fn handle(mut request: Request, session: &Arc<Mutex<EditorSession>>) {
     {
         reply(
             request,
-            400,
-            "application/json",
-            b"{\"error\":\"Request too large\"}".to_vec(),
+            Reply::Bytes {
+                status: 400,
+                mime: "application/json",
+                body: b"{\"error\":\"Request too large\"}".to_vec(),
+            },
         );
         return;
     }
-    let (status, mime, bytes) = safe_route(session, name, body);
-    reply(request, status, mime, bytes);
+    reply(request, safe_route_reply(session, name, body));
 }
 
 fn serve_session(server: Arc<Server>, session: Arc<Mutex<EditorSession>>) {

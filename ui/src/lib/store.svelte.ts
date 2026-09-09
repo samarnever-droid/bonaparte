@@ -1,5 +1,5 @@
 /// The only client-side document mirror. Rust owns validation, rendering and history.
-import { command, binary, desktop, invoke } from "./bridge";
+import { command, binary, desktop, invoke, saveOrDownload } from "./bridge";
 import { saveRecovery, readRecovery } from "./persistence";
 import { clearGeometryCache } from "./geometry";
 import { AudioTransport, type AudioMeter, type AudioChunkMeta } from "./audio/transport";
@@ -1492,7 +1492,7 @@ export async function importImage(file?: File) {
     return;
   }
   try {
-    if (file.size > 20 * 1024 * 1024) throw new Error("Images must be smaller than 20 MB.");
+    if (file.size > 64 * 1024 * 1024) throw new Error("Images must be smaller than 64 MB.");
     editor.imageImporting = true;
     notify("Importing image… decoding away from the canvas interaction thread.");
     let decoded: { width: number; height: number; ratio: number; rgbaBase64: string };
@@ -1519,7 +1519,7 @@ export async function importImage(file?: File) {
       });
     } else {
       const image = await createImageBitmap(file);
-      const ratio = Math.min(1, 2048 / Math.max(image.width, image.height));
+      const ratio = Math.min(1, 4096 / Math.max(image.width, image.height));
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(image.width * ratio));
       canvas.height = Math.max(1, Math.round(image.height * ratio));
@@ -1546,7 +1546,7 @@ export async function importImage(file?: File) {
     editor.selected = (editor.project?.next_layer ?? 1) - 1;
     notify(
       decoded.ratio < 1
-        ? "Image imported at a 2048 px working resolution and embedded in the project."
+        ? "Image imported at a 4096 px working resolution and embedded in the project."
         : "Image imported and embedded in the project.",
     );
   } catch (error) {
@@ -2194,16 +2194,12 @@ export async function exportFile(
       );
     } else {
       if (format === "mp4") watchProgress();
-      const data = await binary(
-        format === "mp4" ? "export_video" : format === "wav" ? "export_wav" : "export_png",
-        args,
-      );
-      download(
-        new Blob([data], {
-          type: format === "mp4" ? "video/mp4" : format === "wav" ? "audio/wav" : "image/png",
-        }),
-        `${filename()}.${format}`,
-      );
+      const routeName =
+        format === "mp4" ? "export_video" : format === "wav" ? "export_wav" : "export_png";
+      const mime = format === "mp4" ? "video/mp4" : format === "wav" ? "audio/wav" : "image/png";
+      // Chromium pipes the reply straight to a file on disk — no 128 MB wall
+      // and no giant blob in memory; other browsers keep the blob download.
+      if (!(await saveOrDownload(routeName, args, `${filename()}.${format}`, mime))) return;
     }
     notify(
       format === "wav"

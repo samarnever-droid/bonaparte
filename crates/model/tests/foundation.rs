@@ -288,7 +288,7 @@ fn shift_overflow_and_oversized_batch_leave_document_and_redo_intact() {
             &mut project,
             Op::Batch {
                 label: "Too large".into(),
-                ops: (0..2049)
+                ops: (0..8193)
                     .map(|_| Op::RenameProject {
                         name: "Partial edit".into()
                     })
@@ -302,7 +302,7 @@ fn shift_overflow_and_oversized_batch_leave_document_and_redo_intact() {
 }
 
 #[test]
-fn all_256_primitives_survive_the_200_transaction_history_limit() {
+fn all_256_primitives_survive_the_batch_transaction_history_limit() {
     let (mut project, _, _) = fixture();
     let before = serde_json::to_value(&project).unwrap();
     let mut history = History::new();

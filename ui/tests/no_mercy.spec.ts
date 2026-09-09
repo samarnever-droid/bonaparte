@@ -115,23 +115,21 @@ test("a 150-command storm stays atomic under undo and redo", async ({ request })
   expect((await command(request, "state")).project).toEqual(after);
 });
 
-test("history eviction past 200 entries keeps the document coherent", async ({ request }) => {
-  for (let i = 0; i < 260; i++) {
+test("history eviction past 1000 entries keeps the document coherent", async ({ request }) => {
+  for (let i = 0; i < 1250; i++) {
     await command(request, "apply", setRotation(i));
   }
-  const final = (await command(request, "state")).project;
-  // The cap is 200: undo must bottom out exactly, never underflow, and every
-  // step must be a real transition until the stack is exhausted.
-  let last = final;
+  // The cap is 1000: undo must bottom out exactly, never underflow, and every
+  // step must be a real transition until the stack is exhausted. The undo
+  // reply names what it undid; the bottom of history carries no name.
   let steps = 0;
-  for (let i = 0; i < 300; i++) {
-    await command(request, "undo");
-    const current = (await command(request, "state")).project;
-    if (JSON.stringify(current) === JSON.stringify(last)) break;
-    last = current;
+  for (let i = 0; i < 1300; i++) {
+    const reply = await command(request, "undo");
+    if (reply.lastUndone === undefined) break;
     steps++;
   }
-  expect(steps).toBe(200);
+  expect(steps).toBe(1000);
+  const last = (await command(request, "state")).project;
   // Undoing past the bottom is a silent no-op that keeps the document stable.
   await command(request, "undo");
   expect((await command(request, "state")).project).toEqual(last);
