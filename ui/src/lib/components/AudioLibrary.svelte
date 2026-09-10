@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import { editor, arrangement } from "../store.svelte";
-  import { importAudio, addAssetClip, addMixBus } from "../audio/actions";
+  import { addAssetClip } from "../audio/actions";
   let { search = "" }: { search?: string } = $props();
   const assets = $derived(
     Object.values(editor.project?.media ?? {}).filter(
@@ -10,25 +10,18 @@
   );
 </script>
 
+<!-- Single home per control: this sidebar panel only picks the selection target and adds
+     clips. Import lives in the audio toolbar (+ its context menus), and mix buses are
+     created with "Bus" there too — nothing here repeats another panel's action. -->
 <div class="audio-library">
-  <div class="library-intro">
-    <span class="badge"><Icon name="wave" size={12} />AUDIO LIBRARY</span>
-    <p>Sound gives<br /><strong>motion its meaning.</strong></p>
-  </div>
-  <button class="import-audio" disabled={editor.audioImporting} onclick={() => void importAudio()}
-    ><Icon name="upload" size={18} /><strong
-      >{editor.audioImporting ? "Decoding & analyzing…" : "Import a sound"}</strong
-    ><span>Music, dialogue, ambience, effects</span><small
-      >WAV · MP3 · FLAC · OGG · AIFF · AAC</small
-    ></button
-  >
   {#if editor.audioProtocol >= 2}
     <div class="library-label">
-      MIX ROUTING <button aria-label="Add mix bus" onclick={() => void addMixBus()}>＋ Bus</button>
+      MIX ROUTING <span>{(arrangement().buses ?? []).length + 1}</span>
     </div>
     <button
       class="source"
       aria-label="Select master processing"
+      title="Edit the master strip in the inspector"
       onclick={() => {
         editor.audioSelection = null;
         editor.audioBusSelection = null;
@@ -41,6 +34,7 @@
       <button
         class="source"
         aria-label={`Select mix bus ${bus.name}`}
+        title="Edit this bus in the inspector"
         onclick={() => {
           editor.audioSelection = null;
           editor.audioBusSelection = bus.id;
@@ -69,10 +63,11 @@
       ><Icon name="plus" size={12} /></button
     >
   {/each}
-  {#if !assets.length}<p class="note">
-      Original files are retained in the project. Working sound uses 48 kHz floating-point PCM, with
-      waveforms built by the native engine.
-    </p>{/if}
+  {#if !assets.length}
+    <p class="note">
+      No sounds yet. Import from the audio toolbar above the tracks (or right-click any track).
+    </p>
+  {/if}
   <div class="library-label">WORKING WITH AUDIO</div>
   <ul>
     <li>Drag a clip to move it. Trim either edge.</li>
@@ -82,68 +77,15 @@
     <li>Use the inspector for sample positions and automation.</li>
   </ul>
   <p class="note">
-    {arrangement().tracks.length} tracks in this composition. Preview and export use the same Rust mixer.
-    Varispeed changes pitch; it is not pitch-preserving stretch.
+    Original files are retained; working sound is 48 kHz float. Preview and export use the same Rust
+    mixer. Varispeed changes pitch; it is not pitch-preserving stretch.
   </p>
 </div>
 
 <style>
   .audio-library {
     color: #9ebbc2;
-    padding: 0 12px 18px;
-  }
-  .library-intro {
-    padding: 8px 0 16px;
-  }
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: 7px monospace;
-    letter-spacing: 0.7px;
-    color: #86b7c2;
-    border: 1px solid #486a70;
-    background: #87aeba12;
-    border-radius: 3px;
-    padding: 5px 6px;
-  }
-  .library-intro p {
-    font-size: 15px;
-    color: #74979c;
-    line-height: 1.7;
-    margin: 14px 0 0;
-    font-weight: 300;
-  }
-  .library-intro strong {
-    font-weight: 400;
-    color: #b7d2d5;
-  }
-  .import-audio {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 9px;
-    padding: 19px 12px;
-    border: 1px dashed #52727b;
-    border-radius: 6px;
-    width: 100%;
-    background: #75a8b00b;
-    color: #8eb9c4;
-  }
-  .import-audio strong {
-    font-size: 11px;
-    font-weight: 400;
-    color: #bed3d9;
-  }
-  .import-audio span {
-    font-size: 8px;
-    color: #75949d;
-  }
-  .import-audio small {
-    font: 6px monospace;
-    letter-spacing: 0.4px;
-    color: #6f8b94;
-    margin-top: 4px;
+    padding: 4px 12px 18px;
   }
   .library-label {
     font: 8px monospace;
@@ -151,7 +93,10 @@
     color: #8db0b7;
     display: flex;
     justify-content: space-between;
-    margin: 22px 0 12px;
+    margin: 18px 0 10px;
+  }
+  .library-label span {
+    color: #6f8b94;
   }
   .source {
     width: 100%;
@@ -163,6 +108,10 @@
     border: 1px solid #354c53;
     border-radius: 4px;
     background: #709fab09;
+  }
+  .source:hover {
+    border-color: #4d707a;
+    background: #709fab14;
   }
   .source > span:nth-child(2) {
     flex: 1;
@@ -204,7 +153,7 @@
     color: #809fa8;
   }
   .note {
-    margin-top: 17px;
+    margin-top: 12px;
   }
   ul {
     padding-left: 14px;

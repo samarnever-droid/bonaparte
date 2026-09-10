@@ -199,18 +199,27 @@
   }
   .outside {
     position: fixed;
-    inset: 0;
+    /* Start below the top chrome (52 px header + 38 px workflow bar): the
+       menus, workspace tabs and header buttons must stay clickable while
+       this panel is open — a sheet that covers them swallows every click
+       (and stalls automated actors entirely). Content below still dismisses. */
+    top: 90px;
+    right: 0;
+    bottom: 0;
+    left: 0;
     z-index: 70;
     cursor: default;
     background: transparent;
   }
   .performance-dialog {
+    /* Above the promoted workflow bar (76) so the panel isn't clipped by
+       the menu strip it hangs from. */
     position: absolute;
     display: block;
     right: 0;
     left: auto;
     top: calc(100% + 10px);
-    z-index: 75;
+    z-index: 78;
     margin: 0;
     padding: 18px;
     width: 360px;

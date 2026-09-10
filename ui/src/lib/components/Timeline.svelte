@@ -245,6 +245,8 @@
     keyTime?: number;
     nextKey?: number;
     row?: RowTrack;
+    /** Other selected layers riding this move, as one gesture + one undo. */
+    group: number[] | null;
   }>(null);
   function begin(
     e: PointerEvent,
@@ -253,9 +255,14 @@
     row?: RowTrack,
     key?: Keyframe,
   ) {
-    console.log("[dbg] begin kind=", kind, "layer=", layer.id, "button=", e.button);
     if (e.button !== 0) return;
     e.stopPropagation();
+    // Grabbing a member of a multi-selection drags the whole group —
+    // decided BEFORE the primary moves, so the set covers everyone.
+    const groupIds =
+      kind === "move" && selectionIds().includes(layer.id) && editor.multiSelected.length
+        ? selectionIds().filter((id) => id !== layer.id && !comp?.layers[String(id)]?.locked)
+        : [];
     editor.selected = layer.id;
     if (layer.locked) return;
     pause();
@@ -274,6 +281,7 @@
       keyTime: key?.time,
       nextKey: key?.time,
       row,
+      group: groupIds.length ? groupIds : null,
     };
     window.addEventListener("pointermove", dragMove);
     window.addEventListener("pointerup", dragEnd);
@@ -292,22 +300,23 @@
       });
   }
   function applyDrag(e: PointerEvent) {
-    console.log(
-      "[dbg] applyDrag dragging=",
-      !!dragging,
-      "comp=",
-      !!comp,
-      "ruler=",
-      !!ruler,
-      "viewDuration=",
-      viewDuration,
-    );
     if (!dragging || !comp) return;
     const dt = timeAt(e) - dragging.mouse,
       tpf = ticksPerFrame(comp.fps);
-    if (dragging.kind === "move")
-      dragging.nextStart = Math.max(0, Math.min(MAX_TIME - dragging.duration, dragging.start + dt));
-    else if (dragging.kind === "in") {
+    if (dragging.kind === "move") {
+      // Group moves clamp to the earliest member, so nobody can be dragged
+      // off the start of the timeline while riding along.
+      let floor = dragging.start;
+      if (dragging.group)
+        for (const id of dragging.group) {
+          const s = comp.layers[String(id)]?.start;
+          if (s !== undefined) floor = Math.min(floor, s);
+        }
+      dragging.nextStart = Math.max(
+        dragging.start - floor,
+        Math.min(MAX_TIME - dragging.duration, dragging.start + dt),
+      );
+    } else if (dragging.kind === "in") {
       dragging.nextStart = Math.max(
         0,
         Math.min(dragging.start + dragging.duration - tpf, dragging.start + dt),
@@ -402,14 +411,33 @@
               d.nextKey! + ticksPerFrame(c.fps),
             );
           });
-      } else if (d.kind === "move" && d.nextStart !== d.start)
-        await applyOp(
-          withDuration(
-            { type: "shiftLayer", comp: c.id, layer: d.layer, delta: d.nextStart - d.start },
-            d.nextStart + d.duration,
-          ),
-        );
-      else if (d.kind !== "key" && (d.nextStart !== d.start || d.nextDuration !== d.duration))
+      } else if (d.kind === "move" && d.nextStart !== d.start) {
+        const delta = d.nextStart - d.start;
+        if (d.group?.length) {
+          // One transaction, one undo: the whole group rides together,
+          // keyframes and all (ShiftLayer moves both).
+          const shifts: Op[] = [{ type: "shiftLayer", comp: c.id, layer: d.layer, delta }];
+          let end = d.nextStart + d.duration;
+          for (const id of d.group) {
+            const m = c.layers[String(id)];
+            if (!m) continue;
+            shifts.push({ type: "shiftLayer", comp: c.id, layer: id, delta });
+            end = Math.max(end, m.start + delta + m.duration);
+          }
+          const extra = durationOp(c, end);
+          await applyOp({
+            type: "batch",
+            label: `Moved ${shifts.length} layers`,
+            ops: [...(extra ? [extra] : []), ...shifts],
+          });
+        } else
+          await applyOp(
+            withDuration(
+              { type: "shiftLayer", comp: c.id, layer: d.layer, delta },
+              d.nextStart + d.duration,
+            ),
+          );
+      } else if (d.kind !== "key" && (d.nextStart !== d.start || d.nextDuration !== d.duration))
         await applyOp(
           withDuration(
             {
@@ -681,7 +709,11 @@
           {#each layers as layer, index (layer.id)}
             {@const animated = tracks(layer)}
             {@const draggingLayer = dragging?.layer === layer.id && dragging.kind !== "key"}
-            {@const start = draggingLayer ? dragging!.nextStart : layer.start}
+            {@const groupRide =
+              !draggingLayer && dragging?.kind === "move" && dragging.group?.includes(layer.id)
+                ? dragging.nextStart - dragging.start
+                : 0}
+            {@const start = draggingLayer ? dragging!.nextStart : layer.start + groupRide}
             {@const duration = draggingLayer ? dragging!.nextDuration : layer.duration}
             <div
               class="layer-label label-cell"
@@ -726,7 +758,7 @@
               <button
                 class="layer-name"
                 aria-label={`Select layer ${layer.name}`}
-onclick={(e) => selectLayerAdvanced(layer.id, e)}
+                onclick={(e) => selectLayerAdvanced(layer.id, e)}
                 oncontextmenu={(e) => layerMenu(e, layer.id)}
                 ><Icon name={layerIcon(layer)} size={11} /><span class="truncate">{layer.name}</span
                 ></button
@@ -872,7 +904,7 @@ onclick={(e) => selectLayerAdvanced(layer.id, e)}
       disabled={!selected || selected.locked}
       onclick={() => void deleteSelected()}><Icon name="trash" size={11} /></button
     ><span class="spacer"></span><span class="timeline-hint"
-      >Drag layers to move · drag edges to trim · ◇ animate</span
+      >Drag layers to move · ⇧-click rows to group · ◇ animate</span
     ><span class="divider"></span><span class="mono ticks-note">120,000 ticks / sec</span>
   </div>
 </section>

@@ -4,7 +4,7 @@ use crate::{CompId, MediaId, Project, Time};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 pub const AUDIO_RATE: u32 = 48_000;
-pub const MAX_AUDIO_FRAMES: u64 = AUDIO_RATE as u64 * 3600;
+pub const MAX_AUDIO_FRAMES: u64 = AUDIO_RATE as u64 * 14_400; // four-hour sources
 pub const MAX_AUDIO_TIMELINE: i64 = AUDIO_RATE as i64 * 86_400;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddedAudio {
@@ -303,8 +303,8 @@ impl Project {
         for comp in self.comps.values() {
             let a = &comp.audio;
             a.validate_processing()?;
-            if a.tracks.len() > 64
-                || a.markers.len() > 2048
+            if a.tracks.len() > 256
+                || a.markers.len() > 16_384
                 || !within(a.gain_db, -96.0, 24.0)
                 || !within(a.bpm, 20.0, 400.0)
                 || a.beat_offset.unsigned_abs() > MAX_AUDIO_TIMELINE as u64
@@ -333,14 +333,14 @@ impl Project {
                     || !track.color[1..].bytes().all(|b| b.is_ascii_hexdigit())
                     || !within(track.gain_db, -96.0, 24.0)
                     || !within(track.pan, -1.0, 1.0)
-                    || track.clips.len() > 2048
+                    || track.clips.len() > 16_384
                 {
                     return Err("Invalid audio track".into());
                 }
                 for clip in &track.clips {
                     if !id_valid(&clip.id)
                         || !clips.insert(&clip.id)
-                        || clips.len() > 8192
+                        || clips.len() > 65_536
                         || clip.name.len() > 256
                         || clip.start_frame.unsigned_abs() > MAX_AUDIO_TIMELINE as u64
                         || clip.duration_frames == 0

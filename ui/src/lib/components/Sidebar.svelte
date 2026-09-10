@@ -1,23 +1,35 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import AssetThumb from "./AssetThumb.svelte";
+  import { sendAssetToVault } from "../media/vaultSend";
   import AudioLibrary from "./AudioLibrary.svelte";
   import {
     editor,
     activeComp,
     selectedLayer,
     selectComp,
-    addLayer,
     addEffect,
     importAnyFile,
     applyOp,
     newLayer,
     addMediaToComp,
+    openContextMenu,
   } from "../store.svelte";
   import { formatFps, timeToSecs } from "../model";
-  import { create3dScene } from "../three-d";
   import { PRESETS, applyPreset } from "../presets";
   let search = $state("");
   let showHistory = $state(false);
+  const historyBadge = $derived(
+    editor.historyOverflow > 0
+      ? {
+          count: `${editor.historyDepth} on disk`,
+          title: `${editor.historyDepth} steps kept — the ${editor.historyOverflow} oldest live in the on-disk journal, and undo reaches every one`,
+        }
+      : {
+          count: String(editor.historyDepth),
+          title: `${editor.historyDepth} steps kept`,
+        },
+  );
   const comp = $derived(activeComp());
   const comps = $derived(
     Object.values(editor.project?.comps ?? {}).filter((c) =>
@@ -144,18 +156,47 @@
           title="The Vault — global asset shelf"
           aria-label="Open the Vault"
           onclick={() => (editor.dialog = { kind: "vault" })}
-        ><Icon name="layers" size={12} /></button>
+          ><Icon name="layers" size={12} /></button
+        >
       </div>
       {#each assets as asset (asset.id)}
-        <div class="asset-item" class:reusable={!!comp}>
-          <Icon
-            name={asset.audio
-              ? "wave"
-              : typeof asset.kind === "object" && "Video" in asset.kind
-                ? "film"
-                : "image"}
-            size={16}
-          /><button
+        <div
+          class="asset-item"
+          class:reusable={!!comp}
+          role="listitem"
+          oncontextmenu={(e) => {
+            e.preventDefault();
+            openContextMenu(e, [
+              {
+                label: "Send to vault",
+                icon: "layers",
+                hint: "One shelf for every project",
+                run: () => void sendAssetToVault(asset),
+              },
+              ...(comp
+                ? [
+                    {
+                      label: "Add to composition",
+                      icon: "plus",
+                      run: () => void addMediaToComp(asset.id),
+                    },
+                  ]
+                : []),
+              { separator: true },
+              {
+                label: asset.footage
+                  ? asset.footage.path
+                  : asset.embedded
+                    ? `${asset.embedded.width} × ${asset.embedded.height} px, embedded`
+                    : asset.audio
+                      ? `${Math.round(asset.audio.frames / 48000)} s, embedded`
+                      : "Sampled frames only",
+                disabled: true,
+              },
+            ]);
+          }}
+        >
+          <AssetThumb {asset} /><button
             class="asset-add"
             aria-label={`Add ${asset.name} to the composition`}
             title="Add to composition"
@@ -167,8 +208,28 @@
             title="Click to add to the composition"
             disabled={!comp}
             onclick={() => void addMediaToComp(asset.id)}>{asset.name}</button
-          ><span class="spacer"></span><small class="mono"
-            >{asset.embedded?.width ?? asset.video?.width ?? ""}</small
+          ><span class="spacer"></span>{#if asset.footage}
+            {@const live = editor.footageStatus.get(asset.id)}
+            <span
+              class="footage-chip"
+              class:offline={live && !live.online}
+              class:proxy={live?.proxy && live.online}
+              title={live && !live.online
+                ? "Offline — the clip file is not at " +
+                  asset.footage.path +
+                  ". Click the folder to relink."
+                : live?.proxy
+                  ? "Live full-framerate playback · half-res proxy keeps scrubbing smooth"
+                  : "Live full-framerate playback straight from " + asset.footage.path}
+              >{live && !live.online ? "offline" : live?.proxy ? "proxy" : "live"}</span
+            ><button
+              class="icon-button small"
+              title="Relink clip"
+              aria-label={`Relink ${asset.name}`}
+              onclick={() => (editor.dialog = { kind: "footage", mediaId: asset.id })}
+              ><Icon name="folder" size={12} /></button
+            >{/if}<small class="mono"
+            >{asset.footage?.width ?? asset.embedded?.width ?? asset.video?.width ?? ""}</small
           >
         </div>
       {/each}
@@ -181,24 +242,15 @@
         >
         <span class="formats mono">MP4 · PNG · JPG · WEBP · SVG · OBJ · WAV</span>
       </button>
-      <div class="create-section">
-        <div class="section-title upper">Start with a layer</div>
-        <div class="create-grid">
-          {#each [{ id: "text", name: "Text", icon: "type" }, { id: "rectangle", name: "Shape", icon: "square" }, { id: "circle", name: "Ellipse", icon: "circle" }, { id: "adjustment", name: "Adjustment", icon: "adjust" }, { id: "3d", name: "3D Scene", icon: "cube" }] as item}
-            <button
-              onclick={() =>
-                item.id === "3d"
-                  ? create3dScene()
-                  : void addLayer(item.id as "text" | "rectangle" | "circle" | "adjustment")}
-              disabled={!comp}
-              ><Icon name={item.icon} size={16} /><span>{item.name}</span><Icon
-                name="plus"
-                size={11}
-              /></button
-            >
-          {/each}
-        </div>
-      </div>
+      {#if editor.ffmpeg}<button
+          class="path-import"
+          onclick={() => (editor.dialog = { kind: "footage", mediaId: null })}
+          ><Icon name="link" size={12} /><span
+            >Link a clip by path — full framerate, no sampling</span
+          ></button
+        >{/if}
+      <!-- Layer creation lives on the canvas toolbar (and the Layer menu):
+           the sidebar used to repeat it as a fifth entry point. -->
       <button class="motion-link" onclick={() => (editor.sidebar = "motion")}
         ><span class="motion-icon"><Icon name="graph" size={18} /></span><span
           ><strong>A head start on motion</strong><small>Explore animation presets</small></span
@@ -288,8 +340,9 @@
   </div>
   <div class="sidebar-bottom">
     <button class="history-toggle" onclick={() => (showHistory = !showHistory)}
-      ><Icon name="history" size={13} /><span>History</span><span class="count"
-        >{editor.history.length}</span
+      ><Icon name="history" size={13} /><span>History</span><span
+        class="count"
+        title={historyBadge.title}>{historyBadge.count}</span
       ><span class="spacer"></span><Icon name={showHistory ? "down" : "up"} size={11} /></button
     >
     {#if showHistory}<div class="history-list">
@@ -506,38 +559,6 @@
     letter-spacing: 1px;
     color: #646762;
   }
-  .create-section {
-    border-top: 1px solid var(--border-subtle);
-    margin-top: 8px;
-  }
-  .create-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    padding: 0 14px;
-  }
-  .create-grid button {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    text-align: left;
-    padding: 11px 8px;
-    border: 1px solid #3a3b38;
-    border-radius: 4px;
-    font-size: 9px;
-    color: #adafab;
-    background: #282927;
-  }
-  .create-grid button :global(svg:first-child) {
-    color: #c5c8c3;
-  }
-  .create-grid button :global(svg:last-child) {
-    margin-left: auto;
-    color: #767a73;
-  }
-  .create-grid button:hover {
-    border-color: #797e75;
-  }
   .motion-link {
     display: flex;
     align-items: center;
@@ -726,5 +747,47 @@
     right: 10px;
     top: 13px;
     color: var(--accent);
+  }
+  .footage-chip {
+    font:
+      600 9px/1 ui-monospace,
+      monospace;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #9aa097;
+    border: 1px solid #3a3c39;
+    background: #22242180;
+    border-radius: 999px;
+    padding: 2px 7px;
+    flex: none;
+  }
+  .footage-chip.proxy {
+    color: var(--accent);
+    border-color: #4c6146;
+    background: var(--accent-soft);
+  }
+  .footage-chip.offline {
+    color: var(--warning);
+    border-color: #6a5a3c;
+    background: #e0be8614;
+  }
+  .path-import {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: calc(100% - 28px);
+    margin: -8px 14px 12px;
+    padding: 7px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: #8d928b;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .path-import:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
   }
 </style>

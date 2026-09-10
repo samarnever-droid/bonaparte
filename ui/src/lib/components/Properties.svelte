@@ -94,12 +94,8 @@
     });
   }
   // --- Quick grade: the Color workspace's core look, inline. ------------
-  const gradeManifest = $derived(
-    editor.effects.find((e) => e.id === "builtin.color_grade"),
-  );
-  const gradeEffect = $derived(
-    layer?.effects.find((e) => e.effect_id === "builtin.color_grade"),
-  );
+  const gradeManifest = $derived(editor.effects.find((e) => e.id === "builtin.color_grade"));
+  const gradeEffect = $derived(layer?.effects.find((e) => e.effect_id === "builtin.color_grade"));
   const quickGradeParams = ["exposure", "contrast", "saturation", "temperature"];
   async function addQuickGrade() {
     await updateEffects((effects) =>
@@ -130,7 +126,11 @@
     },
     {
       name: "Bleach",
-      params: { saturation: { Float: -0.55 }, contrast: { Float: 0.35 }, exposure: { Float: 0.15 } },
+      params: {
+        saturation: { Float: -0.55 },
+        contrast: { Float: 0.35 },
+        exposure: { Float: 0.15 },
+      },
     },
     {
       name: "Warm Film",
@@ -306,7 +306,7 @@
                   type="number"
                   value={layer.kind.Text.size}
                   min="1"
-                  max="2048"
+                  max="65536"
                   disabled={layer.locked}
                   oninput={(e) => {
                     const v = finiteInput(e.currentTarget.value);
@@ -389,7 +389,7 @@
                     aria-label={`Shape ${axis === 0 ? "width" : "height"}`}
                     type="number"
                     min="1"
-                    max="8192"
+                    max="16384"
                     disabled={layer.locked}
                     value={(layer.kind.Shape.style.size ?? [comp.width, comp.height])[axis]}
                     oninput={(e) => {
@@ -620,17 +620,16 @@
               {/each}
             </div>
             {#if gradeEffect}
-              {#each gradeManifest.params.filter((p) => quickGradeParams.includes(p.id)) as param (param.id)}
+              {#each gradeManifest.params.filter( (p) => quickGradeParams.includes(p.id) ) as param (param.id)}
                 <div class="grade-row">
                   <ParamControl {param} instance={gradeEffect} disabled={layer.locked} />
                 </div>
               {/each}
-              <p class="dim grade-note">Wheels, curves and LUT export live in the Color workspace.</p>
+              <p class="dim grade-note">
+                Wheels, curves and LUT export live in the Color workspace.
+              </p>
             {:else}
-              <button
-                class="grade-add"
-                disabled={layer.locked}
-                onclick={() => void addQuickGrade()}
+              <button class="grade-add" disabled={layer.locked} onclick={() => void addQuickGrade()}
                 ><Icon name="adjust" size={13} />Add quick grade</button
               >
             {/if}
@@ -763,8 +762,14 @@
     font-size: 11px;
     cursor: pointer;
   }
-  .look-chip:hover:not(:disabled) { background: #26291f; color: var(--text-1); }
-  .look-chip:disabled { opacity: 0.45; cursor: default; }
+  .look-chip:hover:not(:disabled) {
+    background: #26291f;
+    color: var(--text-1);
+  }
+  .look-chip:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   .grade-note {
     font-size: 11px;
     margin: 6px 0 0;
@@ -784,7 +789,9 @@
     font-size: 12px;
     cursor: pointer;
   }
-  .grade-add:hover:not(:disabled) { background: #26291f; }
+  .grade-add:hover:not(:disabled) {
+    background: #26291f;
+  }
   .inspector {
     border-left: 1px solid var(--border);
   }

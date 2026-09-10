@@ -61,6 +61,7 @@ fn media_asset(name: &str, w: u32, h: u32) -> MediaAsset {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     }
 }
 

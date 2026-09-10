@@ -137,6 +137,10 @@
       return;
     }
     if (e.key === "Escape" && !editor.interaction && !editor.timelineGesture) {
+      if (editor.topMenu) {
+        editor.topMenu = null;
+        return;
+      }
       editor.multiSelected = [];
       if (editor.selected != null) editor.selected = null;
       return;

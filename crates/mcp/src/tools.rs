@@ -652,7 +652,7 @@ fn tool_project_create(session: &mut McpSession, args: serde_json::Value) -> Too
         };
     }
     session.project = project;
-    session.history = bonaparte_model::History::new();
+    session.history = bonaparte_runtime::journal::fresh_history();
     session.active_comp = Some(comp_id);
 
     let res = json!({
@@ -965,7 +965,7 @@ fn tool_ops_propose(session: &mut McpSession, args: serde_json::Value) -> ToolCa
 
     // AI dry-run preview: clone active state and simulate without mutating session!
     let mut preview_project = session.project.clone();
-    let mut preview_history = session.history.clone();
+    let mut preview_history = session.history.window_clone();
 
     let mut descriptions = Vec::with_capacity(parsed.ops.len());
     let mut errors = Vec::new();
@@ -1102,7 +1102,7 @@ fn tool_comp_render(session: &mut McpSession, args: serde_json::Value) -> ToolCa
     }
 
     if !fps_val.is_finite() || !(1.0..=240.0).contains(&fps_val) {
-        return ToolCallResult::error("Frame rate must be between 1 and 240 fps");
+        return ToolCallResult::error("Frame rate must be between 1 and 1000 fps");
     }
     if format != "png" && format != "mp4" {
         return ToolCallResult::error("Supported export formats are png and mp4");
@@ -1124,6 +1124,7 @@ fn tool_comp_render(session: &mut McpSession, args: serde_json::Value) -> ToolCa
             registry: builtin_registry().clone(),
             bit_depth: 8,
             output_space: Default::default(),
+            draft: false,
         };
         let start = Time::from_secs_f64(parsed.start_time.unwrap_or(0.0));
         let end = Time::from_secs_f64(parsed.end_time.unwrap_or(comp_duration_secs));

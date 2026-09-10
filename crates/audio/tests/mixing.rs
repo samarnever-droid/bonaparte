@@ -38,6 +38,7 @@ fn scene(channels: u16, samples: Vec<f32>) -> (Project, CompId, Bank) {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     });
     let mut t = AudioTrack::new("track-1", "Source");
     t.clips

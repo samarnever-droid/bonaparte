@@ -109,6 +109,7 @@ fn seeded_op_flood_survives_and_undoes_cleanly() {
                     alias: None,
                     perception: None,
                     video: None,
+                    footage: None,
                 },
             },
         )
@@ -359,7 +360,10 @@ fn history_evicts_at_one_thousand_and_stops_at_the_bottom() {
         assert!(h.undo(&mut p).unwrap());
     }
     assert!(!h.undo(&mut p).unwrap(), "undo walked past the bottom");
-    assert_eq!(p.name, "v249", "1250 edits with a 1000-deep stack keeps v249");
+    assert_eq!(
+        p.name, "v249",
+        "1250 edits with a 1000-deep stack keeps v249"
+    );
     for _ in 0..1000 {
         assert!(h.redo(&mut p).unwrap());
     }
@@ -453,8 +457,9 @@ fn composition_validation_ceilings() {
     let mut p = base_project();
     let mut h = History::new();
     let bad = [
-        json!({"w": 8193u32, "h": 8u32}),
-        json!({"w": 8u32, "h": 8193u32}),
+        json!({"w": 16_385u32, "h": 8u32}),
+        json!({"w": 8u32, "h": 16_385u32}),
+        json!({"w": 12_000u32, "h": 12_000u32}), // beyond 64 megapixels
     ];
     for case in &bad {
         let w = case["w"].as_u64().unwrap() as u32;
@@ -474,6 +479,22 @@ fn composition_validation_ceilings() {
             .is_err(),
             "expected rejection for {w}x{hgt}"
         );
+    }
+    // The former 8,192 px ceiling is a legal size now.
+    {
+        let mut hp = History::new();
+        assert!(hp
+            .commit(
+                &mut p,
+                Op::CreateComp {
+                    name: "was-ceiling".into(),
+                    width: 8_193,
+                    height: 8,
+                    fps: FrameRate::FPS_30,
+                    duration: Time(TICKS_PER_SEC),
+                }
+            )
+            .is_ok());
     }
     // Duration beyond the 24 h ceiling must be rejected by validation.
     let too_long = Op::CreateComp {

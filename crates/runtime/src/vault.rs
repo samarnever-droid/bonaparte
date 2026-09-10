@@ -135,12 +135,18 @@ fn safe_file_name(name: &str) -> Result<String, String> {
 
 /// Save bytes into a vault folder. Returns the written file's name.
 pub fn save(folder: &str, name: &str, data_base64: &str) -> Result<String, String> {
-    let folder = safe_folder(folder)?;
-    let name = safe_file_name(name)?;
-    let cap = 2 * 1024 * 1024 * 1024usize;
     let bytes = STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|e| format!("Invalid vault upload: {e}"))?;
+    save_bytes(folder, name, &bytes)
+}
+
+/// The bytes-level core shared by uploads, native asset copies and
+/// path imports. Returns the sanitized file name actually written.
+pub fn save_bytes(folder: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+    let folder = safe_folder(folder)?;
+    let name = safe_file_name(name)?;
+    let cap = 2 * 1024 * 1024 * 1024usize;
     if bytes.is_empty() {
         return Err("Vault upload is empty".into());
     }
@@ -149,7 +155,43 @@ pub fn save(folder: &str, name: &str, data_base64: &str) -> Result<String, Strin
     }
     let root = ensure_layout()?;
     let target = root.join(folder).join(&name);
-    bonaparte_runtime_write(&target, &bytes)?;
+    bonaparte_runtime_write(&target, bytes)?;
+    Ok(name)
+}
+
+/// Copy a file that already lives on disk into the vault without routing
+/// its bytes through base64 or RAM in the client. Used by "Send to vault"
+/// on footage clips. Same folders, names and size bound as `save`.
+pub fn save_from_path(folder: &str, name: &str, source: &str) -> Result<String, String> {
+    let folder = safe_folder(folder)?;
+    let name = safe_file_name(name)?;
+    let cap = 2 * 1024 * 1024 * 1024u64;
+    let src = std::path::Path::new(source);
+    let meta = std::fs::metadata(src).map_err(|e| format!("Cannot read {source}: {e}"))?;
+    if !meta.is_file() {
+        return Err("Vault source is not a regular file".into());
+    }
+    if meta.len() == 0 {
+        return Err("Vault upload is empty".into());
+    }
+    if meta.len() > cap {
+        return Err("Vault copy exceeds the 2 GiB sanity bound".into());
+    }
+    let root = ensure_layout()?;
+    let target = root.join(folder).join(&name);
+    let mut temp = tempfile::NamedTempFile::new_in(
+        target
+            .parent()
+            .ok_or_else(|| "Vault path has no parent".to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let copied = std::io::copy(&mut file, &mut temp).map_err(|e| e.to_string())?;
+    if copied == 0 {
+        return Err("Vault upload is empty".into());
+    }
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(&target).map_err(|e| e.to_string())?;
     Ok(name)
 }
 
@@ -179,6 +221,9 @@ pub fn read(folder: &str, name: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    /// The vault root is a process-global env var; serialize tests that move it.
+    static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn scratch_vault() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "bonaparte-vault-test-{}-{}",
@@ -194,6 +239,7 @@ mod tests {
 
     #[test]
     fn layout_creates_the_clean_folders() {
+        let _guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let dir = scratch_vault();
         let root = ensure_layout().unwrap();
         // Parallel tests race on the env var; assert on the folders that the
@@ -206,7 +252,28 @@ mod tests {
     }
 
     #[test]
+    fn save_from_path_copies_and_rejects_non_files() {
+        let _guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = scratch_vault();
+        let src = std::env::temp_dir().join(format!("bp-vault-src-{:?}.bin", std::process::id()));
+        std::fs::write(&src, b"clip-bytes").unwrap();
+        let name =
+            save_from_path("video", "clip copy.mp4", &src.to_string_lossy()).expect("copy in");
+        let root = ensure_layout().unwrap();
+        assert_eq!(
+            std::fs::read(root.join("video").join(&name)).unwrap(),
+            b"clip-bytes"
+        );
+        assert!(save_from_path("video", "x.mp4", "/nonexistent/dir/y")
+            .unwrap_err()
+            .contains("Cannot read"));
+        let _ = std::fs::remove_file(&src);
+        let _ = dir;
+    }
+
+    #[test]
     fn save_list_read_round_trip_and_traversal_is_blocked() {
+        let _guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
         scratch_vault();
         let b64 = STANDARD.encode(b"logo bytes here");
         let name = save("logos", "../escape/../Acme Logo.svg", &b64).unwrap();

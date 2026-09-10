@@ -406,7 +406,7 @@ fn adversarial_typography_never_panics() {
             }
             Err(RenderError::Invalid(msg)) => {
                 assert!(
-                    msg.contains("16 megapixels") || msg.contains("layout"),
+                    msg.contains("64 megapixels") || msg.contains("layout"),
                     "{name}: unexpected rejection: {msg}"
                 );
             }
@@ -628,6 +628,7 @@ fn media_injection_edge_cases() {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     });
     add(
         &mut p,
@@ -675,6 +676,7 @@ fn media_injection_edge_cases() {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     });
     add(
         &mut p2,

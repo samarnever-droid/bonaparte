@@ -188,10 +188,16 @@ impl TileGrid {
                 (size[0], size[1])
             }
             LayerKind::Footage { media, .. } => {
-                if let Some(view) = frames.frame_rgba(*media, time) {
-                    (view.width as f32, view.height as f32)
-                } else {
-                    (comp.width as f32, comp.height as f32)
+                match frames
+                    .shared_frame(*media, time)
+                    .map(|f| (f.width as f32, f.height as f32))
+                    .or_else(|| {
+                        frames
+                            .frame_rgba(*media, time)
+                            .map(|view| (view.width as f32, view.height as f32))
+                    }) {
+                    Some(size) => size,
+                    None => (comp.width as f32, comp.height as f32),
                 }
             }
             LayerKind::Text { text, size, style } => {

@@ -488,8 +488,8 @@ pub fn prepare_scene_with_transform(
                 }
                 LayerKind::Text { text, size, style } => {
                     let logical = measure_text(text, *size, style.bold, style.tracking);
-                    if logical[0] * logical[1] > 16_777_216.0 {
-                        return Err(RenderError::Invalid("Text layout exceeds 16 megapixels. Reduce font size, tracking or line length.".into()));
+                    if logical[0] * logical[1] > 67_108_864.0 {
+                        return Err(RenderError::Invalid("Text layout exceeds 64 megapixels. Reduce font size, tracking or line length.".into()));
                     }
                     let raster_density = source_density(logical, density * magnification(&affine));
                     let pixels =
@@ -744,139 +744,155 @@ fn source_at(
 /// byte-for-byte with the independent original reference renderer in tests.
 pub fn render_scene_cpu(scene: &Scene, registry: &EffectRegistry) -> Result<Frame, RenderError> {
     let mut frame = Frame::filled(scene.width, scene.height, scene.background);
-    let pixel_size = scene.pixel_size();
     for layer in &scene.layers {
         crate::cancel::check()?;
-        let adjustment = matches!(layer.source, Source::Adjustment);
-        if adjustment && layer.effects.is_empty() {
-            continue;
-        }
-        let nested = if let Source::Composition(child) = &layer.source {
-            crate::cancel::check()?;
-            Some(render_scene_cpu(child, registry)?)
+        paint_layer(&mut frame, scene, layer, registry)?;
+    }
+    Ok(frame)
+}
+
+/// Paint one scene layer onto an in-progress frame. Split out of
+/// `render_scene_cpu` so the static-prefix cache can resume mid-stack.
+pub(crate) fn paint_layer(
+    frame: &mut Frame,
+    scene: &Scene,
+    layer: &SceneLayer,
+    registry: &EffectRegistry,
+) -> Result<(), RenderError> {
+    let pixel_size = scene.pixel_size();
+    let adjustment = matches!(layer.source, Source::Adjustment);
+    if adjustment && layer.effects.is_empty() {
+        return Ok(());
+    }
+    let nested = if let Source::Composition(child) = &layer.source {
+        crate::cancel::check()?;
+        Some(render_scene_cpu(child, registry)?)
+    } else {
+        None
+    };
+    let mut source = if adjustment {
+        frame.clone()
+    } else if !layer.effects.is_empty() {
+        Frame::new(scene.width, scene.height)
+    } else {
+        Frame::new(0, 0)
+    };
+    if !adjustment {
+        let source_only = !layer.effects.is_empty();
+        let dest = if source_only {
+            &mut source
         } else {
-            None
+            &mut *frame
         };
-        let mut source = if adjustment {
-            frame.clone()
-        } else if !layer.effects.is_empty() {
-            Frame::new(scene.width, scene.height)
-        } else {
-            Frame::new(0, 0)
+        let [x0, y0, w, h] = layer.bounds;
+        let opaque_flat = match &layer.source {
+            Source::Solid(color)
+                if color[3] * (if source_only { 1.0 } else { layer.opacity }) >= 1.0
+                    && (source_only || layer.blend == BlendMode::Normal) =>
+            {
+                Some(Frame::filled(1, 1, *color).rgba)
+            }
+            _ => None,
         };
-        if !adjustment {
-            let source_only = !layer.effects.is_empty();
-            let dest = if source_only { &mut source } else { &mut frame };
-            let [x0, y0, w, h] = layer.bounds;
-            let opaque_flat = match &layer.source {
-                Source::Solid(color)
-                    if color[3] * (if source_only { 1.0 } else { layer.opacity }) >= 1.0
-                        && (source_only || layer.blend == BlendMode::Normal) =>
-                {
-                    Some(Frame::filled(1, 1, *color).rgba)
-                }
-                _ => None,
-            };
-            // Rows are independent: each destination pixel reads only shared
-            // sources and its own bytes, so parallel rows are byte-identical
-            // to the sequential loop.
-            let dest_width = dest.width;
-            let blend = layer.blend;
-            let opacity = layer.opacity;
-            crate::reference::par_rows(&mut dest.rgba, dest_width as usize * 4, |y, row| {
-                let y = y as u32;
-                if y < y0 || y >= y0 + h {
-                    return;
-                }
-                for x in x0..x0 + w {
-                    let mut pixel = source_at(
-                        layer,
-                        [
-                            (x as f32 + 0.5) * pixel_size[0],
-                            (y as f32 + 0.5) * pixel_size[1],
-                        ],
-                        pixel_size,
-                        nested.as_ref(),
-                    );
-                    if !source_only {
-                        pixel[3] *= opacity;
-                    }
-                    if pixel[3] >= 1.0 {
-                        if let Some(color) = &opaque_flat {
-                            let i = (x * 4) as usize;
-                            row[i..i + 4].copy_from_slice(color);
-                            continue;
-                        }
-                    }
-                    crate::reference::slice_blend_pixel(
-                        row,
-                        (x * 4) as usize,
-                        pixel,
-                        if source_only {
-                            BlendMode::Normal
-                        } else {
-                            blend
-                        },
-                    );
-                }
-            });
-        }
-        if layer.effects.is_empty() {
-            continue;
-        }
-        let mut filtered = CpuFrame::from_rgba(source.width, source.height, source.rgba);
-        for instance in &layer.effects {
-            filtered = registry
-                .evaluate_instance_scaled(instance, &filtered, scene.time, scene.raster_scale)
-                .map_err(|e| RenderError::Effect(e.to_string()))?;
-        }
-        if adjustment && layer.opacity == 1.0 {
-            frame.rgba = filtered.rgba;
-            continue;
-        }
-        let filtered = Frame {
-            width: filtered.width,
-            height: filtered.height,
-            rgba: filtered.rgba,
-        };
-        // Row-parallel composite; identical per-pixel math to the sequential
-        // loop, so output is byte-identical.
-        let frame_width = frame.width;
+        // Rows are independent: each destination pixel reads only shared
+        // sources and its own bytes, so parallel rows are byte-identical
+        // to the sequential loop.
+        let dest_width = dest.width;
         let blend = layer.blend;
         let opacity = layer.opacity;
-        crate::reference::par_rows(&mut frame.rgba, frame_width as usize * 4, |y, row| {
+        crate::reference::par_rows(&mut dest.rgba, dest_width as usize * 4, |y, row| {
             let y = y as u32;
-            for x in 0..frame_width {
-                if !adjustment && blend == BlendMode::Normal {
-                    let i = ((y * filtered.width + x) * 4) as usize;
-                    if filtered.rgba[i + 3] == 0 {
-                        continue;
-                    }
-                    if opacity == 1.0 && filtered.rgba[i + 3] == 255 {
-                        let dest = (x * 4) as usize;
-                        row[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
+            if y < y0 || y >= y0 + h {
+                return;
+            }
+            for x in x0..x0 + w {
+                let mut pixel = source_at(
+                    layer,
+                    [
+                        (x as f32 + 0.5) * pixel_size[0],
+                        (y as f32 + 0.5) * pixel_size[1],
+                    ],
+                    pixel_size,
+                    nested.as_ref(),
+                );
+                if !source_only {
+                    pixel[3] *= opacity;
+                }
+                if pixel[3] >= 1.0 {
+                    if let Some(color) = &opaque_flat {
+                        let i = (x * 4) as usize;
+                        row[i..i + 4].copy_from_slice(color);
                         continue;
                     }
                 }
-                let mut p = filtered.pixel(x, y);
-                if adjustment {
-                    let old = crate::reference::slice_pixel(row, (x * 4) as usize);
-                    let alpha = old[3] * (1.0 - opacity) + p[3] * opacity;
-                    for c in 0..3 {
-                        p[c] = if alpha > 0.000001 {
-                            (old[c] * old[3] * (1.0 - opacity) + p[c] * p[3] * opacity) / alpha
-                        } else {
-                            0.0
-                        };
-                    }
-                    p[3] = alpha;
-                    crate::reference::slice_set_pixel(row, (x * 4) as usize, p);
-                } else {
-                    p[3] *= opacity;
-                    crate::reference::slice_blend_pixel(row, (x * 4) as usize, p, blend);
-                }
+                crate::reference::slice_blend_pixel(
+                    row,
+                    (x * 4) as usize,
+                    pixel,
+                    if source_only {
+                        BlendMode::Normal
+                    } else {
+                        blend
+                    },
+                );
             }
         });
     }
-    Ok(frame)
+    if layer.effects.is_empty() {
+        return Ok(());
+    }
+    let mut filtered = CpuFrame::from_rgba(source.width, source.height, source.rgba);
+    for instance in &layer.effects {
+        filtered = registry
+            .evaluate_instance_scaled(instance, &filtered, scene.time, scene.raster_scale)
+            .map_err(|e| RenderError::Effect(e.to_string()))?;
+    }
+    if adjustment && layer.opacity == 1.0 {
+        frame.rgba = filtered.rgba;
+        return Ok(());
+    }
+    let filtered = Frame {
+        width: filtered.width,
+        height: filtered.height,
+        rgba: filtered.rgba,
+    };
+    // Row-parallel composite; identical per-pixel math to the sequential
+    // loop, so output is byte-identical.
+    let frame_width = frame.width;
+    let blend = layer.blend;
+    let opacity = layer.opacity;
+    crate::reference::par_rows(&mut frame.rgba, frame_width as usize * 4, |y, row| {
+        let y = y as u32;
+        for x in 0..frame_width {
+            if !adjustment && blend == BlendMode::Normal {
+                let i = ((y * filtered.width + x) * 4) as usize;
+                if filtered.rgba[i + 3] == 0 {
+                    continue;
+                }
+                if opacity == 1.0 && filtered.rgba[i + 3] == 255 {
+                    let dest = (x * 4) as usize;
+                    row[dest..dest + 4].copy_from_slice(&filtered.rgba[i..i + 4]);
+                    continue;
+                }
+            }
+            let mut p = filtered.pixel(x, y);
+            if adjustment {
+                let old = crate::reference::slice_pixel(row, (x * 4) as usize);
+                let alpha = old[3] * (1.0 - opacity) + p[3] * opacity;
+                for c in 0..3 {
+                    p[c] = if alpha > 0.000001 {
+                        (old[c] * old[3] * (1.0 - opacity) + p[c] * p[3] * opacity) / alpha
+                    } else {
+                        0.0
+                    };
+                }
+                p[3] = alpha;
+                crate::reference::slice_set_pixel(row, (x * 4) as usize, p);
+            } else {
+                p[3] *= opacity;
+                crate::reference::slice_blend_pixel(row, (x * 4) as usize, p, blend);
+            }
+        }
+    });
+    Ok(())
 }

@@ -14,16 +14,19 @@ use std::sync::{Arc, Condvar, Mutex};
 
 pub mod audio;
 pub mod color;
+pub mod footage;
 pub mod interaction;
+pub mod journal;
 pub mod kaya;
 mod patch;
 pub mod preview;
+pub mod statics;
 pub mod vault;
 pub use audio::{decode_project_audio, AudioChunkRequest, DecodedAudios};
 pub use preview::{PreviewJob, PreviewRenderer, PreviewRequest};
 
 pub const PROJECT_VERSION: u32 = 4;
-pub const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_PROJECT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 /// Live export telemetry, shared with the UI through the `export_progress`
 /// command and flipped by `export_cancel`. Process-global: one export at a
@@ -84,13 +87,28 @@ pub fn serialize_project(project: &Project) -> Result<String, String> {
     })
     .map_err(|e| e.to_string())?;
     if text.len() > MAX_PROJECT_BYTES {
-        return Err("Serialized project exceeds the 64 MiB portable file limit".into());
+        return Err(format!(
+            "Serialized project exceeds the {} MiB portable file limit (link footage by path to keep files light)",
+            MAX_PROJECT_BYTES / (1024 * 1024),
+        ));
     }
     Ok(text)
 }
 
 /// Write beside the destination and rename only after all bytes have reached
 /// the file. Used for project files and still images by desktop and automation.
+/// Route a file name to a vault folder — mirrors the client's picker.
+fn vault_folder_for(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "svg" | "png" | "jpg" | "jpeg" | "webp" | "gif" => "images",
+        "wav" | "mp3" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "m4a" | "aac" => "audio",
+        "mp4" | "m4v" | "webm" | "mov" | "mkv" | "avi" => "video",
+        "lottie" => "lottie",
+        "otf" | "ttf" | "woff" | "woff2" => "fonts",
+        _ => "effects",
+    }
+}
 pub fn write_file_atomic(destination: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let directory = destination
@@ -109,7 +127,10 @@ pub fn write_file_atomic(destination: &std::path::Path, bytes: &[u8]) -> Result<
 /// fail before replacing the session, instead of silently discarding newer fields.
 pub fn parse_project(text: &str) -> Result<Project, String> {
     if text.len() > MAX_PROJECT_BYTES {
-        return Err("Project exceeds the 64 MB file limit".into());
+        return Err(format!(
+            "Project exceeds the {} MiB file limit (link footage by path to keep files light)",
+            MAX_PROJECT_BYTES / (1024 * 1024),
+        ));
     }
     let root: Value =
         serde_json::from_str(text).map_err(|e| format!("Invalid project JSON: {e}"))?;
@@ -224,6 +245,22 @@ pub struct DecodedImages {
     pub frames: BTreeMap<MediaId, Arc<CpuFrame>>,
     /// Decoded sample tracks of video assets, keyed by media id.
     pub videos: BTreeMap<MediaId, VideoFrames>,
+    /// File-backed clips (see `footage`): decoded lazily, never embedded.
+    pub live: BTreeMap<MediaId, Arc<footage::LiveVideo>>,
+    /// Interactive pools may substitute generated proxies for playback
+    /// smoothness; pools handed to export or PNG rendering keep it false so
+    /// every written pixel comes from the original clip.
+    pub prefer_proxy: bool,
+}
+
+impl DecodedImages {
+    /// A copy that always decodes the original file. Live clips are shared
+    /// (`Arc`), so this re-points the proxy flag without losing warm frames.
+    pub fn source_quality(&self) -> DecodedImages {
+        let mut copy = self.clone();
+        copy.prefer_proxy = false;
+        copy
+    }
 }
 
 /// Decoded sample frames of one video asset: ascending sample times (ms)
@@ -253,6 +290,12 @@ impl VideoFrames {
 
 impl MediaFrames for DecodedImages {
     fn shared_frame(&self, media: MediaId, time: Time) -> Option<Arc<CpuFrame>> {
+        if let Some(live) = self.live.get(&media) {
+            let index = live.index_at(time);
+            let frame = live.frame(index, self.prefer_proxy)?;
+            live.warm(index + 1, self.prefer_proxy);
+            return Some(frame);
+        }
         if let Some(video) = self.videos.get(&media) {
             let ms = time.0.clamp(0, i64::from(u32::MAX)) as u32;
             return Some(video.sample_at(ms).clone());
@@ -310,7 +353,40 @@ impl DecodedImages {
     fn refresh(&mut self, project: &Project) -> Result<(), String> {
         self.frames.retain(|id, _| project.media.contains_key(id));
         self.videos.retain(|id, _| project.media.contains_key(id));
+        self.live.retain(|id, _| project.media.contains_key(id));
         for (id, asset) in &project.media {
+            if let Some(f) = &asset.footage {
+                // The footage record is authoritative for rate and length:
+                // a relink can swap in a clip with different timing, and
+                // `kind` remains the import-time label on the asset.
+                let fps = f.frame_rate;
+                let candidate = footage::LiveVideo::new(
+                    std::path::PathBuf::from(&f.path),
+                    f.proxy_path
+                        .as_ref()
+                        .zip(f.proxy_size)
+                        .map(|(p, [pw, ph])| footage::ProxyClip {
+                            path: std::path::PathBuf::from(p),
+                            width: pw,
+                            height: ph,
+                        }),
+                    f.width,
+                    f.height,
+                    fps,
+                    f.duration,
+                );
+                let rebind = match self.live.get(id) {
+                    Some(existing) => !existing.same_binding(&candidate),
+                    None => true,
+                };
+                if rebind {
+                    self.live.insert(*id, Arc::new(candidate));
+                }
+                continue;
+            }
+            // Footage detached (undo of an import, or a deliberate unlink):
+            // drop the live handle so embedded samples take over again.
+            self.live.remove(id);
             if let Some(video) = &asset.video {
                 if self.videos.contains_key(id) {
                     continue;
@@ -362,6 +438,10 @@ pub struct Snapshot {
     pub can_undo: bool,
     pub can_redo: bool,
     pub history: Vec<String>,
+    /// Total commits reachable through undo, counting spilled journal entries.
+    pub history_depth: usize,
+    /// How many of those live in the on-disk journal rather than memory.
+    pub history_overflow: usize,
     pub revision: u64,
     pub audio_revision: u64,
 }
@@ -389,7 +469,10 @@ impl EditorSession {
         project.validate()?;
         let registry = EffectRegistry::new();
         validate_effects(&project, &registry)?;
-        let images = decode_embedded_frames(&project)?;
+        let mut images = decode_embedded_frames(&project)?;
+        // The interactive session may serve proxies from its live footage;
+        // every write path (PNG/video export) re-derives a source pool.
+        images.prefer_proxy = true;
         let audio = decode_project_audio(&project)?;
         Ok(Self {
             preview_snapshot: Arc::new(project.clone()),
@@ -397,7 +480,7 @@ impl EditorSession {
             project,
             audio,
             audio_plans: Default::default(),
-            history: History::new(),
+            history: crate::journal::fresh_history(),
             registry,
             images,
             revision: 0,
@@ -411,6 +494,8 @@ impl EditorSession {
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
             history: self.history.undo_descriptions(),
+            history_depth: self.history.undo_len(),
+            history_overflow: self.history.undo_overflow(),
             revision: self.revision,
             audio_revision: self.audio_revision,
         }
@@ -918,16 +1003,16 @@ impl EditorSession {
                     .map(|l| l.trim().to_owned())
                     .filter(|l| !l.is_empty())
                     .collect();
-                if lines.is_empty() || lines.len() > 64 {
-                    return Err("Kinetic lyrics need 1–64 non-empty lines".into());
+                if lines.is_empty() || lines.len() > 512 {
+                    return Err("Kinetic lyrics need 1–512 non-empty lines".into());
                 }
                 let total_words: usize = lines.iter().map(|l| l.split_whitespace().count()).sum();
                 if total_words == 0 {
                     return Err("Kinetic lyrics need at least one word".into());
                 }
-                if total_words > 180 {
+                if total_words > 4096 {
                     return Err(
-                        "Kinetic lyrics cap at 180 words — split the song into sections".into(),
+                        "Kinetic lyrics cap at 4096 words — split the song into sections".into(),
                     );
                 }
                 if !matches!(k.style.as_str(), "pop" | "rise" | "wave") {
@@ -1257,6 +1342,7 @@ impl EditorSession {
                     alias: None,
                     perception: None,
                     video: None,
+                    footage: None,
                 };
                 commit(
                     &mut self.project,
@@ -1472,6 +1558,82 @@ impl EditorSession {
                     r
                 })
             }
+            "vault_save_path" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct VaultSavePath {
+                    folder: String,
+                    name: String,
+                    path: String,
+                }
+                let v: VaultSavePath = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let written = vault::save_from_path(&v.folder, &v.name, &v.path)?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("saved".into(), json!(written));
+                        o.insert("folder".into(), json!(v.folder));
+                    }
+                    r
+                })
+            }
+            "vault_save_asset" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct VaultSaveAsset {
+                    media_id: u64,
+                }
+                let v: VaultSaveAsset = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let Some(asset) = self.project.media.get(&MediaId(v.media_id)).cloned() else {
+                    return Err("No such media asset".into());
+                };
+                let (folder, name, bytes): (&'static str, String, Vec<u8>) = if let Some(footage) =
+                    asset.footage.as_ref()
+                {
+                    let path = std::path::Path::new(&footage.path);
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("clip")
+                        .to_string();
+                    let folder = vault_folder_for(&name);
+                    let bytes = std::fs::read(path)
+                        .map_err(|e| format!("Cannot read {}: {e}", footage.path))?;
+                    (folder, name, bytes)
+                } else if let Some(audio) = asset.audio.as_ref() {
+                    let bytes = bonaparte_media::audio::original_bytes(audio)?;
+                    let ext = if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+                        "wav"
+                    } else if bytes.starts_with(b"fLaC") {
+                        "flac"
+                    } else if bytes.starts_with(b"OggS") {
+                        "ogg"
+                    } else if bytes.starts_with(b"ID3") || bytes.first() == Some(&0xff) {
+                        "mp3"
+                    } else {
+                        "wav"
+                    };
+                    let stem = asset
+                        .name
+                        .rsplit_once('.')
+                        .map(|(s, _)| s)
+                        .unwrap_or(&asset.name);
+                    let stem: String = stem.chars().take(180).collect();
+                    ("audio", format!("{stem}.{ext}"), bytes)
+                } else {
+                    return Err("This asset has no standalone file the server can hand over".into());
+                };
+                if bytes.len() as u64 > 2 * 1024 * 1024 * 1024 {
+                    return Err("Asset exceeds the 2 GiB vault bound".into());
+                }
+                let written = vault::save_bytes(folder, &name, &bytes)?;
+                self.changed().map(|mut r| {
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("saved".into(), json!(written));
+                        o.insert("folder".into(), json!(folder));
+                    }
+                    r
+                })
+            }
             "vault_read" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -1491,7 +1653,10 @@ impl EditorSession {
                     })
                     .map_err(|e| e.to_string())?;
                     if text.len() > MAX_PROJECT_BYTES {
-                        return Err("Project exceeds 64 MiB".into());
+                        return Err(format!(
+                            "Project exceeds {} MiB",
+                            MAX_PROJECT_BYTES / (1024 * 1024)
+                        ));
                     }
                     Ok(json!(text))
                 } else {
@@ -1572,6 +1737,7 @@ impl EditorSession {
                     alias: None,
                     perception: None,
                     video: None,
+                    footage: None,
                 };
                 let mut layer = Layer::new(
                     &image.name,
@@ -1682,6 +1848,7 @@ impl EditorSession {
                             .map(|f| -> Arc<str> { f.rgba_base64.into() })
                             .collect(),
                     }),
+                    footage: None,
                 };
                 let mut layer = Layer::new(
                     &asset.name.clone(),
@@ -2051,6 +2218,286 @@ impl EditorSession {
                 commit(&mut self.project, &mut self.history, &self.registry, op)?;
                 self.changed()
             }
+            "import_footage" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Import {
+                    path: String,
+                    #[serde(default)]
+                    name: Option<String>,
+                    comp_id: CompId,
+                }
+                let req: Import = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let path = std::path::Path::new(&req.path).to_path_buf();
+                if !path.is_file() {
+                    return Err(
+                        "Footage file not found — the path must be readable by the runtime".into(),
+                    );
+                }
+                let display = req.name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| req.path.clone())
+                });
+                let mut asset = bonaparte_media::probe_asset(&path, MediaId(0), &display)
+                    .map_err(|e| e.to_string())?;
+                let fps = match asset.kind {
+                    MediaKind::Video { fps, duration } => {
+                        if duration.0 <= 0 {
+                            return Err("Footage has no measurable duration".into());
+                        }
+                        fps
+                    }
+                    MediaKind::Image => {
+                        return Err("That file is a still image — use image import".into())
+                    }
+                    MediaKind::Audio { .. } => {
+                        return Err("That file has no video stream — use audio import".into())
+                    }
+                };
+                let (width, height) =
+                    bonaparte_media::video_dimensions(&path).map_err(|e| e.to_string())?;
+                let duration = match asset.kind {
+                    MediaKind::Video { duration, .. } => duration,
+                    _ => unreachable!(),
+                };
+                asset.footage = Some(bonaparte_model::FootageSource {
+                    path: path.to_string_lossy().into_owned(),
+                    width,
+                    height,
+                    frame_rate: fps,
+                    duration,
+                    proxy_path: None,
+                    proxy_size: None,
+                });
+                // A thumb-sized poster keeps the media card instant; decode
+                // failure is not fatal, the card just falls back to its name.
+                let long_edge = width.max(height).min(320).max(2);
+                let (pw, ph) = if width >= height {
+                    (long_edge, (long_edge * height / width).max(2))
+                } else {
+                    ((long_edge * width / height).max(2), long_edge)
+                };
+                if let Some(frame) = bonaparte_media::decode_frame(
+                    &path,
+                    Time::from_secs_f64(duration.as_secs_f64() * 0.2),
+                    pw,
+                    ph,
+                )
+                .ok()
+                {
+                    asset.embedded = Some(EmbeddedImage {
+                        width: frame.width,
+                        height: frame.height,
+                        rgba_base64: STANDARD.encode(&frame.rgba).into(),
+                    });
+                }
+                asset.audio = None;
+                let comp = self
+                    .project
+                    .comp(req.comp_id)
+                    .ok_or("Composition not found")?;
+                let clip_duration = Time(duration.0.max(1).min(comp.duration.0));
+                let scale = (comp.width as f32 / width.max(1) as f32)
+                    .min(comp.height as f32 / height.max(1) as f32)
+                    .min(1.0)
+                    * 100.0;
+                let mut layer = Layer::new(
+                    &asset.name.clone(),
+                    LayerKind::Footage {
+                        media: self.project.next_media,
+                        source_start: Time::ZERO,
+                    },
+                    Time::ZERO,
+                    clip_duration,
+                );
+                layer.transform.scale = [scale, scale];
+                let op = Op::Batch {
+                    label: format!("Imported footage “{}”", asset.name),
+                    ops: vec![
+                        Op::AddMedia { asset },
+                        Op::AddLayer {
+                            comp: req.comp_id,
+                            layer,
+                        },
+                    ],
+                };
+                commit(&mut self.project, &mut self.history, &self.registry, op)?;
+                self.changed()
+            }
+            "relink_media" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Relink {
+                    media: MediaId,
+                    path: String,
+                }
+                let req: Relink = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let path = std::path::Path::new(&req.path).to_path_buf();
+                if !path.is_file() {
+                    return Err("Replacement file not found".into());
+                }
+                let (width, height) =
+                    bonaparte_media::video_dimensions(&path).map_err(|e| e.to_string())?;
+                let fps_json = {
+                    let out = std::process::Command::new("ffprobe")
+                        .args([
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "v:0",
+                            "-show_entries",
+                            "stream=r_frame_rate,avg_frame_rate,nb_frames,duration",
+                            "-of",
+                            "json",
+                        ])
+                        .arg(&path)
+                        .output()
+                        .map_err(|e| e.to_string())?;
+                    String::from_utf8_lossy(&out.stdout).into_owned()
+                };
+                let parsed: Value = serde_json::from_str(&fps_json).map_err(|e| e.to_string())?;
+                let stream = parsed.get("streams").and_then(|s| s.get(0));
+                let rate = stream
+                    .and_then(|st| {
+                        ["r_frame_rate", "avg_frame_rate"]
+                            .iter()
+                            .filter_map(|k| st.get(*k).and_then(|v| v.as_str()))
+                            .find_map(bonaparte_media::parse_rational_framerate)
+                    })
+                    .unwrap_or(FrameRate { num: 30, den: 1 });
+                let dur_secs: f64 = stream
+                    .and_then(|st| st.get("duration")?.as_str()?.parse().ok())
+                    .unwrap_or(0.0);
+                let duration = if dur_secs > 0.0 {
+                    Time::from_secs_f64(dur_secs)
+                } else {
+                    return Err("Replacement clip has no measurable duration".into());
+                };
+                let asset = self
+                    .project
+                    .media
+                    .get(&req.media)
+                    .ok_or("Media asset not found")?;
+                let old = asset
+                    .footage
+                    .clone()
+                    .ok_or("Asset has no file-backed footage to relink — import it first")?;
+                let footage = bonaparte_model::FootageSource {
+                    path: path.to_string_lossy().into_owned(),
+                    width,
+                    height,
+                    frame_rate: rate,
+                    duration,
+                    proxy_path: None,
+                    proxy_size: None,
+                };
+                let name = asset.name.clone();
+                let _ = old;
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::Batch {
+                        label: format!("Relinked “{name}”"),
+                        ops: vec![Op::SetMediaFootage {
+                            media: req.media,
+                            footage: Some(footage),
+                        }],
+                    },
+                )?;
+                self.changed()
+            }
+            "media_status" => {
+                let rows: Vec<Value> = self
+                    .project
+                    .media
+                    .values()
+                    .filter_map(|asset| {
+                        let f = asset.footage.as_ref()?;
+                        let source = std::path::Path::new(&f.path);
+                        let proxy_ok = f
+                            .proxy_path
+                            .as_ref()
+                            .is_some_and(|p| std::path::Path::new(p).is_file());
+                        Some(json!({
+                            "media": asset.id.0,
+                            "name": asset.name,
+                            "online": source.is_file(),
+                            "proxy": proxy_ok,
+                            "width": f.width,
+                            "height": f.height,
+                            "seconds": (f.duration.0 as f64 / TICKS_PER_SEC as f64) as f64,
+                        }))
+                    })
+                    .collect();
+                Ok(Value::Array(rows))
+            }
+            "generate_proxy" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Gen {
+                    media: MediaId,
+                }
+                let req: Gen = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                let asset = self
+                    .project
+                    .media
+                    .get(&req.media)
+                    .ok_or("Media asset not found")?;
+                let footage = asset
+                    .footage
+                    .clone()
+                    .ok_or("Only file-backed footage can get a proxy")?;
+                if footage
+                    .proxy_path
+                    .as_ref()
+                    .is_some_and(|p| std::path::Path::new(p).is_file())
+                {
+                    return Ok(json!({ "status": "exists", "proxyPath": footage.proxy_path }));
+                }
+                let source = std::path::PathBuf::from(&footage.path);
+                if !source.is_file() {
+                    return Err("Source clip is offline — relink before generating a proxy".into());
+                }
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hasher::write(&mut hasher, source.as_os_str().as_encoded_bytes());
+                let dir = crate::journal::history_dir()
+                    .parent()
+                    .map(|p| p.join("proxies"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("bonaparte-proxies"));
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let dest = dir.join(format!(
+                    "proxy-{}-{:016x}.mp4",
+                    req.media.0,
+                    std::hash::Hasher::finish(&hasher)
+                ));
+                let info =
+                    bonaparte_media::generate_proxy(&source, &dest, footage.width, footage.height)
+                        .map_err(|e| e.to_string())?;
+                let footage = bonaparte_model::FootageSource {
+                    proxy_path: Some(info.proxy_path.to_string_lossy().into_owned()),
+                    proxy_size: Some([info.proxy_width, info.proxy_height]),
+                    ..footage
+                };
+                commit(
+                    &mut self.project,
+                    &mut self.history,
+                    &self.registry,
+                    Op::SetMediaFootage {
+                        media: req.media,
+                        footage: Some(footage),
+                    },
+                )?;
+                let mut reply = self.changed()?;
+                if let Some(obj) = reply.as_object_mut() {
+                    obj.insert(
+                        "proxyPath".into(),
+                        Value::String(info.proxy_path.to_string_lossy().into_owned()),
+                    );
+                }
+                Ok(reply)
+            }
             _ => Err(format!("Unknown editor command: {name}")),
         }
     }
@@ -2073,6 +2520,8 @@ impl EditorSession {
                     layer_override: request.render.layer_override.clone(),
                     bit_depth: 8,
                     output_space: Default::default(),
+                    source_quality: false,
+                    draft: false,
                 })?
                 .project,
             )
@@ -2081,11 +2530,18 @@ impl EditorSession {
         };
         self.preview.job(
             project,
-            self.images.clone(),
+            self.images_preview(),
             Arc::new(self.registry.clone()),
             self.revision,
             request,
         )
+    }
+
+    /// The interactive preview pool: live footage may decode proxy frames.
+    pub fn images_preview(&self) -> DecodedImages {
+        let mut images = self.images.clone();
+        images.prefer_proxy = true;
+        images
     }
 
     pub fn render_input(&self, request: RenderRequest) -> Result<RenderInput, String> {
@@ -2114,11 +2570,16 @@ impl EditorSession {
         if request.bit_depth != 0 && request.bit_depth != 8 && request.bit_depth != 16 {
             return Err("PNG export supports 8 or 16 bits per channel".into());
         }
+        let images = if request.source_quality {
+            self.images.source_quality()
+        } else {
+            self.images.clone()
+        };
         Ok(RenderInput {
             project,
             comp_id: request.comp_id,
             time: request.time,
-            images: self.images.clone(),
+            images,
             audio: self.audio.clone(),
             registry: self.registry.clone(),
             bit_depth: if request.bit_depth == 0 {
@@ -2127,6 +2588,7 @@ impl EditorSession {
                 request.bit_depth
             },
             output_space: request.output_space,
+            draft: request.draft,
         })
     }
 }
@@ -2147,6 +2609,14 @@ pub struct RenderRequest {
     pub bit_depth: u8,
     #[serde(default)]
     pub output_space: crate::color::OutputSpace,
+    /// Write every pixel from the original file: set by PNG/video export so
+    /// a generated proxy never reaches delivered footage.
+    #[serde(default)]
+    pub source_quality: bool,
+    /// Draft encode: `ultrafast` x264 at a relaxed CRF for same-second
+    /// playback checks. The frame content is identical to a full export.
+    #[serde(default)]
+    pub draft: bool,
 }
 #[derive(Clone)]
 pub struct RenderInput {
@@ -2158,6 +2628,8 @@ pub struct RenderInput {
     pub registry: EffectRegistry,
     pub bit_depth: u8,
     pub output_space: crate::color::OutputSpace,
+    /// See `RenderRequest::draft`.
+    pub draft: bool,
 }
 impl RenderInput {
     pub fn render(&self) -> Result<Frame, String> {
@@ -2254,7 +2726,10 @@ impl RenderInput {
             .into_temp_path();
         let mut config =
             bonaparte_media::export::ExportConfig::new(&temp, comp.width, comp.height, fps, count)
-                .with_preset("veryfast");
+                .with_preset(if self.draft { "ultrafast" } else { "veryfast" });
+        if self.draft {
+            config = config.with_crf(30);
+        }
         let mut audio_temp = None;
         if self.project.has_audio(self.comp_id) {
             let plan = bonaparte_audio::MixPlan::new(&self.project, self.comp_id, &self.audio)?;
@@ -2334,6 +2809,107 @@ impl RenderInput {
                 .canceled
                 .load(std::sync::atomic::Ordering::Relaxed)
         };
+
+        // ── Instant path: static-span reuse ──────────────────────────────
+        // Where consecutive frames are provably identical (see `statics`),
+        // each unique frame renders exactly once — in the worker pool — and
+        // the encoder is fed copies. Same bytes as the generic path, a
+        // fraction of the render cost for holds, settled motion, and still
+        // sections under an animated element.
+        let export_end = Time(start.0 + (count as i64) * tpf);
+        if let Some(plan) = crate::statics::reuse_plan(
+            &self.project,
+            self.comp_id,
+            start,
+            export_end,
+            tpf,
+            count,
+            frame_bytes,
+        ) {
+            let mut anchors: Vec<usize> = Vec::new();
+            let mut covered: BTreeMap<usize, u64> = BTreeMap::new();
+            for (index, anchor) in plan.iter().enumerate() {
+                let anchor = *anchor;
+                if anchor == index {
+                    anchors.push(anchor);
+                }
+                covered.insert(anchor, (index + 1) as u64);
+            }
+            let done = AtomicUsize::new(0);
+            let rendered: Mutex<BTreeMap<usize, Arc<Vec<u8>>>> = Mutex::new(BTreeMap::new());
+            let reuse_error: Mutex<Option<String>> = Mutex::new(None);
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    let (plan, anchors, done, rendered, covered) =
+                        (&plan, &anchors, &done, &rendered, &covered);
+                    let reuse_error = &reuse_error;
+                    scope.spawn(move || loop {
+                        if canceled() {
+                            break;
+                        }
+                        let slot = done.fetch_add(1, Ordering::SeqCst);
+                        if slot >= anchors.len() {
+                            break;
+                        }
+                        let anchor = anchors[slot];
+                        match render_comp_with_registry(
+                            &self.project,
+                            self.comp_id,
+                            start + Time((anchor as i64) * tpf),
+                            &self.images,
+                            &self.registry,
+                        )
+                        .map(|mut frame| {
+                            flatten_on_black(&mut frame);
+                            frame.rgba
+                        })
+                        .map_err(|e| e.to_string())
+                        {
+                            Ok(rgba) => {
+                                let mut guard = rendered.lock().unwrap();
+                                guard.insert(anchor, Arc::new(rgba));
+                                if let Some(frames) = covered.get(&anchor) {
+                                    EXPORT_TELEMETRY
+                                        .frames_done
+                                        .fetch_max(*frames, Ordering::Relaxed);
+                                }
+                            }
+                            Err(error) => {
+                                let mut slot_error = reuse_error.lock().unwrap();
+                                if slot_error.is_none() {
+                                    *slot_error = Some(error);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            if let Some(error) = reuse_error.lock().unwrap().take() {
+                return Err(error);
+            }
+            if canceled() {
+                return Err("Export canceled".into());
+            }
+            return bonaparte_media::export::export_mp4_stream(config, |index, _time| {
+                if canceled() {
+                    return Err("Export canceled".into());
+                }
+                let rgba = rendered
+                    .lock()
+                    .unwrap()
+                    .get(&plan[index])
+                    .cloned()
+                    .ok_or_else(|| "Internal export cache lost a frame".to_string())?;
+                EXPORT_TELEMETRY
+                    .frames_done
+                    .store(index as u64 + 1, Ordering::Relaxed);
+                EXPORT_TELEMETRY
+                    .last_frame_ms
+                    .store(unix_now_ms(), Ordering::Relaxed);
+                Ok((*rgba).clone())
+            })
+            .map_err(|e| e.to_string());
+        }
 
         if workers <= 1 || count <= 1 {
             return bonaparte_media::export::export_mp4_stream(config, |_index, time| {

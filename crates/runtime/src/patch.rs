@@ -70,7 +70,7 @@ pub fn delta(
             media.insert(id.0.to_string(), media_value(asset));
         }
     }
-    json!({"kind":"patch","baseRevision":base,"revision":revision,"audioRevision":audio_revision,"canUndo":history.can_undo(),"canRedo":history.can_redo(),"history":history.undo_descriptions(),"name":after.name,"nextComp":after.next_comp,"nextLayer":after.next_layer,"nextMedia":after.next_media,"comps":comps,"removedComps":before.comps.keys().filter(|id|!after.comps.contains_key(id)).collect::<Vec<_>>(),"media":media,"removedMedia":before.media.keys().filter(|id|!after.media.contains_key(id)).collect::<Vec<_>>()})
+    json!({"kind":"patch","baseRevision":base,"revision":revision,"audioRevision":audio_revision,"canUndo":history.can_undo(),"canRedo":history.can_redo(),"history":history.undo_descriptions(),"historyDepth":history.undo_len(),"historyOverflow":history.undo_overflow(),"name":after.name,"nextComp":after.next_comp,"nextLayer":after.next_layer,"nextMedia":after.next_media,"comps":comps,"removedComps":before.comps.keys().filter(|id|!after.comps.contains_key(id)).collect::<Vec<_>>(),"media":media,"removedMedia":before.media.keys().filter(|id|!after.media.contains_key(id)).collect::<Vec<_>>()})
 }
 /// Audio and visual revisions are independent. Position/scale/rotation, image
 /// changes, marker edits and tempo-grid edits do not invalidate audible PCM.

@@ -374,7 +374,10 @@ textarea.field {
 }
 .menu {
   position: absolute;
-  z-index: 70;
+  /* Above every floating panel (PerformancePanel lives at 70-75): a menu
+     hiding behind an overlay is a menu you can't click. Long menus on short
+     screens scroll instead of running off the bottom edge. */
+  z-index: 80;
   min-width: 210px;
   top: calc(100% + 5px);
   left: 0;
@@ -383,6 +386,8 @@ textarea.field {
   border: 1px solid #505849;
   box-shadow: var(--shadow-lg);
   border-radius: 6px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
 }
 .menu button {
   width: 100%;
@@ -412,7 +417,9 @@ textarea.field {
 .menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* Under the open menu (80) but over floating panels (70-75), so a click
+     anywhere — including on a panel — dismisses the menu. */
+  z-index: 79;
   cursor: default;
 }
 .empty {
@@ -583,9 +590,7 @@ textarea.field {
   outline-offset: 2px;
 }
 .menu {
-  box-shadow:
-    var(--edge-light-strong),
-    var(--elev-3);
+  box-shadow: var(--edge-light-strong), var(--elev-3);
   border-radius: 7px;
 }
 .menu button {

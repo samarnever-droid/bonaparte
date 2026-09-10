@@ -242,8 +242,7 @@
           (editor.dialog = {
             kind: "lyrics",
             assetId: clip.media,
-            hasGrid:
-              !!editor.project?.media[String(clip.media)]?.audio?.beat_grid?.length,
+            hasGrid: !!editor.project?.media[String(clip.media)]?.audio?.beat_grid?.length,
           }),
       },
       {
@@ -449,7 +448,8 @@
   <div class="audio-scroll">
     <div class="audio-grid" style={`width:${252 + width}px;grid-template-columns:252px ${width}px`}>
       <div class="lane-title sticky">
-        <span>AUDIO TRACKS</span><span class="spacer"></span><span>{audio.tracks.length} / 64</span>
+        <span>AUDIO TRACKS</span><span class="spacer"></span><span>{audio.tracks.length} / 256</span
+        >
       </div>
       <div
         class="audio-ruler"

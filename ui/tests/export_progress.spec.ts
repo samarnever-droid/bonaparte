@@ -118,9 +118,11 @@ test("MP4 export shows a live meter with ETA and the runner game", async ({ page
 });
 
 test("cancel export stops the runtime and says so", async ({ page, request }) => {
-  // A long comp gives the cancel button time to land mid-render.
+  // A long comp gives the cancel button time to land mid-render. 720p on
+  // this rig is ~100 ms a frame; a 160×90 comp renders 600 frames before a
+  // human (or Playwright) can blink, so the cancel window must be real work.
   await api(request, "open_project", {
-    json: JSON.stringify(projectFixture(2_400_000)),
+    json: JSON.stringify(projectFixture(1_200_000, 1280, 720)),
   });
 
   await page.reload();
@@ -133,7 +135,5 @@ test("cancel export stops the runtime and says so", async ({ page, request }) =>
   await expect(page.getByText("Export canceled.")).toBeVisible({ timeout: 10_000 });
   await expect(meter).toHaveCount(0);
   // Nothing partial ships: the runtime slot is free again.
-  await expect
-    .poll(async () => (await api(page.request, "export_progress")).active)
-    .toBe(false);
+  await expect.poll(async () => (await api(page.request, "export_progress")).active).toBe(false);
 });

@@ -37,7 +37,7 @@ impl McpSession {
         );
         Self {
             project,
-            history: History::new(),
+            history: bonaparte_runtime::journal::fresh_history(),
             active_comp: Some(comp_id),
             live: None,
         }
@@ -48,7 +48,7 @@ impl McpSession {
         let active_comp = project.comps.keys().next().copied();
         Self {
             project,
-            history: History::new(),
+            history: bonaparte_runtime::journal::fresh_history(),
             active_comp,
             live: None,
         }
@@ -59,7 +59,7 @@ impl McpSession {
     pub fn hosted(live: Arc<Mutex<EditorSession>>) -> Self {
         let mut session = Self {
             project: Project::new("host"),
-            history: History::new(),
+            history: bonaparte_runtime::journal::fresh_history(),
             active_comp: None,
             live: Some(live),
         };

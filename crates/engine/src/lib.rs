@@ -15,6 +15,7 @@ pub mod graph;
 pub mod import_lottie;
 pub mod import_obj;
 pub mod import_svg;
+pub mod prefix;
 pub mod preview;
 pub mod reference;
 pub mod tiles;

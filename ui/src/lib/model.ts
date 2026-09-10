@@ -153,6 +153,15 @@ export interface Comp {
   camera?: Camera3D;
   turntable?: Turntable;
 }
+export interface FootageSource {
+  path: string;
+  width: number;
+  height: number;
+  frame_rate: FrameRate;
+  duration: number;
+  proxy_path?: string | null;
+  proxy_size?: [number, number] | null;
+}
 export interface MediaAsset {
   id: number;
   name: string;
@@ -168,6 +177,8 @@ export interface MediaAsset {
     times_millis: number[];
     frames_base64: string[];
   };
+  /** On-disk clip backing this video asset; frames decode live from it. */
+  footage?: FootageSource | null;
   slot: unknown;
   alias: string | null;
   perception: unknown;
@@ -185,6 +196,10 @@ export interface Snapshot {
   canUndo: boolean;
   canRedo: boolean;
   history: string[];
+  /** Total undoable depth — the whole session, including entries the engine
+   * has journalled to disk. `history` lists the in-memory window only. */
+  historyDepth?: number;
+  historyOverflow?: number;
   revision: number;
   audioRevision?: number;
 }
@@ -464,6 +479,8 @@ export interface SnapshotPatch {
   canUndo: boolean;
   canRedo: boolean;
   history: string[];
+  historyDepth?: number;
+  historyOverflow?: number;
   name: string;
   nextComp: number;
   nextLayer: number;

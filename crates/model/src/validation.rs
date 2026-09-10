@@ -12,16 +12,16 @@ pub fn validate_comp_size(
 ) -> Result<(), String> {
     if width == 0
         || height == 0
-        || width > 8192
-        || height > 8192
-        || u64::from(width) * u64::from(height) > 16_777_216
+        || width > 16_384
+        || height > 16_384
+        || u64::from(width) * u64::from(height) > 67_108_864
     {
         return Err(
-            "Composition dimensions must be 1–8192 pixels, with at most 16 megapixels".into(),
+            "Composition dimensions must be 1–16384 pixels, with at most 64 megapixels".into(),
         );
     }
-    if fps.num == 0 || fps.den == 0 || fps.as_f64() < 1.0 || fps.as_f64() > 240.0 {
-        return Err("Frame rate must be between 1 and 240 fps".into());
+    if fps.num == 0 || fps.den == 0 || fps.as_f64() < 1.0 || fps.as_f64() > 1000.0 {
+        return Err("Frame rate must be between 1 and 1000 fps".into());
     }
     if (TICKS_PER_SEC as u64 * fps.den as u64) % fps.num as u64 != 0 {
         return Err("This frame rate cannot be represented exactly in 120,000 ticks/second".into());
@@ -40,8 +40,8 @@ fn color(v: &[f32; 4]) -> bool {
 }
 
 pub fn validate_track(track: &Track, property: Option<Property>) -> Result<(), String> {
-    if track.keys.len() > 10_000 {
-        return Err("A track supports at most 10,000 keys".into());
+    if track.keys.len() > 250_000 {
+        return Err("A track supports at most 250,000 keys".into());
     }
     if !track.keys.windows(2).all(|k| k[0].time < k[1].time) {
         return Err("Keyframes must have unique, ascending times".into());
@@ -99,18 +99,18 @@ pub fn validate_content(kind: &LayerKind) -> Result<(), String> {
             if let Some(size) = style.size {
                 if !size
                     .into_iter()
-                    .all(|v| v.is_finite() && v > 0.0 && v <= 8192.0)
-                    || size[0].ceil() * size[1].ceil() > 16_777_216.0
+                    .all(|v| v.is_finite() && v > 0.0 && v <= 16_384.0)
+                    || size[0].ceil() * size[1].ceil() > 67_108_864.0
                 {
-                    return Err("Shape dimensions must be positive, at most 8192 pixels, and fit within 16 megapixels".into());
+                    return Err("Shape dimensions must be positive, at most 16384 pixels, and fit within 64 megapixels".into());
                 }
             }
         }
         LayerKind::Text { text, size, style } => {
-            if text.len() > 16_384
+            if text.len() > 65_536
                 || !size.is_finite()
                 || *size < 1.0
-                || *size > 2048.0
+                || *size > 65_536.0
                 || !color(&style.color)
                 || !finite(style.tracking)
                 || style.tracking < -(*size * 0.5)
@@ -134,8 +134,10 @@ impl Project {
         {
             return Err("Document ID allocators must be positive, safe JSON integers".into());
         }
-        if self.name.len() > 1024 || self.comps.len() > 128 || self.media.len() > 1024 {
-            return Err("Project exceeds document limits".into());
+        if self.name.len() > 1024 || self.comps.len() > 1024 || self.media.len() > 16_384 {
+            return Err(
+                "Project exceeds document limits (1024 compositions, 16384 media assets)".into(),
+            );
         }
         let mut precomp_depths = std::collections::BTreeMap::new();
         for (id, comp) in &self.comps {
@@ -143,7 +145,7 @@ impl Project {
                 return Err("Invalid composition ID allocator".into());
             }
             validate_comp_size(comp.width, comp.height, comp.fps, comp.duration)?;
-            if !color(&comp.background) || comp.layers.len() > 2048 {
+            if !color(&comp.background) || comp.layers.len() > 8192 {
                 return Err("Invalid composition background or layer count".into());
             }
             let order: BTreeSet<_> = comp.layer_order.iter().copied().collect();
@@ -218,11 +220,13 @@ impl Project {
             if let Some(image) = &asset.embedded {
                 if image.width == 0
                     || image.height == 0
-                    || image.width > 4096
-                    || image.height > 4096
-                    || u64::from(image.width) * u64::from(image.height) > 16_777_216
+                    || image.width > 16_384
+                    || image.height > 16_384
+                    || u64::from(image.width) * u64::from(image.height) > 67_108_864
                 {
-                    return Err("Embedded images are limited to 4 megapixels".into());
+                    return Err(
+                        "Embedded images are limited to 16384 per side and 64 megapixels".into(),
+                    );
                 }
                 let expected = (image.width as usize * image.height as usize * 4).div_ceil(3) * 4;
                 if image.rgba_base64.len() != expected {
@@ -231,8 +235,8 @@ impl Project {
                 image_bytes = image_bytes.saturating_add(expected);
             }
         }
-        if image_bytes > 256 * 1024 * 1024 {
-            return Err("Embedded media exceeds the 256 MB project budget".into());
+        if image_bytes > 2 * 1024 * 1024 * 1024 {
+            return Err("Embedded media exceeds the 2 GB project budget (link footage by path to stay lighter)".into());
         }
         Ok(())
     }
@@ -244,13 +248,13 @@ impl Project {
         memo: &mut std::collections::BTreeMap<crate::CompId, usize>,
     ) -> Result<usize, String> {
         if active.contains(&id) {
-            return Err("Nested composition cycle or depth limit (32) exceeded".into());
+            return Err("Nested composition cycle or depth limit (64) exceeded".into());
         }
         if let Some(depth) = memo.get(&id) {
             return Ok(*depth);
         }
-        if active.len() >= 32 {
-            return Err("Nested composition cycle or depth limit (32) exceeded".into());
+        if active.len() >= 64 {
+            return Err("Nested composition cycle or depth limit (64) exceeded".into());
         }
         active.push(id);
         let mut depth = 1;
@@ -267,7 +271,7 @@ impl Project {
         }
         active.pop();
         if depth > 32 {
-            return Err("Nested composition cycle or depth limit (32) exceeded".into());
+            return Err("Nested composition cycle or depth limit (64) exceeded".into());
         }
         memo.insert(id, depth);
         Ok(depth)

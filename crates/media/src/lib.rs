@@ -15,7 +15,9 @@ pub mod proxy;
 pub use cache::DiskPlaybackCache;
 pub use decode::{decode_frame, DecodeError, DecodedFrame};
 pub use export::{export_mp4_stream, ExportConfig, ExportError, ExportStats};
-pub use probe::{compute_perception_card, parse_rational_framerate, probe_asset, ProbeError};
+pub use probe::{
+    compute_perception_card, parse_rational_framerate, probe_asset, video_dimensions, ProbeError,
+};
 pub use proxy::{generate_proxy, ProxyError, ProxyInfo};
 
 // Re-export engine MediaFrames trait for convenience

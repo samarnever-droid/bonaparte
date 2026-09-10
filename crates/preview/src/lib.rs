@@ -132,9 +132,105 @@ fn route_mcp(session: &Arc<Mutex<EditorSession>>, body: String) -> Reply {
     }
 }
 
+/// Built-in scripting is the MCP tool surface — deliberately so, per the
+/// project constitution: no second API, no script-only verbs. A script is a
+/// JSON array of `{"tool": …, "args": …}` steps dispatched one by one through
+/// the very same hosted `McpSession` an external AI client drives, each step
+/// syncing the mirror first so it sees exactly what a separate MCP request
+/// would see. Steps commit through `Op`s, so they land in the editor's undo
+/// history (the journal keeps them as deep as any human edit). Panics in one
+/// tool are recorded as that step's failure and never take the bridge down.
+fn route_script(session: &Arc<Mutex<EditorSession>>, body: String) -> Reply {
+    let parsed = match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(value) => value,
+        Err(e) => return bad(format!("Malformed script: {e}")),
+    };
+    let Some(steps) = parsed.get("steps").and_then(|s| s.as_array()) else {
+        return bad("A script is {steps: [{tool, args}, …]}".into());
+    };
+    // Same transaction ceiling as Batch ops: a script is a transaction.
+    if steps.is_empty() {
+        return bad("A script needs at least one step".into());
+    }
+    if steps.len() > 8192 {
+        return bad("Scripts carry at most 8192 steps (same ceiling as Batch)".into());
+    }
+    let stop_on_failure = parsed
+        .get("stopOnFailure")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let mut hosted = McpSession::hosted(Arc::clone(session));
+    let mut results = Vec::with_capacity(steps.len());
+    let mut failed = false;
+    for (index, step) in steps.iter().enumerate() {
+        let Some(tool) = step.get("tool").and_then(|t| t.as_str()) else {
+            results.push(serde_json::json!({
+                "index": index,
+                "tool": null,
+                "ok": false,
+                "result": "each step needs a \"tool\" name",
+            }));
+            failed = true;
+            if stop_on_failure {
+                break;
+            }
+            continue;
+        };
+        let args = step.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        hosted.sync_from_host();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bonaparte_mcp::tools::execute_tool(&mut hosted, tool, args)
+        }));
+        let outcome = match outcome {
+            Ok(result) => result,
+            Err(panic) => {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "tool panicked".to_string());
+                bonaparte_mcp::ToolCallResult::error(format!("step {index} panicked: {message}"))
+            }
+        };
+        let text: String = outcome
+            .content
+            .iter()
+            .filter_map(|c| c.text.as_ref())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entry = serde_json::json!({
+            "index": index,
+            "tool": tool,
+            "ok": !outcome.is_error,
+            "result": serde_json::from_str::<serde_json::Value>(&text)
+                .unwrap_or_else(|_| serde_json::Value::String(text)),
+        });
+        results.push(entry);
+        if outcome.is_error {
+            failed = true;
+            if stop_on_failure {
+                break;
+            }
+        }
+    }
+    ok(
+        "application/json",
+        serde_json::to_vec(&serde_json::json!({
+            "ran": results.len(),
+            "failed": failed,
+            "steps": results,
+        }))
+        .unwrap_or_default(),
+    )
+}
+
 pub fn route_reply(session: &Arc<Mutex<EditorSession>>, name: String, body: String) -> Reply {
     if name == "mcp" {
         return route_mcp(session, body);
+    }
+    if name == "script.run" {
+        return route_script(session, body);
     }
     let result = (|| -> Result<Reply, String> {
         if body.len() > MAX_PROJECT_BYTES {
@@ -207,7 +303,12 @@ pub fn route_reply(session: &Arc<Mutex<EditorSession>>, name: String, body: Stri
             name.as_str(),
             "render_frame_raw" | "export_png" | "export_video"
         ) {
-            let request: RenderRequest = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let mut request: RenderRequest =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            if name != "render_frame_raw" {
+                // Delivered files never encode proxy pixels.
+                request.source_quality = true;
+            }
             let input = lock_session(session).render_input(request)?;
             // Rendering never holds the editor's state mutex.
             return match name.as_str() {

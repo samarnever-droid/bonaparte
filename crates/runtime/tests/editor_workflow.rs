@@ -210,6 +210,7 @@ fn failed_video_render_preserves_existing_output_file() {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     });
     p.insert_layer(
         c,
@@ -251,6 +252,7 @@ fn generic_batch_with_correct_length_but_invalid_base64_is_atomic() {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     };
     let op = Op::Batch {
         label: "Malformed image batch".into(),

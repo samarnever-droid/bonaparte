@@ -123,9 +123,9 @@ fn rasterize_text_uncached(
     let width = w as u32;
     let height = h as u32;
     // Avoid pathological user text allocating enormous temporary buffers.
-    if u64::from(width) * u64::from(height) > 16_777_216 {
+    if u64::from(width) * u64::from(height) > 67_108_864 {
         return Err(
-            "Text layout exceeds 16 megapixels. Reduce font size, tracking or line length.".into(),
+            "Text layout exceeds 64 megapixels. Reduce font size, tracking or line length.".into(),
         );
     }
     let mut bitmap = TextBitmap {
@@ -187,8 +187,8 @@ pub fn rasterize_text_scaled(
     let logical = measure_text(text, size, bold, tracking);
     let width = (logical[0] * density).ceil() as u32;
     let height = (logical[1] * density).ceil() as u32;
-    if u64::from(width) * u64::from(height) > 16_777_216 {
-        return Err("Text raster exceeds 16 megapixels at this scale".into());
+    if u64::from(width) * u64::from(height) > 67_108_864 {
+        return Err("Text raster exceeds 64 megapixels at this scale".into());
     }
     let metrics = f
         .horizontal_line_metrics(size)

@@ -64,6 +64,7 @@ fn test_serde_all_model_entities() {
             evidence: vec!["OCR: Acme Corp".into()],
         }),
         video: None,
+        footage: None,
     });
 
     // Serialize Project to JSON
@@ -157,6 +158,7 @@ fn test_serde_all_op_variants() {
         alias: None,
         perception: None,
         video: None,
+        footage: None,
     };
 
     let sample_ops = vec![

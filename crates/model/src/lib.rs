@@ -23,16 +23,18 @@ pub mod time;
 pub mod validation;
 
 pub use document::{
-    AssetRole, BlendMode, Camera, Comp, EffectiveTransform, EmbeddedImage, EmbeddedVideo, Layer,
-    LayerKind, MediaAsset, MediaKind, PerceptionCard, Project, Property, ShapeStyle, SlotDef,
-    StaticTransform, TextStyle, Turntable,
+    AssetRole, BlendMode, Camera, Comp, EffectiveTransform, EmbeddedImage, EmbeddedVideo,
+    FootageSource, Layer, LayerKind, MediaAsset, MediaKind, PerceptionCard, Project, Property,
+    ShapeStyle, SlotDef, StaticTransform, TextStyle, Turntable,
 };
 pub use ids::{CompId, LayerId, MediaId};
 pub use keyframe::{Easing, Keyframe, PropValue, Track};
 pub use manifest::{
     EffectManifest, GpuCost, ManifestError, ParamDef, ParamKind, SUPPORTED_API_MAJOR,
 };
-pub use ops::{History, ModelError, Op};
+pub use ops::{
+    History, HistoryJournal, JournalEntry, MemoryJournal, ModelError, Op, HISTORY_WINDOW,
+};
 pub use time::{FrameRate, Time, TimecodeError, TICKS_PER_SEC};
 
 pub use effect::{EffectInstance, EffectValue};

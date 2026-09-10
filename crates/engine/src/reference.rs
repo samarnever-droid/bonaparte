@@ -456,7 +456,7 @@ pub fn render_comp_with_registry(
         crate::preview::Resolution::FULL,
         &CACHE,
     )?;
-    crate::preview::render_scene_cpu(&scene, registry)
+    crate::prefix::render_global(comp_id, &scene, registry)
 }
 
 /// Historical fixed-density implementation for compatibility comparisons only.
@@ -798,10 +798,17 @@ fn draw_layer_pixels(
             (size[0], size[1])
         }
         LayerKind::Footage { media, .. } => {
-            if let Some(view) = frames.frame_rgba(*media, time) {
-                (view.width as f32, view.height as f32)
-            } else {
-                return Err(RenderError::MediaUnavailable(*media));
+            let size = frames
+                .shared_frame(*media, time)
+                .map(|f| (f.width as f32, f.height as f32))
+                .or_else(|| {
+                    frames
+                        .frame_rgba(*media, time)
+                        .map(|v| (v.width as f32, v.height as f32))
+                });
+            match size {
+                Some(size) => size,
+                None => return Err(RenderError::MediaUnavailable(*media)),
             }
         }
         LayerKind::Text { text, size, style } => {
@@ -1083,9 +1090,19 @@ fn draw_layer_pixels(
                         // beginning) offset by source_start — this is what
                         // makes jump cuts / Beat Cut segments possible.
                         let media_time = Time(time.0 - layer.start.0 + source_start.0);
-                        let view = frames
-                            .frame_rgba(*media, media_time)
-                            .ok_or(RenderError::MediaUnavailable(*media))?;
+                        // Shared (owned) frames first: file-backed footage
+                        // hands out Arcs and cannot lend a borrow.
+                        let owned = frames.shared_frame(*media, media_time);
+                        let view = match &owned {
+                            Some(f) => FrameView {
+                                width: f.width,
+                                height: f.height,
+                                rgba: &f.rgba,
+                            },
+                            None => frames
+                                .frame_rgba(*media, media_time)
+                                .ok_or(RenderError::MediaUnavailable(*media))?,
+                        };
                         let sx = ((u * view.width as f32) as u32).min(view.width.saturating_sub(1));
                         let sy =
                             ((v * view.height as f32) as u32).min(view.height.saturating_sub(1));
@@ -1239,6 +1256,7 @@ mod tests {
             alias: None,
             perception: None,
             video: None,
+            footage: None,
         });
         let mut layer = Layer::new(
             "img",

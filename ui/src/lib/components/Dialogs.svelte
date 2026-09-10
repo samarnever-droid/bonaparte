@@ -15,9 +15,23 @@
   } from "../store.svelte";
   import ExportRunner from "./ExportRunner.svelte";
   import { generateKinetic } from "../kinetic";
-  import { kayaKeys, saveKayaKeys, kayaAnalyze, kayaTranscribe, narratorSpeak } from "../kaya-client";
-  import { vaultList, vaultSave, vaultRead, vaultFolderFor, type VaultFolder } from "../vault-client";
-  import { importAnyFile } from "../store.svelte";
+  import {
+    kayaKeys,
+    saveKayaKeys,
+    kayaAnalyze,
+    kayaTranscribe,
+    narratorSpeak,
+  } from "../kaya-client";
+  import {
+    vaultList,
+    vaultSave,
+    vaultRead,
+    vaultFolderFor,
+    type VaultFolder,
+  } from "../vault-client";
+  import { importAnyFile, importFootagePath, accept, notify } from "../store.svelte";
+  import { command } from "../bridge";
+  import type { Snapshot, SnapshotPatch } from "../model";
 
   /** "—" under a second, otherwise "12s" / "1m 03s". */
   function etaLabel(seconds: number): string {
@@ -27,6 +41,68 @@
   }
   import { formatFps, timeToSecs, secsToTime, ticksPerFrame, type Color } from "../model";
   const comp = $derived(activeComp());
+  let scriptTools = $state(null as string[] | null);
+  let scriptText = $state('[\n  { "tool": "project.info", "args": {} }\n]');
+  let scriptBusy = $state(false);
+  let scriptError = $state("");
+  let scriptResults = $state(
+    null as { index: number; tool: string; ok: boolean; result: unknown }[] | null,
+  );
+  $effect(() => {
+    if (editor.dialog?.kind === "script" && !scriptTools) void fetchScriptTools();
+  });
+  async function fetchScriptTools() {
+    try {
+      const doc = await command<{ mcp_tools?: string[] }>("describe");
+      scriptTools = doc.mcp_tools ?? [];
+    } catch {
+      scriptTools = [];
+    }
+  }
+  function addScriptStep(tool: string) {
+    const step = `{ "tool": "${tool}", "args": {} }`;
+    const t = scriptText.trim();
+    if (!t || t === "[]") scriptText = `[\n  ${step}\n]`;
+    else if (t.endsWith("]")) {
+      const body = t.slice(0, -1).trimEnd();
+      scriptText = body.endsWith("[") ? `[\n  ${step}\n]` : `${body},\n  ${step}\n]`;
+    } else scriptText = `${t}\n${step}`;
+  }
+  async function runScript() {
+    scriptError = "";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(scriptText);
+    } catch (error) {
+      scriptError = `Fix the JSON first: ${String(error)}`;
+      return;
+    }
+    const raw = parsed as { steps?: unknown };
+    const steps = Array.isArray(parsed) ? parsed : raw?.steps;
+    if (!Array.isArray(steps) || !steps.length) {
+      scriptError = 'Expected [{ "tool": …, "args": … }, …] or { "steps": [ … ] }.';
+      return;
+    }
+    scriptBusy = true;
+    try {
+      const reply = await command<{
+        ran: number;
+        failed: boolean;
+        steps: { index: number; tool: string; ok: boolean; result: unknown }[];
+      }>("script.run", { steps, stopOnFailure: true });
+      scriptResults = reply.steps ?? [];
+      if (reply.failed)
+        scriptError = `The run stopped on a failure after ${reply.ran} step${reply.ran === 1 ? "" : "s"}.`;
+      // The server owns the session: pull the editor up to date so every
+      // scripted change shows up — and undoes — like a human edit.
+      accept(await command<Snapshot | SnapshotPatch>("state"));
+      if (!reply.failed) notify(`Script ran ${reply.ran} tool call${reply.ran === 1 ? "" : "s"}.`);
+    } catch (error) {
+      scriptError = String(error instanceof Error ? error.message : error);
+    } finally {
+      scriptBusy = false;
+    }
+  }
   let element = $state<HTMLDialogElement | null>(null);
   let name = $state("Composition 01"),
     width = $state(1920),
@@ -35,12 +111,12 @@
     seconds = $state(30),
     background = $state<Color>([0, 0, 0, 1]);
   let format = $state<"png" | "mp4">("mp4");
+  let turbo = $state(false);
+  let footagePath = $state("");
   let bitDepth = $state<8 | 16>(8);
   let outputSpace = $state<"srgb" | "display-p3" | "rec2020" | "linear">("srgb");
   let submitting = $state(false);
-  let lyricText = $state(
-    "We light up the sky\nHold the beat down\nNever coming down",
-  );
+  let lyricText = $state("We light up the sky\nHold the beat down\nNever coming down");
   let lyricStyle = $state<"pop" | "rise" | "wave">("pop");
   let lyricSync = $state(true);
   let lyricFoley = $state(true);
@@ -63,8 +139,69 @@
       const listing = await vaultList();
       vaultFolders = listing.folders;
       vaultRoot = listing.root;
+      void loadVaultPreviews(listing.folders);
     } finally {
       vaultBusy = false;
+    }
+  }
+
+  /* Visual previews + audition — the shelf should look like a shelf. */
+  const VAULT_IMG = ["png", "jpg", "jpeg", "webp", "gif", "svg"];
+  const VAULT_VID = ["mp4", "m4v", "webm", "mov", "mkv"];
+  const VAULT_AUD = ["wav", "mp3", "flac", "ogg", "oga", "m4a", "aac", "aif", "aiff"];
+  let vaultPreviews = $state<Record<string, string>>({});
+  let auditionKey = $state<string | null>(null);
+  let auditionPlaying = $state(false);
+  let auditionEl: HTMLAudioElement | null = $state(null);
+  const vaultExt = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
+  const vaultPreviewKey = (folder: string, file: string) => folder + "/" + file;
+  async function vaultFileUrl(folder: string, file: string): Promise<string | null> {
+    const key = vaultPreviewKey(folder, file);
+    if (vaultPreviews[key]) return vaultPreviews[key];
+    const f = await vaultRead(folder, file);
+    const url = URL.createObjectURL(f);
+    vaultPreviews = { ...vaultPreviews, [key]: url };
+    return url;
+  }
+  async function loadVaultPreviews(folders: VaultFolder[]) {
+    for (const url of Object.values(vaultPreviews)) URL.revokeObjectURL(url);
+    vaultPreviews = {};
+    const queue = folders
+      .flatMap((f) => f.entries.map((e) => ({ folder: f.name, entry: e })))
+      .filter(
+        ({ entry }) =>
+          (VAULT_IMG.includes(vaultExt(entry.file)) && entry.bytes < 12_000_000) ||
+          (VAULT_VID.includes(vaultExt(entry.file)) && entry.bytes < 40_000_000),
+      )
+      .slice(0, 48);
+    await Promise.allSettled(
+      Array.from({ length: 3 }, async () => {
+        while (queue.length) {
+          const item = queue.shift()!;
+          try {
+            await vaultFileUrl(item.folder, item.entry.file);
+          } catch {
+            /* preview is a courtesy; never block the shelf */
+          }
+        }
+      }),
+    );
+  }
+  async function auditionVaultAudio(folder: string, file: string) {
+    const key = vaultPreviewKey(folder, file);
+    if (auditionKey === key && auditionEl) {
+      if (auditionEl.paused) void auditionEl.play();
+      else auditionEl.pause();
+      return;
+    }
+    try {
+      const url = await vaultFileUrl(folder, file);
+      if (!url || !auditionEl) return;
+      auditionEl.src = url;
+      auditionKey = key;
+      void auditionEl.play();
+    } catch (error) {
+      notify(String(error), true);
     }
   }
 
@@ -286,7 +423,7 @@
                 id="comp-width"
                 type="number"
                 min="1"
-                max="8192"
+                max="16384"
                 step="1"
                 bind:value={width}
                 required
@@ -301,7 +438,7 @@
                 id="comp-height"
                 type="number"
                 min="1"
-                max="8192"
+                max="16384"
                 step="1"
                 bind:value={height}
                 required
@@ -366,7 +503,7 @@
           >
         </div>
         {#if width * height > 16777216}<p class="validation-message">
-            The current renderer supports a maximum of 16 megapixels.
+            The current renderer supports a maximum of 64 megapixels.
           </p>{/if}
       </form>
     {:else if editor.dialog?.kind === "export"}
@@ -412,6 +549,17 @@
             ></label
           >
         </div>{/if}
+      {#if format === "mp4"}<label class="export-turbo">
+          <input type="checkbox" bind:checked={turbo} disabled={editor.exporting} /><Icon
+            name="sparkles"
+            size={13}
+          /><span
+            ><strong>⚡ Turbo pass</strong><small
+              >Draft quality for review exports; unchanged frames render once and static spans ship
+              instantly.</small
+            ></span
+          ></label
+        >{/if}
       <div class="export-facts">
         <span>Render engine</span><strong>Rust CPU reference</strong><span
           >{format === "mp4" ? "Frame range" : "Frame"}</span
@@ -423,7 +571,9 @@
               : 0}</strong
         ><span>{format === "mp4" ? "Encoding quality" : "Color format"}</span><strong
           >{format === "mp4"
-            ? "CRF 18 · veryfast"
+            ? turbo
+              ? "CRF 30 · ultrafast — draft"
+              : "CRF 18 · veryfast"
             : `${bitDepth}-bit ${spaces.find((space) => space.id === outputSpace)?.label} + alpha`}</strong
         >
       </div>
@@ -493,10 +643,102 @@
           disabled={editor.exporting ||
             !comp ||
             (format === "mp4" && (!editor.ffmpeg || !!(comp.width % 2) || !!(comp.height % 2)))}
-          onclick={() => void exportFile(format, { bitDepth, outputSpace })}
+          onclick={() => void exportFile(format, { bitDepth, outputSpace, draft: turbo })}
           ><Icon name="download" size={14} />{editor.exporting
             ? "Exporting…"
             : `Export ${format.toUpperCase()}`}</button
+        >
+      </div>
+    {:else if editor.dialog?.kind === "footage"}
+      <h2 id="dialog-title">
+        {editor.dialog.mediaId == null
+          ? "Point at a clip on this machine."
+          : "Find the clip again."}
+      </h2>
+      <p class="dialog-subtitle">
+        {editor.dialog.mediaId == null
+          ? "No copying, no baking: the project keeps a reference and plays the file at full framerate, then quietly builds a half-resolution proxy for smooth scrubbing."
+          : "This asset went offline — its file moved or the disk changed. Pick the new location and every layer keeps its trims."}
+      </p>
+      <form
+        class="dialog-form"
+        onsubmit={(e) => {
+          e.preventDefault();
+          void importFootagePath(
+            footagePath,
+            editor.dialog?.kind === "footage" ? editor.dialog.mediaId : null,
+          );
+          footagePath = "";
+        }}
+      >
+        <input
+          class="field"
+          aria-label="Clip path"
+          placeholder="/media/hero-shot.mp4"
+          spellcheck="false"
+          bind:value={footagePath}
+        />
+        <div class="dialog-actions">
+          <button type="button" class="btn ghost" onclick={close}>Cancel</button><button
+            type="submit"
+            class="btn primary"
+            disabled={!footagePath.trim()}
+            >{editor.dialog.mediaId == null ? "Link footage" : "Relink"}<Icon
+              name="right"
+              size={13}
+            /></button
+          >
+        </div>
+      </form>
+    {:else if editor.dialog?.kind === "script"}
+      <h2 id="dialog-title">Speak the editor's own language.</h2>
+      <p class="dialog-subtitle">
+        A script is a list of tool calls — the exact surface an AI client drives over MCP, nothing
+        more and nothing less. Every step validates, commits through `Op`s, and lands in the undo
+        history.
+      </p>
+      {#if scriptTools && scriptTools.length}<div class="script-tools">
+          <small>Tools — click to append a step</small>
+          <div class="script-chips">
+            {#each scriptTools as tool (tool)}<button
+                class="tool-chip mono"
+                title="Append a {tool} step"
+                onclick={() => addScriptStep(tool)}>{tool}</button
+              >{/each}
+          </div>
+        </div>{/if}
+      <textarea
+        class="field script-editor"
+        rows="9"
+        spellcheck="false"
+        aria-label="Script JSON"
+        bind:value={scriptText}
+        onkeydown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void runScript();
+          }
+        }}></textarea>
+      {#if scriptError}<p class="validation-message">{scriptError}</p>{/if}
+      {#if scriptResults}<div class="script-results">
+          {#each scriptResults as step (step.index)}
+            <div class="script-step" class:bad={!step.ok}>
+              <span class="step-mark"><Icon name={step.ok ? "check" : "x"} size={11} /></span><span
+                class="mono step-tool">{step.index + 1}. {step.tool}</span
+              >{#if !step.ok}<pre class="step-err">{typeof step.result === "string"
+                    ? step.result
+                    : JSON.stringify(step.result)}</pre>{/if}
+            </div>
+          {/each}
+        </div>{/if}
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" onclick={close}>Close</button><button
+          type="button"
+          class="btn primary"
+          disabled={scriptBusy}
+          onclick={() => void runScript()}
+          ><Icon name="play" size={12} />{scriptBusy ? "Running…" : "Run script"}<kbd>⌘ ↵</kbd
+          ></button
         >
       </div>
     {:else if editor.dialog?.kind === "rename-layer"}
@@ -538,8 +780,7 @@
     {:else if editor.dialog?.kind === "lyrics"}
       <h2 id="dialog-title">Type the words. The beat does the rest. ⚡</h2>
       <p class="dialog-subtitle">
-        Kinetic lays every word on the beat grid — motion, timing, even the
-        impacts, synthesized.
+        Kinetic lays every word on the beat grid — motion, timing, even the impacts, synthesized.
       </p>
       <label class="form-label" for="lyric-lines">Lyric lines</label>
       <textarea
@@ -548,15 +789,9 @@
         rows="5"
         aria-label="Lyric lines"
         placeholder="One line per row"
-        bind:value={lyricText}
-      ></textarea>
+        bind:value={lyricText}></textarea>
       <label class="form-label" for="lyric-style">Motion style</label>
-      <select
-        id="lyric-style"
-        class="field"
-        aria-label="Motion style"
-        bind:value={lyricStyle}
-      >
+      <select id="lyric-style" class="field" aria-label="Motion style" bind:value={lyricStyle}>
         <option value="pop">Pop — words punch in on the beat</option>
         <option value="rise">Rise — words glide up into place</option>
         <option value="wave">Wave — words ride the line</option>
@@ -595,8 +830,8 @@
       {@const assetId = editor.dialog.assetId}
       <h2 id="dialog-title">Kaya ⚡ hears the timeline.</h2>
       <p class="dialog-subtitle">
-        Word-level transcription, scene sense, and a narrator — your keys stay
-        in this browser, never in the project.
+        Word-level transcription, scene sense, and a narrator — your keys stay in this browser,
+        never in the project.
       </p>
       <div class="dialog-actions" style="justify-content:flex-start;gap:8px;margin:0 0 12px">
         <button
@@ -604,7 +839,8 @@
           class="btn ghost"
           disabled={kayaBusy}
           onclick={() => void kayaAnalyze(assetId).then(() => close())}
-        >Analyze rhythm & silence<Icon name="graph" size={13} /></button>
+          >Analyze rhythm & silence<Icon name="graph" size={13} /></button
+        >
       </div>
       <label class="form-label" for="kaya-openai">OpenAI key (Whisper transcription)</label>
       <input
@@ -627,8 +863,8 @@
               kayaBusy = false;
               close();
             });
-          }}
-        >Transcribe word-by-word<Icon name="wave" size={13} /></button>
+          }}>Transcribe word-by-word<Icon name="wave" size={13} /></button
+        >
       </div>
       <label class="form-label" for="kaya-narration">Narrator</label>
       <textarea
@@ -636,8 +872,7 @@
         class="field"
         rows="3"
         aria-label="Narration text"
-        bind:value={kayaNarration}
-      ></textarea>
+        bind:value={kayaNarration}></textarea>
       <div style="display:flex;gap:8px;margin-top:8px">
         <select
           class="field"
@@ -670,8 +905,10 @@
               sarvamKey: kayaSarvam,
               elevenLabsKey: kayaEleven,
             });
-            if (kayaProvider === "sarvam" && kayaSarvam) saveKayaKeys({ ...kayaKeys(), sarvamKey: kayaSarvam });
-            if (kayaProvider === "elevenlabs" && kayaEleven) saveKayaKeys({ ...kayaKeys(), elevenLabsKey: kayaEleven });
+            if (kayaProvider === "sarvam" && kayaSarvam)
+              saveKayaKeys({ ...kayaKeys(), sarvamKey: kayaSarvam });
+            if (kayaProvider === "elevenlabs" && kayaEleven)
+              saveKayaKeys({ ...kayaKeys(), elevenLabsKey: kayaEleven });
             kayaBusy = true;
             void narratorSpeak({
               text: kayaNarration,
@@ -681,22 +918,23 @@
               kayaBusy = false;
               close();
             });
-          }}
-        >Speak ⚡<Icon name="bolt" size={13} /></button>
+          }}>Speak ⚡<Icon name="bolt" size={13} /></button
+        >
       </div>
     {:else if editor.dialog?.kind === "vault"}
       <h2 id="dialog-title">The Vault — one shelf for every project.</h2>
       <p class="dialog-subtitle">
-        Logos, brand art, audio, Lottie — dumped here once, available
-        everywhere. {vaultRoot ? `Living at ${vaultRoot}` : ""}
+        Logos, brand art, audio, Lottie — dumped here once, available everywhere. {vaultRoot
+          ? `Living at ${vaultRoot}`
+          : ""}
       </p>
       <div class="dialog-actions" style="justify-content:flex-start;gap:8px;margin:0 0 10px">
         <button
           type="button"
           class="btn ghost"
           disabled={vaultBusy}
-          onclick={() => vaultUpload?.click()}
-        >Upload to vault<Icon name="plus" size={13} /></button>
+          onclick={() => vaultUpload?.click()}>Upload to vault<Icon name="plus" size={13} /></button
+        >
         <input
           bind:this={vaultUpload}
           type="file"
@@ -710,31 +948,84 @@
         {#each vaultFolders as folder (folder.name)}
           {#if folder.entries.length}
             <div>
-              <div class="form-label" style="margin-bottom:4px">{folder.name} · {folder.entries.length}</div>
+              <div class="form-label" style="margin-bottom:4px">
+                {folder.name} · {folder.entries.length}
+              </div>
               {#each folder.entries as entry (entry.file)}
-                <button
-                  type="button"
-                  class="btn ghost"
-                  style="display:flex;justify-content:space-between;width:100%;margin:2px 0"
-                  disabled={vaultBusy}
-                  title="Add to this composition"
-                  onclick={() => void vaultPull(folder.name, entry.file)}
-                ><span class="truncate">{entry.file}</span><span
-                    >{entry.bytes > 1_048_576
-                      ? `${(entry.bytes / 1_048_576).toFixed(1)} MB`
-                      : `${Math.max(1, Math.round(entry.bytes / 1024))} KB`}</span
-                  ></button>
+                {@const ext = vaultExt(entry.file)}
+                {@const pkey = vaultPreviewKey(folder.name, entry.file)}
+                <div class="vault-entry">
+                  <button
+                    type="button"
+                    class="vault-thumb"
+                    title="Add {entry.file} to this composition"
+                    aria-label="Add {entry.file} to the composition"
+                    disabled={vaultBusy}
+                    onclick={() => void vaultPull(folder.name, entry.file)}
+                  >
+                    {#if vaultPreviews[pkey] && VAULT_IMG.includes(ext)}
+                      <img src={vaultPreviews[pkey]} alt="" />
+                    {:else if vaultPreviews[pkey] && VAULT_VID.includes(ext)}
+                      <video src={vaultPreviews[pkey]} preload="metadata" muted playsinline></video>
+                    {:else}
+                      <Icon
+                        name={VAULT_IMG.includes(ext)
+                          ? "image"
+                          : VAULT_VID.includes(ext)
+                            ? "film"
+                            : VAULT_AUD.includes(ext)
+                              ? "wave"
+                              : "folder"}
+                        size={14}
+                      />
+                    {/if}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn ghost vault-name"
+                    style="display:flex;justify-content:space-between;width:100%;margin:0"
+                    disabled={vaultBusy}
+                    title="Add to this composition"
+                    onclick={() => void vaultPull(folder.name, entry.file)}
+                    ><span class="truncate">{entry.file}</span><span
+                      >{entry.bytes > 1_048_576
+                        ? `${(entry.bytes / 1_048_576).toFixed(1)} MB`
+                        : `${Math.max(1, Math.round(entry.bytes / 1024))} KB`}</span
+                    ></button
+                  >
+                  {#if VAULT_AUD.includes(ext)}
+                    <button
+                      type="button"
+                      class="btn ghost vault-audition"
+                      aria-label={"Audition " + entry.file}
+                      title={auditionKey === pkey && auditionPlaying ? "Pause" : "Audition"}
+                      onclick={() => void auditionVaultAudio(folder.name, entry.file)}
+                      ><Icon
+                        name={auditionKey === pkey && auditionPlaying ? "pause" : "play"}
+                        size={11}
+                      /></button
+                    >
+                  {/if}
+                </div>
               {/each}
             </div>
           {/if}
         {/each}
         {#if vaultFolders.every((f) => !f.entries.length)}
-          <p class="modal-note"><Icon name="info" size={12} /><span
-            >The vault is empty — upload a logo, a track, a Lottie. Files land
-            in clean folders and show up in every project.</span
-          ></p>
+          <p class="modal-note">
+            <Icon name="info" size={12} /><span
+              >The vault is empty — upload a logo, a track, a Lottie. Files land in clean folders
+              and show up in every project.</span
+            >
+          </p>
         {/if}
       </div>
+      <audio
+        bind:this={auditionEl}
+        onplay={() => (auditionPlaying = true)}
+        onpause={() => (auditionPlaying = false)}
+        onended={() => (auditionPlaying = false)}
+      ></audio>
       <div class="dialog-actions">
         <button type="button" class="btn ghost" onclick={close}>Close</button>
       </div>
@@ -1083,11 +1374,21 @@
   .export-live {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    /* nowrap + shrinkable status spans keep the cancel button pinned to the
+       right edge even as the live numbers change width on every telemetry
+       tick — a button that reflows every 200 ms is a button you can't click. */
+    flex-wrap: nowrap;
     gap: 8px;
     font-size: 11px;
     color: var(--text-3, #8b9284);
     margin-top: 8px;
+  }
+  .export-live span {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .export-live span::before {
     content: "";
@@ -1100,6 +1401,7 @@
     vertical-align: 2px;
   }
   .export-cancel {
+    flex: 0 0 auto;
     margin-left: auto;
     font-size: 11px;
     padding: 4px 10px;
@@ -1202,5 +1504,148 @@
     position: absolute;
     right: 20px;
     top: calc(50% - 7px);
+  }
+  .export-turbo {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    margin: 10px 0 2px;
+    padding: 9px 11px;
+    border: 1px solid #3a3c39;
+    border-radius: 6px;
+    background: #22242166;
+    cursor: pointer;
+    color: #a9ada7;
+  }
+  .export-turbo:hover {
+    border-color: #4c6146;
+  }
+  .export-turbo strong {
+    display: block;
+    color: #e8eae6;
+    font-size: 12px;
+  }
+  .export-turbo small {
+    display: block;
+    font-size: 11px;
+    color: #8d928b;
+    margin-top: 1px;
+  }
+  .export-turbo input {
+    margin-top: 2px;
+    accent-color: var(--accent);
+  }
+  .script-tools {
+    margin: 4px 0 8px;
+  }
+  .script-tools small {
+    color: #8d928b;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .script-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 5px;
+  }
+  .tool-chip {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid #3a3c39;
+    background: #22242180;
+    color: #a9ada7;
+    cursor: pointer;
+  }
+  .tool-chip:hover {
+    color: var(--accent);
+    border-color: #4c6146;
+  }
+  .script-editor {
+    font:
+      12px/1.55 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    background: #1a1b1a;
+    color: #e8eae6;
+    resize: vertical;
+    min-height: 130px;
+    tab-size: 2;
+  }
+  .script-results {
+    margin-top: 9px;
+    border: 1px solid #33352f;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .script-step {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #2a2c29;
+    font-size: 11px;
+  }
+  .script-step:last-child {
+    border-bottom: none;
+  }
+  .script-step .step-mark {
+    color: var(--accent);
+    display: inline-flex;
+  }
+  .script-step.bad .step-mark {
+    color: var(--warning);
+  }
+  .step-tool {
+    color: #c9ccc6;
+  }
+  .step-err {
+    flex: 1;
+    margin: 0;
+    color: #d8b98a;
+    font-size: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* Vault shelf rows: thumb · name · audition */
+  .vault-entry {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 3px 0;
+  }
+  .vault-thumb {
+    width: 56px;
+    height: 34px;
+    flex: 0 0 auto;
+    border: 0;
+    border-radius: 5px;
+    padding: 0;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.05);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: inherit;
+  }
+  .vault-thumb img,
+  .vault-thumb video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .vault-entry .vault-name {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .vault-audition {
+    flex: 0 0 auto;
+    padding: 6px 9px;
   }
 </style>

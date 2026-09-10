@@ -223,3 +223,104 @@ fn undo_and_redo_responses_name_what_changed() {
     }
     assert!(!label_present, "drained undo must stop naming entries");
 }
+
+// ── Built-in scripting: the same twelve tools, sequenced on the server ────
+
+fn script(session: &Arc<Mutex<EditorSession>>, body: Value) -> (u16, Value) {
+    let (status, _, bytes) = route(session, "script.run".into(), body.to_string());
+    let payload: Value = serde_json::from_slice(&bytes).unwrap();
+    (status, payload)
+}
+
+#[test]
+fn a_script_runs_the_mcp_tools_in_order_against_the_live_session() {
+    let session = session();
+    let (status, payload) = script(
+        &session,
+        json!({"steps": [
+            {"tool": "op.apply", "args": {"op": {"type": "renameProject", "name": "sequenced"}}},
+            {"tool": "op.apply", "args": {"op": {"type": "renameProject", "name": "twice renamed"}}},
+            {"tool": "project.info", "args": {}}
+        ]}),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(payload["ran"], json!(3));
+    assert_eq!(payload["failed"], json!(false));
+    assert!(payload["steps"].is_array());
+    let state = session.lock().unwrap().command("state", json!({})).unwrap();
+    assert_eq!(state["project"]["name"], json!("twice renamed"));
+    // Editor undo history owns the script: two steps, two undos.
+    session.lock().unwrap().command("undo", json!({})).unwrap();
+    let state = session.lock().unwrap().command("state", json!({})).unwrap();
+    assert_eq!(state["project"]["name"], json!("sequenced"));
+    session.lock().unwrap().command("undo", json!({})).unwrap();
+    let state = session.lock().unwrap().command("state", json!({})).unwrap();
+    assert_eq!(state["project"]["name"], json!("Orbit — Studio ident"));
+}
+
+#[test]
+fn scripts_stop_at_the_first_failure_unless_asked_to_continue() {
+    let session = session();
+    let (_, payload) = script(
+        &session,
+        json!({"steps": [
+            {"tool": "not.a.tool", "args": {}},
+            {"tool": "project.info", "args": {}}
+        ]}),
+    );
+    assert_eq!(payload["failed"], json!(true));
+    assert_eq!(payload["ran"], json!(1), "failure stops the run by default");
+    let (_, payload) = script(
+        &session,
+        json!({"stopOnFailure": false, "steps": [
+            {"tool": "not.a.tool", "args": {}},
+            {"tool": "project.info", "args": {}}
+        ]}),
+    );
+    assert_eq!(payload["ran"], json!(2), "continueOnError keeps going");
+    assert_eq!(payload["steps"][0]["ok"], json!(false));
+    assert_eq!(payload["steps"][1]["ok"], json!(true));
+}
+
+#[test]
+fn a_panicking_script_step_is_a_recorded_failure_and_the_bridge_survives() {
+    let session = session();
+    let (status, payload) = script(
+        &session,
+        json!({"steps": [
+            {"tool": "debug.panic", "args": {}},
+            {"tool": "project.info", "args": {}}
+        ]}),
+    );
+    assert_eq!(status, 200, "the script protocol answers in-band");
+    assert_eq!(payload["ran"], json!(1), "the panic stops the run");
+    assert_eq!(payload["steps"][0]["ok"], json!(false));
+    let (status, _, _) = route(&session, "state".into(), "{}".into());
+    assert_eq!(status, 200, "and the bridge is still healthy");
+}
+
+#[test]
+fn malformed_scripts_are_rejected_without_touching_the_session() {
+    let session = session();
+    let (status, _, _) = route(&session, "script.run".into(), "{ nope".into());
+    assert_eq!(status, 400);
+    let (status, _, _) = route(
+        &session,
+        "script.run".into(),
+        json!({"steps": []}).to_string(),
+    );
+    assert_eq!(status, 400);
+    let before = session.lock().unwrap().command("state", json!({})).unwrap();
+    let name = before["project"]["name"].clone();
+    let (status, _, _) = route(
+        &session,
+        "script.run".into(),
+        json!({"steps": [{"noTool": true}]}).to_string(),
+    );
+    assert_eq!(
+        status, 200,
+        "a step without a tool fails as a step, not a request"
+    );
+    let after = session.lock().unwrap().command("state", json!({})).unwrap();
+    assert_eq!(after["project"]["name"], name);
+}

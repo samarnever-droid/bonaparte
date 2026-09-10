@@ -2,7 +2,7 @@
 self.onmessage = async ({ data }: { data: { file: File } }) => {
   try {
     const image = await createImageBitmap(data.file);
-    const ratio = Math.min(1, 2048 / Math.max(image.width, image.height));
+    const ratio = Math.min(1, 16384 / Math.max(image.width, image.height));
     const width = Math.max(1, Math.round(image.width * ratio)),
       height = Math.max(1, Math.round(image.height * ratio));
     const canvas = new OffscreenCanvas(width, height);

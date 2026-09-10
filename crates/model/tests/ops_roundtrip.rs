@@ -31,6 +31,7 @@ fn create_base_project() -> (Project, CompId, LayerId, MediaId) {
         alias: Some("logo".into()),
         perception: None,
         video: None,
+        footage: None,
     });
     (p, comp, layer, media)
 }

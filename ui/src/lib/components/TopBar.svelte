@@ -15,10 +15,10 @@
     deleteSelected,
     setWorkspace,
   } from "../store.svelte";
-  let menu = $state<"file" | "layer" | null>(null);
+  const menu = $derived(editor.topMenu);
   const comp = $derived(activeComp());
   function run(action: () => unknown) {
-    menu = null;
+    editor.topMenu = null;
     action();
   }
 </script>
@@ -80,7 +80,7 @@
       <button
         class="menu-trigger"
         class:active={menu === "file"}
-        onclick={() => (menu = menu === "file" ? null : "file")}
+        onclick={() => (editor.topMenu = editor.topMenu === "file" ? null : "file")}
         >File<Icon name="down" size={11} /></button
       >
       {#if menu === "file"}
@@ -110,6 +110,10 @@
           <button onclick={() => run(() => (editor.dialog = { kind: "export" }))}
             ><Icon name="download" />Export…</button
           >
+          <hr />
+          <button onclick={() => run(() => (editor.dialog = { kind: "script" }))}
+            ><Icon name="sparkles" />Run script…<kbd>tools, sequenced</kbd></button
+          >
         </div>
       {/if}
     </div>
@@ -117,7 +121,7 @@
       <button
         class="menu-trigger"
         class:active={menu === "layer"}
-        onclick={() => (menu = menu === "layer" ? null : "layer")}
+        onclick={() => (editor.topMenu = editor.topMenu === "layer" ? null : "layer")}
         >Layer<Icon name="down" size={11} /></button
       >
       {#if menu === "layer"}
@@ -164,7 +168,10 @@
   </div>
   <PerformancePanel />
 </nav>
-{#if menu}<button class="menu-overlay" aria-label="Close menu" onclick={() => (menu = null)}
+{#if menu}<button
+    class="menu-overlay"
+    aria-label="Close menu"
+    onclick={() => (editor.topMenu = null)}
   ></button>{/if}
 
 <style>
@@ -248,7 +255,11 @@
     height: 38px;
     padding: 0 14px;
     position: relative;
-    z-index: 61;
+    /* Whole menus layer (this bar is a stacking context): must out-rank
+       the floating performance panel (70-75) or an open File/Layer menu
+       lands UNDERNEATH it and its own click-away sheet starts stealing
+       item clicks. */
+    z-index: 85;
   }
   .menus {
     display: flex;

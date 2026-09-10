@@ -426,7 +426,7 @@ fn decode_plain(bytes: &[u8]) -> Result<(EmbeddedAudio, Arc<DecodedAudio>), Stri
     let length = pcm.as_file().metadata().map_err(|e| e.to_string())?.len();
     if length == 0 || length > limit || length % (channels as u64 * 4) != 0 {
         return Err(
-            "Decoded audio is empty, malformed or exceeds the one-hour source limit".into(),
+            "Decoded audio is empty, malformed or exceeds the four-hour source limit".into(),
         );
     }
     reserve_cache(&root, length, &cache)?;
@@ -468,6 +468,27 @@ fn metadata(bytes: &[u8], hash: &str, info: &SourceInfo) -> EmbeddedAudio {
         codec: info.codec.clone(),
         peak: info.peak,
     }
+}
+/// The original encoded file exactly as it was imported (inline bytes or
+/// the full Astra extent) — used when the vault or an export needs the
+/// untouched source, not the decoded PCM.
+pub fn original_bytes(audio: &EmbeddedAudio) -> Result<Vec<u8>, String> {
+    if !audio.data_base64.is_empty() {
+        return STANDARD
+            .decode(audio.data_base64.as_bytes())
+            .map_err(|e| format!("Invalid audio encoding: {e}"));
+    }
+    let Some(extent) = &audio.astra_chunks else {
+        return Err("Audio source has neither inline data nor an Astra extent".into());
+    };
+    let mut bytes = Vec::new();
+    for chunk in extent.iter() {
+        let Some(data) = astra().read_chunk(chunk) else {
+            return Err(format!("Astra chunk {chunk} is missing from the store"));
+        };
+        bytes.extend_from_slice(&data);
+    }
+    Ok(bytes)
 }
 pub fn decode_embedded(audio: &EmbeddedAudio) -> Result<Arc<DecodedAudio>, String> {
     // Store-backed source: reassemble the extent through Astra's hot cache.

@@ -532,6 +532,38 @@ pub struct EmbeddedVideo {
     pub frames_base64: Arc<[Arc<str>]>,
 }
 
+/// A video clip that lives as a file instead of as frames baked into the
+/// document. `path` is the original source (export always reads it);
+/// `proxy_path` is an optional low-resolution transcode that only the
+/// interactive preview is allowed to substitute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FootageSource {
+    /// Absolute path of the source clip on the runtime machine.
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: crate::FrameRate,
+    /// Source length in ticks; the sampled position wraps inside it.
+    pub duration: Time,
+    /// Proxy clip, if one has been generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_size: Option<[u32; 2]>,
+}
+
+impl FootageSource {
+    /// The file the interactive preview should decode from: the proxy when
+    /// one exists, otherwise the source itself.
+    pub fn preview_path(&self) -> &str {
+        self.proxy_path.as_deref().unwrap_or(&self.path)
+    }
+    /// Dimensions of the file `preview_path` points at.
+    pub fn preview_size(&self) -> [u32; 2] {
+        self.proxy_size.unwrap_or([self.width, self.height])
+    }
+}
+
 /// An asset in the media library. `slot` marks it as a template placeholder
 /// (template ecosystem, ARCHITECTURE.md); `perception` is the import-time
 /// measurement card that gives no-vision AI quantitative sight
@@ -550,6 +582,12 @@ pub struct MediaAsset {
     /// Sampled video frames for `MediaKind::Video` assets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<EmbeddedVideo>,
+    /// On-disk clip backing this video asset. When present, frames are
+    /// decoded on demand at full source framerate, so nothing is capped by
+    /// what fits in the document; `video` stays usable as the poster and as
+    /// the fallback for backends without file access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footage: Option<FootageSource>,
     /// If present, this asset is a template placeholder slot the user fills
     /// with their own media.
     pub slot: Option<SlotDef>,

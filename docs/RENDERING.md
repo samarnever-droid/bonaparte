@@ -108,6 +108,47 @@ Measured medians in the two-vCPU sandbox, including snapshot/packet work but **e
 
 Half/quarter are faster partly because they render fewer pixels; they are not full-quality speedups. Cache delivery is not rendering throughput. Hardware-GPU measurements and long-running memory/latency benchmarks remain necessary.
 
+## Static-prefix frame caching (0.7)
+
+After scene preparation, CPU compositing walks layers bottom-up. Most motion
+graphics frames are mostly static: the pixels below the first animated layer
+are identical frame to frame. `engine::prefix::PrefixCache` exploits exactly
+that. Every layer gets a tiny token of the *sampled* state the painter
+actually reads (layer id, inverse transform, size, bounds, opacity, blend
+mode, and content identity — solid colors, shape-style hashes, or
+`Arc::ptr_eq` of cached rasters, whose reference the token pins against
+eviction). The first frame renders normally and snapshots the frame buffer at
+the last-known static boundary; later frames find the first token mismatch —
+the boundary — and only if the snapshot covers at least that many layers do
+they resume from it. Anything above the boundary (the animated layers, effects,
+adjustments, rasters with volatile content) is repainted normally; a volatile
+layer can never be part of any prefix. The result is **bit-identical output by
+construction** — a resumed frame is a prefix of the fully painted one — which
+the test suite verifies against `render_scene_cpu` across mid-sequence edits
+and non-adjacent scrub jumps.
+
+Measured on this machine (debug build, 2 vCPUs):
+
+| Workload | Plain CPU | With prefix cache | Speedup |
+| --- | --- | --- | --- |
+| 121-layer plate wall, 320×180, steady-state frame | 332 ms | 0.28 ms | **~1,180×** |
+| 62-layer text poster, 320×180, full composite loop | 8 ms/frame | 0.9 ms/frame | ~9× |
+| Live preview, 241-layer wall, 640×360, 10 distinct times (median) | 2,629 ms | 52 ms | **~50×** |
+| Full Playwright suite wall time (114 tests) | 20.7 min | 5.2 min | ~4× overall |
+
+The last row is the point: prepare-scene sampling, PNG encoding and transport
+are per-frame fixed costs the cache doesn't touch, so end-to-end wins
+converge on the composited share of work. Stacks of large full-frame layers
+(grading plates, glow passes, vignettes) see the largest returns; the skip
+ratio equals the fraction of composited pixels that didn't change.
+
+Caches are keyed by (comp, output size), capped at five live slots, and shared
+by the preview runtime and the sequential export path; concurrent renders of
+one comp serialize on the slot but stay correct by validation, and a canceled
+render can never corrupt the snapshot (the pair of snapshot+boundary is
+written only on full pass completion). `BONAPARTE_NO_PREFIX_CACHE=1` restores
+the plain path for A/B benchmarking or emergency rollback.
+
 ## Still outstanding
 
 Separable GPU blur/glow/shadow; ROI/halo-aware tiling; cancellation of in-flight native/GPU work; playback prefetch/RAM preview; GPU export; device hot-plug stress testing; physical integrated-GPU testing and cross-platform native E2E. Video/audio/proxy integration, masks, expressions, 3D and professional color management remain later editor milestones.

@@ -37,10 +37,16 @@
 - **§2.6 · Typed errors per crate** (`thiserror`), with human-readable
   messages. Rejected operations answer with the reason **plus** a hint
   listing valid properties, value shapes and time units.
-- **§2.7 · Transactions are atomic and bounded.** A commit validates before
-  replacing the document; a rejected commit leaves the document byte-identical
-  (pinned by the failure-atomicity tests). History retains 1000 transactions;
-  a Batch carries at most 8192 ops and cannot nest.
+- **§2.7 · Transactions are atomic; the history itself spills to disk.** A
+  commit validates before replacing the document; a rejected commit leaves
+  the document byte-identical (pinned by the failure-atomicity tests). The
+  hot window holds 1000 transactions in memory; every transaction pushed out
+  of it appends to an append-only journal (`$BONAPARTE_HISTORY_DIR`, else
+  `~/.bonaparte/history/`), so **the whole session stays undoable** — no
+  ceiling on depth, only on memory. A journal that cannot be written
+  degrades to window eviction, never to a failed edit. Opening or creating a
+  project truncates the journals: history is per session. A Batch carries at
+  most 8192 ops and cannot nest.
 
 ## §3 — Persistence
 
@@ -49,6 +55,13 @@
   media embeds inline up to 16 MiB per source; larger sources become content-
   addressed Astra chunk extents (see §6). Embedded payloads share a 256 MiB
   document budget; whole project files a 512 MiB ceiling.
+- **Video never bakes into the document.** Clips link by path
+  (`MediaAsset::footage`): the file is the source, frames decode on demand at
+  full framerate, and a half-resolution proxy — generated lazily, stored in
+  the user's shelf — may serve interactive playback. Exports and PNG writes
+  always read the original file; a moved clip goes `offline` and the relink
+  button restores every trim because only the `footage` record changed (one
+  undoable `Op`).
 
 ## §4 — Plugins and effects
 

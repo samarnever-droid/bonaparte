@@ -385,7 +385,48 @@ pub fn probe_asset(
         alias: None,
         perception,
         video: None,
+        footage: None,
     })
+}
+
+/// Pixel size of the first video stream — the minimal probe relink and
+/// import need before constructing a `FootageSource`.
+pub fn video_dimensions(path: impl AsRef<std::path::Path>) -> Result<(u32, u32), ProbeError> {
+    let path = path.as_ref();
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| ProbeError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    if !output.status.success() {
+        return Err(ProbeError::ProcessFailed {
+            path: path.to_path_buf(),
+            message: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let stream = json
+        .get("streams")
+        .and_then(|s| s.get(0))
+        .ok_or_else(|| ProbeError::NoMediaStream(path.to_path_buf()))?;
+    let w = stream.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let h = stream.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if w == 0 || h == 0 {
+        return Err(ProbeError::NoMediaStream(path.to_path_buf()));
+    }
+    Ok((w, h))
 }
 
 /// Helper to decode a single sample frame into raw RGBA bytes via ffmpeg.

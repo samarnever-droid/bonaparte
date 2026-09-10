@@ -24,6 +24,11 @@
     scrub,
     pause,
     cancelInteraction,
+    selectionIds,
+    selectLayerAdvanced,
+    moveSelectionBy,
+    alignSelection,
+    type AlignKind,
   } from "../store.svelte";
   import {
     ARRANGEMENTS,
@@ -273,8 +278,17 @@
     lastAngle: number;
     rotationDelta: number;
     anchor: [number, number];
+    group: number[] | null;
+    memberCorners: [number, number][][] | null;
+    worldDelta: [number, number];
   } = null;
   let gestureToken = 0;
+  // Ghost outlines for group members while the primary rides the live
+  // native preview — the full recomposite happens once, on release.
+  let ghosts = $state<null | string[]>(null);
+  // Reactive twin of `gesture !== null` (the gesture object itself stays
+  // off the reactive graph on purpose — it mutates at pointer rate).
+  let gestureLive = $state(false);
   function location(event: { clientX: number; clientY: number }): [number, number] {
     if (!canvas || !comp) return [0, 0];
     const bounds = gesture?.bounds ?? canvas.getBoundingClientRect();
@@ -321,6 +335,23 @@
     const pivot = g ? point(g.matrix, anchor[0], anchor[1]) : ([0, 0] as [number, number]);
     const parentInverse = parent ? inverse(worldMatrix(comp, parent, editor.currentTime)) : null;
     const initial = location(event);
+    // A move that starts on an already-selected member drags the whole
+    // group; everyone else in the selection rides along as a ghost.
+    const groupIds =
+      mode === "move" && target && selectionIds().length > 1 && selectionIds().includes(target.id)
+        ? selectionIds().filter((id) => id !== target.id)
+        : [];
+    const group = groupIds.length ? groupIds : null;
+    const groupGeo = group
+      ? group
+          .map((id) => comp?.layers[String(id)])
+          .filter((l): l is Layer => !!l && !l.locked && l.visible)
+          .map((l) =>
+            layerGeometry(comp!, l, editor.project!, editor.currentTime).corners.map(
+              (p) => [p[0], p[1]] as [number, number],
+            ),
+          )
+      : null;
     const dx = initial[0] - pivot[0],
       dy = initial[1] - pivot[1];
     const parentVector = parentInverse
@@ -329,6 +360,7 @@
           parentInverse[1] * dx + parentInverse[3] * dy,
         ]
       : [dx, dy];
+    gestureLive = true;
     gesture = {
       mode,
       token: ++gestureToken,
@@ -352,6 +384,9 @@
       bounds: canvas!.getBoundingClientRect(),
       lastAngle: Math.atan2(parentVector[1], parentVector[0]),
       rotationDelta: 0,
+      group,
+      memberCorners: groupGeo,
+      worldDelta: [0, 0],
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
@@ -443,7 +478,17 @@
       }
       return;
     }
-    editor.selected = hit?.id ?? null;
+    // Shift/⌘ click toggles membership on the canvas too (timeline rows
+    // already do); a plain click on an already-selected member keeps the
+    // whole group — dragging any member drags everything selected.
+    if (hit && (event.shiftKey || event.ctrlKey || event.metaKey)) {
+      selectLayerAdvanced(hit.id, event);
+      return;
+    }
+    if (!(hit && editor.multiSelected.length && selectionIds().includes(hit.id))) {
+      editor.selected = hit?.id ?? null;
+      editor.multiSelected = [];
+    }
     if (hit) begin(event, "move", hit);
   }
   let latestPointer: PointerEvent | null = null,
@@ -475,15 +520,24 @@
     if (g.mode === "move" && "Vec2" in g.base) {
       let dx = x - g.start[0],
         dy = y - g.start[1];
-      if (g.parentInverse) {
-        const m = g.parentInverse;
-        [dx, dy] = [m[0] * dx + m[2] * dy, m[1] * dx + m[3] * dy];
-      }
+      // Axis lock applies in world space, so ghosts and members agree
+      // with the primary even under parenting.
       if (event.shiftKey) {
         if (Math.abs(dx) > Math.abs(dy)) dy = 0;
         else dx = 0;
       }
+      g.worldDelta = [dx, dy];
+      if (g.parentInverse) {
+        const m = g.parentInverse;
+        [dx, dy] = [m[0] * dx + m[2] * dy, m[1] * dx + m[3] * dy];
+      }
       value = { Vec2: [Math.round(g.base.Vec2[0] + dx), Math.round(g.base.Vec2[1] + dy)] };
+      if (g.memberCorners) {
+        const [wx, wy] = g.worldDelta;
+        ghosts = g.memberCorners.map((corners) =>
+          corners.map((p) => `${p[0] + wx},${p[1] + wy}`).join(" "),
+        );
+      }
     } else if (g.mode === "scale" && "Vec2" in g.base && g.matrix && comp && editor.project) {
       const local = point(g.matrix, x, y);
       const sx = g.corner === 0 || g.corner === 3 ? -1 : 1,
@@ -548,7 +602,21 @@
     if (latestPointer) applyPointer(latestPointer);
     const g = gesture;
     gesture = null;
+    gestureLive = false;
     cleanup();
+    if (g?.moved && g.group?.length && g.worldDelta.some((v) => v !== 0)) {
+      // Group commit: one atomic batch carries every member (the primary
+      // included), so retire the single-layer native preview first — it
+      // must not double-commit under the batch.
+      editor.interaction = null;
+      editor.interactionReady = false;
+      editor.previewLayer = null;
+      ghosts = null;
+      await moveSelectionBy(g.worldDelta);
+      editor.renderSeq++;
+      return;
+    }
+    ghosts = null;
     if (g?.moved && g.layer && g.value && comp?.id === g.compId) {
       const state = editor.interaction;
       if (state) editor.interaction = { ...state, phase: "commit" };
@@ -569,7 +637,9 @@
   }
   function cancel() {
     gesture = null;
+    gestureLive = false;
     cleanup();
+    ghosts = null;
     editor.previewLayer = null;
     editor.interaction = null;
     editor.interactionReady = false;
@@ -698,10 +768,7 @@
             }}
           />
         </label>
-        <label
-          class="fov-chip"
-          title="Depth of field: blur cards away from the focal plane"
-        >
+        <label class="fov-chip" title="Depth of field: blur cards away from the focal plane">
           <span>DoF</span>
           <input
             type="range"
@@ -834,6 +901,36 @@
         ><Icon name="grid" size={15} /></button
       >
     </div>
+    {#if comp && !gestureLive && selectionIds().length > 1}
+      <div class="selection-pill" role="group" aria-label="Group tools">
+        <span class="pill-count">{selectionIds().length} selected</span>
+        <small>drag any one to move them all</small>
+        <span class="pill-rule"></span>
+        {#each [["left", "L", "Align left edge to frame"], ["hcenter", "C", "Center horizontally"], ["right", "R", "Align right edge to frame"], ["top", "T", "Align top edge to frame"], ["vcenter", "M", "Center vertically"], ["bottom", "B", "Align bottom edge to frame"]] as [kind, glyph, tip]}<button
+            class="pill-btn"
+            title={tip}
+            aria-label={`Align ${kind === "left" ? "left" : kind === "hcenter" ? "horizontal centers" : kind === "right" ? "right" : kind === "top" ? "top" : kind === "vcenter" ? "vertical centers" : "bottom"}`}
+            onclick={() => void alignSelection(kind as AlignKind)}>{glyph}</button
+          >{/each}
+        <span class="pill-rule"></span>
+        {#each [["distributeX", "X", "Space selection evenly horizontally"], ["distributeY", "Y", "Space selection evenly vertically"]] as [kind, glyph, tip]}<button
+            class="pill-btn"
+            title={tip}
+            aria-label={`Distribute ${kind === "distributeX" ? "horizontally" : "vertically"}`}
+            onclick={() => void alignSelection(kind as AlignKind)}>{glyph}</button
+          >{/each}
+        <span class="pill-rule"></span>
+        <button
+          class="pill-btn"
+          title="Clear selection (Esc)"
+          aria-label="Clear selection"
+          onclick={() => {
+            editor.selected = null;
+            editor.multiSelected = [];
+          }}>×</button
+        >
+      </div>
+    {/if}
     {#if comp}
       <div
         class="canvas-wrap"
@@ -911,6 +1008,14 @@
                 stroke="#d2e2bd"
                 stroke-width={1 / scale}
               />{/each}{/if}
+          {#if ghosts}<g
+              fill="none"
+              stroke="#c0e6aa"
+              stroke-opacity=".35"
+              stroke-width={0.8 / scale}
+              stroke-dasharray={`${4 / scale} ${3 / scale}`}
+              >{#each ghosts as poly}<polygon points={poly} />{/each}</g
+            >{/if}
           {#if geometry && layer && !layer.locked && editor.tool !== "hand"}
             <polygon
               {points}
@@ -1006,9 +1111,7 @@
         zoom = e.currentTarget.value;
         if (zoom === "fit") pan = { x: 0, y: 0 };
       }}
-      ><option
-        value="fit"
-        >Fit · {Math.round(scale * 100)}%</option
+      ><option value="fit">Fit · {Math.round(scale * 100)}%</option
       >{#if zoom !== "fit" && ![25, 50, 75, 100, 150, 200].includes(Number(zoom))}
         <option value={zoom}>{zoom}%</option>
       {/if}{#each [25, 50, 75, 100, 150, 200] as percentage}<option value={String(percentage)}
@@ -1077,7 +1180,7 @@
     border-radius: 7px;
     padding: 3px 8px;
   }
-  .fov-chip input[type='range'] {
+  .fov-chip input[type="range"] {
     width: 74px;
     accent-color: #9dc37f;
   }
@@ -1200,6 +1303,68 @@
     min-height: 0;
     overflow: hidden;
     background: radial-gradient(ellipse at 55% 42%, #262725 0, #1b1c1a 75%);
+  }
+  .selection-pill {
+    position: absolute;
+    /* Top of the stage: the canvas caption and zoom strip live at the
+       bottom, and the vertical tool rail owns the left edge. */
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    background: #1d1f1df0;
+    border: 1px solid #3a3d3a;
+    border-radius: 999px;
+    box-shadow: 0 10px 26px #0007;
+    font-size: 10px;
+    color: #a7b1a0;
+    white-space: nowrap;
+    animation: pill-in 0.16s ease-out;
+  }
+  @keyframes pill-in {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%);
+    }
+  }
+  .pill-count {
+    color: #d7e2c9;
+    font-weight: 600;
+    font-size: 10px;
+  }
+  .selection-pill small {
+    color: #79816f;
+    font-size: 9px;
+  }
+  .pill-rule {
+    width: 1px;
+    height: 14px;
+    background: #34382f;
+    margin: 0 3px;
+  }
+  .pill-btn {
+    min-width: 19px;
+    height: 19px;
+    padding: 0 3px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: #c3ccb6;
+    font: 600 9px monospace;
+    cursor: pointer;
+  }
+  .pill-btn:hover {
+    background: #2c2f29;
+    border-color: #45493f;
+    color: #e7efdb;
   }
   .stage.hand {
     cursor: grab;

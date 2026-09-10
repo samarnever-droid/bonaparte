@@ -41,7 +41,7 @@ import {
   type Camera3D,
   DEFAULT_CAMERA,
 } from "./model";
-import { cameraAt, effectiveDepth } from "./geometry";
+import { cameraAt, effectiveDepth, inverse, layerGeometry, worldMatrix } from "./geometry";
 
 /** Live export telemetry mirrored from the Rust runtime's `export_progress`,
  * with client-side rate math (percent, fps, ETA) for the export HUD. */
@@ -67,6 +67,8 @@ class EditorState {
   /** Multi-selection overlay (Shift/Ctrl-click, marquee, mod+A). The
    * primary selection stays `selected` so single-object paths are stable. */
   multiSelected = $state([] as number[]);
+  /** Top-bar drop-down currently open (Escape closes it before it touches selection). */
+  topMenu = $state(null as "file" | "layer" | null);
   /** Last saved/opened file path (desktop). Save writes here SILENTLY —
    * no file-explorer dialog — once a path exists. */
   lastSavePath = $state(null as string | null);
@@ -78,6 +80,8 @@ class EditorState {
   canUndo = $state(false);
   canRedo = $state(false);
   history = $state([] as string[]);
+  historyDepth = $state(0);
+  historyOverflow = $state(0);
   dirty = $state(false);
   pending = $state(0);
   loading = $state(true);
@@ -134,11 +138,16 @@ class EditorState {
       | { kind: "composition"; compId: number | null }
       | { kind: "export" | "shortcuts" | "new-project" }
       | { kind: "rename-layer"; compId: number; layerId: number; name: string }
+      | { kind: "footage"; mediaId: number | null }
+      | { kind: "script" }
       | { kind: "lyrics"; assetId: number; hasGrid: boolean }
       | { kind: "kaya"; assetId: number }
       | { kind: "vault" }
       | null,
   );
+  /** Live-clip health per media id: offline clips offer relink, proxied
+   * clips play half-res while scrubbing. */
+  footageStatus = $state(new Map() as Map<number, { online: boolean; proxy: boolean }>);
   exporting = $state(false);
   exportProgress = $state(null as ExportProgress | null);
   recovery = $state("Ready" as string);
@@ -210,7 +219,10 @@ export function selectionIds(): number[] {
 
 /** Muscle-memory selection: plain click = replace, Shift/Ctrl/⌘-click =
  * toggle the row in the multi-selection without dropping the primary. */
-export function selectLayerAdvanced(layerId: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
+export function selectLayerAdvanced(
+  layerId: number,
+  e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+) {
   if (e.shiftKey || e.ctrlKey || e.metaKey) {
     // The current primary joins the overlay set, the clicked row toggles,
     // and the clicked row becomes the new primary (kept out of the list).
@@ -274,6 +286,8 @@ export function accept(snapshot: Snapshot | SnapshotPatch, dirty = true) {
   editor.canUndo = snapshot.canUndo;
   editor.canRedo = snapshot.canRedo;
   editor.history = snapshot.history;
+  editor.historyDepth = snapshot.historyDepth ?? snapshot.history.length;
+  editor.historyOverflow = snapshot.historyOverflow ?? 0;
   editor.revision = snapshot.revision;
   editor.audioRevision = snapshot.audioRevision ?? snapshot.revision;
   if (!editor.project.comps[String(editor.activeComp)])
@@ -318,7 +332,79 @@ export function accept(snapshot: Snapshot | SnapshotPatch, dirty = true) {
     )
       editor.audioSelection = { track: track.id, clip: null };
   }
+  if (
+    Object.values(editor.project.media).filter((a) => a.footage).length !==
+    editor.footageStatus.size
+  )
+    void refreshFootageStatus();
   queueRecovery();
+}
+/** Ask the Rust runtime which linked clips are readable and which already
+ * have a proxy. Cheap (`stat` per asset); runs when the set of footage
+ * assets changes and after every footage action. */
+export async function refreshFootageStatus() {
+  try {
+    const rows = await command<{ media: number; online: boolean; proxy: boolean; name: string }[]>(
+      "media_status",
+      {},
+    );
+    const next = new Map<number, { online: boolean; proxy: boolean }>();
+    for (const row of rows) next.set(row.media, { online: row.online, proxy: row.proxy });
+    editor.footageStatus = next;
+  } catch {
+    /* headless or detached: keep the last known picture */
+  }
+}
+/** Link a clip that lives on the machine running the editor (or import a
+ * Vault path). `mediaId` set = relink an existing asset instead. */
+export async function importFootagePath(path: string, relinkMediaId: number | null) {
+  const trimmed = path.trim();
+  if (!trimmed) return;
+  const comp = activeComp();
+  if (!comp) {
+    notify("Open a composition first.", true);
+    return;
+  }
+  try {
+    if (relinkMediaId == null) {
+      let mediaId = 0;
+      await queued(async () => {
+        const reply = await command<Snapshot | SnapshotPatch>("import_footage", {
+          path: trimmed,
+          compId: comp.id,
+        });
+        accept(reply);
+        mediaId = (editor.project?.next_media ?? 1) - 1;
+      });
+      notify("Footage linked — playing live from the file at full framerate.");
+      // The proxy is a comfort, not a gate: build it quietly afterwards so
+      // scrubbing gets smooth without ever blocking the edit.
+      void (async () => {
+        try {
+          await queued(async () => {
+            accept(await command<Snapshot | SnapshotPatch>("generate_proxy", { media: mediaId }));
+          });
+          notify("Proxy ready — preview rides the light copy, export keeps the original.");
+        } catch {
+          /* source playback stays perfectly fine without a proxy */
+        }
+      })();
+    } else {
+      await queued(async () => {
+        accept(
+          await command<Snapshot | SnapshotPatch>("relink_media", {
+            media: relinkMediaId,
+            path: trimmed,
+          }),
+        );
+      });
+      notify("Clip relinked — back online.");
+    }
+    editor.dialog = null;
+    void refreshFootageStatus();
+  } catch (error) {
+    notify(String(error instanceof Error ? error.message : error), true);
+  }
 }
 /** Resolves after every queued mutation has been applied to the local store.
  * UI read-modify-write gestures (e.g. nudging an easing handle right after a
@@ -943,24 +1029,56 @@ export async function duplicateSelected() {
   if (!comp) return;
   const ids = selectionIds().filter((id) => !comp.layers[String(id)]?.locked);
   if (!ids.length) return;
-  for (const id of ids) {
-    const layer = comp.layers[String(id)];
-    if (!layer) continue;
-    const copy = clone(layer);
-    copy.name += " copy";
-    if (await applyOp({ type: "addLayer", comp: comp.id, layer: copy }))
-      editor.selected = (editor.project?.next_layer ?? 1) - 1;
+  // One batch — a 12-layer duplicate lands (and undoes) as a single step.
+  const ok = await applyOp((project) => {
+    const c = project.comps[String(comp.id)];
+    if (!c) return null;
+    const ops: Op[] = ids
+      .map((id) => c.layers[String(id)])
+      .filter((l): l is Layer => !!l)
+      .map((layer) => {
+        const copy = clone(layer);
+        copy.name += " copy";
+        return { type: "addLayer", comp: comp.id, layer: copy } as Op;
+      });
+    if (!ops.length) return null;
+    return {
+      type: "batch",
+      label: ops.length > 1 ? `Duplicated ${ops.length} layers` : "Duplicated layer",
+      ops,
+    };
+  });
+  if (ok) {
+    // AddLayer allocates ids sequentially on apply; select the whole new set.
+    const top = (editor.project?.next_layer ?? 1) - 1;
+    editor.selected = top;
+    editor.multiSelected = [];
+    if (ids.length > 1) {
+      const fresh: number[] = [];
+      for (let id = top - ids.length + 1; id < top; id++) fresh.push(id);
+      editor.multiSelected = fresh;
+    }
   }
-  editor.multiSelected = [];
 }
 export async function deleteSelected() {
   const comp = activeComp();
   if (!comp) return;
   const ids = selectionIds().filter((id) => !comp.layers[String(id)]?.locked);
   if (!ids.length) return;
-  for (const id of ids) {
-    await applyOp({ type: "removeLayer", comp: comp.id, layer: id });
-  }
+  // One batch: undoing brings the whole group back in a single step.
+  await applyOp((project) => {
+    const c = project.comps[String(comp.id)];
+    if (!c) return null;
+    const ops: Op[] = ids
+      .filter((id) => c.layers[String(id)])
+      .map((id) => ({ type: "removeLayer", comp: comp.id, layer: id }) as Op);
+    if (!ops.length) return null;
+    return {
+      type: "batch",
+      label: ops.length > 1 ? `Deleted ${ops.length} layers` : "Deleted layer",
+      ops,
+    };
+  });
   editor.multiSelected = [];
 }
 /** Explode an assembled group (PreComp) back into individual layers. */
@@ -1000,6 +1118,152 @@ export async function setProperty(layerId: number, property: Property, value: Pr
         },
       };
     return { type: "setValue", comp: comp.id, layer: layerId, property, value };
+  });
+}
+/** The op `setProperty` would apply, as a pure builder so multi-layer
+ *  gestures can fold every member edit into one atomic batch. */
+export function propertyOp(
+  comp: Comp,
+  layer: Layer,
+  property: Property,
+  value: PropValue,
+  time: number,
+): Op | null {
+  if (layer.locked) return null;
+  if (layer.tracks[property]?.keys.length)
+    return {
+      type: "addKeyframe",
+      comp: comp.id,
+      layer: layer.id,
+      property,
+      key: {
+        time,
+        value,
+        easing:
+          findKeyframeAtTime(layer.tracks[property], time, comp.fps)?.easing ?? DEFAULT_EASING,
+      },
+    };
+  return { type: "setValue", comp: comp.id, layer: layer.id, property, value };
+}
+/** A world-space delta becomes this layer's Position op, parent- and
+ *  rotation-aware: the group rides together even inside hierarchies. */
+function worldDeltaOp(
+  comp: Comp,
+  layer: Layer,
+  delta: [number, number],
+  time: number,
+  keyTime: number,
+): Op | null {
+  const pos = evaluate(layer, "Position", time);
+  if (!("Vec2" in pos)) return null;
+  const parent =
+    layer.parent !== null && layer.parent !== undefined ? comp.layers[String(layer.parent)] : null;
+  const mi = parent ? inverse(worldMatrix(comp, parent, time)) : null;
+  const [dx, dy] = mi
+    ? [mi[0] * delta[0] + mi[2] * delta[1], mi[1] * delta[0] + mi[3] * delta[1]]
+    : delta;
+  return propertyOp(
+    comp,
+    layer,
+    "Position",
+    { Vec2: [Math.round(pos.Vec2[0] + dx), Math.round(pos.Vec2[1] + dy)] },
+    keyTime,
+  );
+}
+/** Move every selected layer by the same world-space delta — one gesture,
+ *  one undo step, whether the selection holds 2 layers or 200. */
+export async function moveSelectionBy(delta: [number, number], label?: string): Promise<boolean> {
+  const comp = activeComp();
+  if (!comp) return false;
+  const ids = selectionIds();
+  return applyOp((project) => {
+    const c = project.comps[String(comp.id)];
+    if (!c) return null;
+    const keyTime = snapToFrame(editor.currentTime, c.fps);
+    const ops = ids
+      .map((id) => c.layers[String(id)])
+      .filter((l): l is Layer => !!l)
+      .map((l) => worldDeltaOp(c, l, delta, editor.currentTime, keyTime))
+      .filter((o): o is Op => !!o);
+    if (!ops.length) return null;
+    return {
+      type: "batch",
+      label: label ?? (ops.length > 1 ? `Moved ${ops.length} layers` : "Moved layer"),
+      ops,
+    };
+  });
+}
+export type AlignKind =
+  "left" | "hcenter" | "right" | "top" | "vcenter" | "bottom" | "distributeX" | "distributeY";
+/** Snap the selection to comp edges/axes, or space it evenly — one batch. */
+export async function alignSelection(kind: AlignKind): Promise<boolean> {
+  const comp = activeComp();
+  const project = editor.project;
+  if (!comp || !project) return false;
+  const distributing = kind === "distributeX" || kind === "distributeY";
+  const ids = selectionIds().filter((id) => !comp.layers[String(id)]?.locked);
+  if (ids.length < (distributing ? 3 : 2)) return false;
+  return applyOp((project) => {
+    const c = project.comps[String(comp.id)];
+    if (!c) return null;
+    const time = editor.currentTime;
+    const keyTime = snapToFrame(time, c.fps);
+    const measured = ids
+      .map((id) => c.layers[String(id)])
+      .filter((l): l is Layer => !!l)
+      .map((layer) => ({ layer, geo: layerGeometry(c, layer, project, time) }));
+    if (measured.length < (distributing ? 3 : 2)) return null;
+    const xs = measured.map((m) => m.geo.corners.map((p) => p[0]));
+    const ys = measured.map((m) => m.geo.corners.map((p) => p[1]));
+    const left = measured.map((m, i) => Math.min(...xs[i]!));
+    const right = measured.map((m, i) => Math.max(...xs[i]!));
+    const topEdge = measured.map((m, i) => Math.min(...ys[i]!));
+    const bottom = measured.map((m, i) => Math.max(...ys[i]!));
+    const cx = measured.map((m) => m.geo.center[0]);
+    const cy = measured.map((m) => m.geo.center[1]);
+    let ops: Op[] = [];
+    if (distributing) {
+      const horiz = kind === "distributeX";
+      const centers = horiz ? cx : cy;
+      const order = measured.map((_, i) => i).sort((a, b) => centers[a]! - centers[b]!);
+      const first = centers[order[0]!]!,
+        span = centers[order[order.length - 1]!]! - first;
+      ops = order
+        .map((i, slot) => {
+          const target = first + (span * slot) / (order.length - 1);
+          const delta: [number, number] = horiz
+            ? [target - centers[i]!, 0]
+            : [0, target - centers[i]!];
+          return worldDeltaOp(c, measured[i]!.layer, delta, time, keyTime);
+        })
+        .filter((o): o is Op => !!o);
+    } else {
+      ops = measured
+        .map((m, i) => {
+          const delta: [number, number] =
+            kind === "left"
+              ? [-left[i]!, 0]
+              : kind === "right"
+                ? [c.width - right[i]!, 0]
+                : kind === "hcenter"
+                  ? [(c.width - (left[i]! + right[i]!)) / 2, 0]
+                  : kind === "top"
+                    ? [0, -topEdge[i]!]
+                    : kind === "bottom"
+                      ? [0, c.height - bottom[i]!]
+                      : [0, (c.height - (topEdge[i]! + bottom[i]!)) / 2];
+          return worldDeltaOp(c, m.layer, delta, time, keyTime);
+        })
+        .filter((o): o is Op => !!o);
+    }
+    if (!ops.length) return null;
+    return {
+      type: "batch",
+      label: distributing
+        ? `Distributed ${ops.length} layers`
+        : `Aligned ${ops.length} layers · ${kind}`,
+      ops,
+    };
   });
 }
 export async function keyframeAtPlayhead(layerId: number, property: Property) {
@@ -1519,7 +1783,7 @@ export async function importImage(file?: File) {
       });
     } else {
       const image = await createImageBitmap(file);
-      const ratio = Math.min(1, 4096 / Math.max(image.width, image.height));
+      const ratio = Math.min(1, 16384 / Math.max(image.width, image.height));
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(image.width * ratio));
       canvas.height = Math.max(1, Math.round(image.height * ratio));
@@ -1546,7 +1810,7 @@ export async function importImage(file?: File) {
     editor.selected = (editor.project?.next_layer ?? 1) - 1;
     notify(
       decoded.ratio < 1
-        ? "Image imported at a 4096 px working resolution and embedded in the project."
+        ? "Image imported at a 16384 px working resolution and embedded in the project."
         : "Image imported and embedded in the project.",
     );
   } catch (error) {
@@ -1566,8 +1830,7 @@ export async function importLottieFile(file: File) {
   const comp = activeComp();
   if (!comp) return;
   try {
-    if (file.size > 32 * 1024 * 1024)
-      throw new Error("Lottie files must be smaller than 32 MB.");
+    if (file.size > 32 * 1024 * 1024) throw new Error("Lottie files must be smaller than 32 MB.");
     editor.imageImporting = true;
     notify("Importing Lottie ⚡ every layer arrives assembled and animated.");
     const json = await file.text();
@@ -2107,7 +2370,7 @@ export async function deleteKeyframe(
 
 export async function exportFile(
   format: "png" | "mp4" | "wav",
-  options: { bitDepth?: number; outputSpace?: string } = {},
+  options: { bitDepth?: number; outputSpace?: string; draft?: boolean } = {},
 ) {
   await flushLiveEdits();
   await mutationQueue;
@@ -2125,6 +2388,9 @@ export async function exportFile(
     if (options.bitDepth) args.bitDepth = options.bitDepth;
     if (options.outputSpace) args.outputSpace = options.outputSpace;
   }
+  // Turbo mode: draft-quality encode; the runtime also collapses static
+  // spans into a single rendered frame, so review passes finish instantly.
+  if (format === "mp4" && options.draft) args.draft = true;
   // MP4 exports stream real telemetry from the Rust runtime: poll it every
   // 200 ms and smooth the rate so the ETA does not twitch.
   let poller: ReturnType<typeof setInterval> | null = null;
@@ -2144,12 +2410,13 @@ export async function exportFile(
           lastFrameMs: number;
         }>("export_progress");
         if (raw.canceled) sawCanceled = true;
-        // Idle runtime (or telemetry left over from a PREVIOUS export — the
-        // slot is process-global): ignore until this export's frames flow.
-        if (raw.framesDone < lastDone || (lastDone === -1 && raw.framesDone === 0 && !raw.active)) {
-          etaSmoothed = 0;
-          if (!raw.active) return;
-        }
+        // The telemetry slot is process-global and may still carry the
+        // PREVIOUS export's numbers. Until this export's run shows as
+        // active, those leftovers would paint a bogus completed bar — and
+        // "Cancel" clicked on that phantom bar hits an idle slot and is
+        // wiped when the real export arms. So: never start from leftovers.
+        if (lastDone === -1 && !raw.active) return;
+        if (raw.framesDone < lastDone) etaSmoothed = 0; // re-baselined slot
         lastDone = raw.framesDone;
         const total = Math.max(1, raw.totalFrames);
         const done = Math.min(raw.framesDone, total);

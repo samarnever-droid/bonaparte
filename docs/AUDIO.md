@@ -69,16 +69,16 @@ These are first-milestone limits, not unlimited professional-session support:
 | Resource | Limit / policy |
 |---|---|
 | Encoded source import | 32 MiB per file |
-| Portable embedded media | 48 MiB combined encoded audio/image payloads |
-| Project file | 64 MiB; serialization refuses a file that cannot be reopened |
+| Portable embedded media | 256 MiB combined encoded audio/image payloads |
+| Project file | 512 MiB; serialization refuses a file that cannot be reopened |
 | Source duration | One hour per source |
 | Source channels | Mono or stereo; surround is not downmixed implicitly |
-| Tracks / clips | 64 tracks, up to 2048 clips/track and 8192 clips/composition |
+| Tracks / clips | 256 tracks, up to 16,384 clips/track and 65,536 clips/composition |
 | Expanded audio graph | 4096 composition instances, 512 buses / 16384 voices; oversized arrangements fail explicitly |
 | PCM requests | At most two seconds per request, 8–192 kHz output |
 | Decoded cache | 4 GiB of named PCM cache files; unpinned old entries can be removed |
 | Worklet queue | At most 16 PCM chunks |
-| Float WAV | RIFF 4 GiB size boundary; browser downloads additionally capped at 128 MiB |
+| Float WAV | RIFF 4 GiB size boundary; the bridge streams any size straight from disk |
 
 Cache budgets are not total RAM/disk guarantees. Memory maps, decoded waveform levels, temporary decoding/output files, in-flight jobs, browser buffers and OS caches have additional costs. Linked media, streaming projects beyond the portable-file budget, and background disk-space management need a subsequent milestone.
 

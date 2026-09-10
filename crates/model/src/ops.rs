@@ -12,6 +12,7 @@
 //! every new `Op` variant.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::document::{BlendMode, Comp, Layer, LayerKind, MediaAsset, Project, Property};
@@ -219,6 +220,13 @@ pub enum Op {
         media: MediaId,
         words: Arc<[crate::KayaWord]>,
     },
+    /// Bind a video asset to an on-disk clip (or rebind it: this is also the
+    /// relink op) with optional proxy metadata. `None` detaches the file;
+    /// sampled frames keep playing while detached.
+    SetMediaFootage {
+        media: MediaId,
+        footage: Option<crate::document::FootageSource>,
+    },
     AddMedia {
         asset: MediaAsset,
     },
@@ -264,9 +272,9 @@ impl Op {
     pub fn apply(self, project: &mut Project) -> Result<(), ModelError> {
         match self {
             Op::Batch { ops, .. } => {
-                if ops.len() > 8192 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 65_536 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 8192 operations and cannot be nested".into(),
+                        "Transactions allow at most 65536 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();
@@ -664,6 +672,40 @@ impl Op {
                 }
                 Ok(())
             }
+            Op::SetMediaFootage { media, footage } => {
+                let asset = project
+                    .media
+                    .get_mut(&media)
+                    .ok_or(ModelError::MediaNotFound(media))?;
+                if let Some(f) = footage.as_ref() {
+                    if !matches!(asset.kind, crate::MediaKind::Video { .. }) {
+                        return Err(ModelError::Invalid(
+                            "Footage binds to video assets only".into(),
+                        ));
+                    }
+                    if f.path.trim().is_empty() {
+                        return Err(ModelError::Invalid("Footage path must not be empty".into()));
+                    }
+                    if f.width == 0 || f.height == 0 {
+                        return Err(ModelError::Invalid(
+                            "Footage dimensions must be non-zero".into(),
+                        ));
+                    }
+                    if let Some([pw, ph]) = f.proxy_size {
+                        if pw == 0 || ph == 0 || f.proxy_path.is_none() {
+                            return Err(ModelError::Invalid(
+                                "Proxy size requires a proxy path with non-zero dimensions".into(),
+                            ));
+                        }
+                    } else if f.proxy_path.is_some() {
+                        return Err(ModelError::Invalid(
+                            "Proxy footage requires its dimensions".into(),
+                        ));
+                    }
+                }
+                asset.footage = footage;
+                Ok(())
+            }
             Op::AddMedia { asset } => {
                 project.insert_media(asset);
                 Ok(())
@@ -694,9 +736,9 @@ impl Op {
     pub fn invert(&self, project: &Project) -> Result<Op, ModelError> {
         match self {
             Op::Batch { label, ops } => {
-                if ops.len() > 8192 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
+                if ops.len() > 65_536 || ops.iter().any(|o| matches!(o, Op::Batch { .. })) {
                     return Err(ModelError::Invalid(
-                        "Transactions allow at most 8192 operations and cannot be nested".into(),
+                        "Transactions allow at most 65536 operations and cannot be nested".into(),
                     ));
                 }
                 let mut candidate = project.clone();
@@ -707,7 +749,7 @@ impl Op {
                     // A transaction may contain 256 primitives, but user history
                     // retains 1000 transactions. Drain each temporary entry now so
                     // the history cap cannot silently discard part of an inverse.
-                    inverses.push(history.undo_stack.pop().expect("just committed").op);
+                    inverses.push(history.undo_stack.pop_back().expect("just committed").op);
                 }
                 inverses.reverse();
                 Ok(Op::Batch {
@@ -732,6 +774,16 @@ impl Op {
                 Ok(Op::SetMediaBeatGrid {
                     media: *media,
                     beats_ms: previous,
+                })
+            }
+            Op::SetMediaFootage { media, .. } => {
+                let asset = project
+                    .media
+                    .get(media)
+                    .ok_or(ModelError::MediaNotFound(*media))?;
+                Ok(Op::SetMediaFootage {
+                    media: *media,
+                    footage: asset.footage.clone(),
                 })
             }
             Op::SetMediaTranscript { media, .. } => {
@@ -1132,6 +1184,14 @@ impl Op {
             } => {
                 format!("Reordered layer {layer} to position {new_index}")
             }
+            Op::SetMediaFootage { media, footage } => match footage {
+                Some(f) if f.proxy_path.is_some() => format!(
+                    "Linked footage to media {media} from {} (proxy on disk)",
+                    f.path
+                ),
+                Some(f) => format!("Linked footage to media {media} from {}", f.path),
+                None => format!("Detached footage from media {media}"),
+            },
             Op::AddMedia { asset } => format!("Imported media “{}”", asset.name),
             Op::RestoreMedia { asset } => format!("Restored media “{}” ({})", asset.name, asset.id),
             Op::RemoveMedia { media } => format!("Removed media {media}"),
@@ -1141,6 +1201,12 @@ impl Op {
 
 /// Bounded history with atomic commit, undo and redo. Failed operations never
 /// modify the document, allocators, or either history stack.
+///
+/// The stacks in front are a hot window; with a [`HistoryJournal`] attached
+/// the entries that leave the window spill to the journal instead of being
+/// dropped, so an entire session stays undoable while memory stays flat.
+/// Without a journal, eviction at the window is the old behaviour — this is
+/// why headless sessions and the pure-model tests keep working unchanged.
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     op: Op,
@@ -1148,10 +1214,92 @@ struct HistoryEntry {
     edit_group: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+impl HistoryEntry {
+    fn to_journal(&self) -> JournalEntry {
+        JournalEntry {
+            op: self.op.clone(),
+            label: self.label.clone(),
+            edit_group: self.edit_group.clone(),
+        }
+    }
+}
+
+/// One spilled transaction, serde-shaped exactly like the wire `Op`s so any
+/// journal backend (file, sqlite, object store) is just bytes it owns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalEntry {
+    pub op: Op,
+    pub label: String,
+    pub edit_group: Option<String>,
+}
+
+impl JournalEntry {
+    fn into_history(self) -> HistoryEntry {
+        HistoryEntry {
+            op: self.op,
+            label: self.label,
+            edit_group: self.edit_group,
+        }
+    }
+}
+
+/// Overflow sink for [`History`]: append-only during editing, popped from
+/// the back when the user undoes past the hot window. Implementations must be
+/// cheap to append (one line per entry is the intent); `take_last` may read
+/// and truncate. Errors degrade to eviction — history depth is lost, and
+/// nothing else ever is.
+pub trait HistoryJournal: std::fmt::Debug + Send + Sync {
+    fn append(&mut self, entry: &JournalEntry) -> Result<(), String>;
+    fn take_last(&mut self) -> Option<JournalEntry>;
+    /// Label-peek without consuming: used to name the next undo/redo while
+    /// the window is empty. Read-only by contract, so `&self` is enough.
+    fn peek_last(&self) -> Option<JournalEntry> {
+        None
+    }
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn clear(&mut self);
+}
+
+/// Reference journal kept in the model crate: handy for tests and headless
+/// tools that want full depth without touching a filesystem.
+#[derive(Debug, Default)]
+pub struct MemoryJournal {
+    entries: Vec<JournalEntry>,
+}
+
+impl HistoryJournal for MemoryJournal {
+    fn append(&mut self, entry: &JournalEntry) -> Result<(), String> {
+        self.entries.push(entry.clone());
+        Ok(())
+    }
+    fn take_last(&mut self) -> Option<JournalEntry> {
+        self.entries.pop()
+    }
+    fn peek_last(&self) -> Option<JournalEntry> {
+        self.entries.last().cloned()
+    }
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Entries the in-memory window retains before spilling (or evicting, when
+/// no journal is attached).
+pub const HISTORY_WINDOW: usize = 1000;
+
+#[derive(Debug, Default)]
 pub struct History {
-    undo_stack: Vec<HistoryEntry>,
-    redo_stack: Vec<HistoryEntry>,
+    undo_stack: VecDeque<HistoryEntry>,
+    redo_stack: VecDeque<HistoryEntry>,
+    undo_journal: Option<Box<dyn HistoryJournal>>,
+    redo_journal: Option<Box<dyn HistoryJournal>>,
 }
 
 fn merge_targets(op: &Op) -> Option<Vec<String>> {
@@ -1197,14 +1345,75 @@ impl History {
         Self::default()
     }
 
-    /// Number of undoable entries currently retained (bounded at 1000).
+    /// A journal-less copy of the in-memory window: for dry runs (the AI
+    /// `ops.propose` preview) that must simulate commits without ever
+    /// touching the real overflow sink.
+    pub fn window_clone(&self) -> History {
+        History {
+            undo_stack: self.undo_stack.clone(),
+            redo_stack: self.redo_stack.clone(),
+            undo_journal: None,
+            redo_journal: None,
+        }
+    }
+
+    /// A history whose overflow spills to disk (or any sink) instead of
+    /// evaporating: full-framerate undo depth, flat memory.
+    pub fn with_journals(undo: Box<dyn HistoryJournal>, redo: Box<dyn HistoryJournal>) -> Self {
+        Self {
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            undo_journal: Some(undo),
+            redo_journal: Some(redo),
+        }
+    }
+
+    /// Total undoable depth: hot window plus everything the journal holds.
     pub fn undo_len(&self) -> usize {
+        self.undo_stack.len() + self.undo_journal.as_ref().map_or(0, |j| j.len())
+    }
+
+    pub fn redo_len(&self) -> usize {
+        self.redo_stack.len() + self.redo_journal.as_ref().map_or(0, |j| j.len())
+    }
+
+    /// Entries living in the in-memory window (what `undo_descriptions` lists).
+    pub fn undo_window_len(&self) -> usize {
         self.undo_stack.len()
     }
 
-    /// Number of redoable entries currently retained.
-    pub fn redo_len(&self) -> usize {
+    /// Redo entries living in the in-memory window.
+    pub fn redo_window_len(&self) -> usize {
         self.redo_stack.len()
+    }
+
+    /// Entries spilled past the window — the "more on disk" number.
+    pub fn undo_overflow(&self) -> usize {
+        self.undo_journal.as_ref().map_or(0, |j| j.len())
+    }
+
+    pub fn redo_overflow(&self) -> usize {
+        self.redo_journal.as_ref().map_or(0, |j| j.len())
+    }
+
+    /// Move entries past the window into the journal; without one, evict.
+    fn spill(stack: &mut VecDeque<HistoryEntry>, journal: &mut Option<Box<dyn HistoryJournal>>) {
+        let Some(journal) = journal.as_mut() else {
+            while stack.len() > HISTORY_WINDOW {
+                stack.pop_front();
+            }
+            return;
+        };
+        while stack.len() > HISTORY_WINDOW {
+            let Some(front) = stack.pop_front() else {
+                break;
+            };
+            if journal.append(&front.to_journal()).is_err() {
+                // Degrade to eviction: drop the rest of this spill rather
+                // than fail an already-committed edit.
+                break;
+            }
+        }
     }
 
     pub fn commit(&mut self, project: &mut Project, op: Op) -> Result<(), ModelError> {
@@ -1224,7 +1433,7 @@ impl History {
         }
         let merge = group.as_ref().is_some_and(|g| {
             self.redo_stack.is_empty()
-                && self.undo_stack.last().is_some_and(|last| {
+                && self.undo_stack.back().is_some_and(|last| {
                     last.edit_group.as_ref() == Some(g)
                         && merge_targets(&last.op) == merge_targets(&op)
                         && merge_targets(&op).is_some()
@@ -1250,76 +1459,111 @@ impl History {
         candidate.validate().map_err(ModelError::Invalid)?;
         *project = candidate;
         if merge {
-            self.undo_stack.last_mut().expect("merge target").label = label;
+            if let Some(last) = self.undo_stack.back_mut() {
+                last.label = label;
+            }
         } else {
-            self.undo_stack.push(HistoryEntry {
+            self.undo_stack.push_back(HistoryEntry {
                 op: inverse,
                 label,
                 edit_group: group,
             });
         }
-        if self.undo_stack.len() > 1000 {
-            self.undo_stack.remove(0);
-        }
+        Self::spill(&mut self.undo_stack, &mut self.undo_journal);
         self.redo_stack.clear();
+        if let Some(journal) = self.redo_journal.as_mut() {
+            journal.clear();
+        }
         Ok(())
     }
 
     pub fn undo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
-        let Some(entry) = self.undo_stack.last().cloned() else {
-            return Ok(false);
+        // Hot window first, then the journal: undo walks the whole session.
+        let entry = match self.undo_stack.pop_back() {
+            Some(entry) => entry,
+            None => match self
+                .undo_journal
+                .as_mut()
+                .and_then(|journal| journal.take_last())
+            {
+                Some(entry) => entry.into_history(),
+                None => return Ok(false),
+            },
         };
         let redo = entry.op.invert(project)?;
         let mut candidate = project.clone();
         entry.op.apply(&mut candidate)?;
         candidate.validate().map_err(ModelError::Invalid)?;
         *project = candidate;
-        self.undo_stack.pop();
-        if let Some(last) = self.undo_stack.last_mut() {
+        if let Some(last) = self.undo_stack.back_mut() {
             last.edit_group = None;
         }
-        self.redo_stack.push(HistoryEntry {
+        self.redo_stack.push_back(HistoryEntry {
             op: redo,
             label: entry.label,
             edit_group: None,
         });
+        Self::spill(&mut self.redo_stack, &mut self.redo_journal);
         Ok(true)
     }
 
     pub fn redo(&mut self, project: &mut Project) -> Result<bool, ModelError> {
-        let Some(entry) = self.redo_stack.last().cloned() else {
-            return Ok(false);
+        let entry = match self.redo_stack.pop_back() {
+            Some(entry) => entry,
+            None => match self
+                .redo_journal
+                .as_mut()
+                .and_then(|journal| journal.take_last())
+            {
+                Some(entry) => entry.into_history(),
+                None => return Ok(false),
+            },
         };
         let inverse = entry.op.invert(project)?;
         let mut candidate = project.clone();
         entry.op.apply(&mut candidate)?;
         candidate.validate().map_err(ModelError::Invalid)?;
         *project = candidate;
-        self.redo_stack.pop();
-        self.undo_stack.push(HistoryEntry {
+        self.undo_stack.push_back(HistoryEntry {
             op: inverse,
             label: entry.label,
             edit_group: None,
         });
+        Self::spill(&mut self.undo_stack, &mut self.undo_journal);
         Ok(true)
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
+        self.undo_len() > 0
     }
     pub fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
+        self.redo_len() > 0
     }
     /// Label of the entry a `redo` would re-apply — i.e. the one `undo` just
-    /// reverted. Feeds "Undid: …" feedback in the UI and MCP responses.
-    pub fn redo_top_label(&self) -> Option<&str> {
-        self.redo_stack.last().map(|e| e.label.as_str())
+    /// reverted. Feeds "Undid: …" feedback in the UI and MCP responses; the
+    /// journal is peeked when the window has run dry.
+    pub fn redo_top_label(&self) -> Option<String> {
+        match self.redo_stack.back() {
+            Some(entry) => Some(entry.label.clone()),
+            None => self
+                .redo_journal
+                .as_ref()
+                .and_then(|journal| journal.peek_last())
+                .map(|entry| entry.label),
+        }
     }
 
     /// Label of the entry an `undo` would revert — i.e. the one `redo` just
     /// re-applied.
-    pub fn undo_top_label(&self) -> Option<&str> {
-        self.undo_stack.last().map(|e| e.label.as_str())
+    pub fn undo_top_label(&self) -> Option<String> {
+        match self.undo_stack.back() {
+            Some(entry) => Some(entry.label.clone()),
+            None => self
+                .undo_journal
+                .as_ref()
+                .and_then(|journal| journal.peek_last())
+                .map(|entry| entry.label),
+        }
     }
 
     pub fn undo_descriptions(&self) -> Vec<String> {
@@ -1616,6 +1860,7 @@ mod tests {
             alias: Some("logo".into()),
             perception: None,
             video: None,
+            footage: None,
         };
 
         history.commit(&mut p, Op::AddMedia { asset }).unwrap();

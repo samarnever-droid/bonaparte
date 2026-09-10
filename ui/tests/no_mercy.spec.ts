@@ -115,24 +115,38 @@ test("a 150-command storm stays atomic under undo and redo", async ({ request })
   expect((await command(request, "state")).project).toEqual(after);
 });
 
-test("history eviction past 1000 entries keeps the document coherent", async ({ request }) => {
+test("the disk journal keeps the FULL session undoable past the window", async ({
+  request,
+}) => {
   for (let i = 0; i < 1250; i++) {
     await command(request, "apply", setRotation(i));
   }
-  // The cap is 1000: undo must bottom out exactly, never underflow, and every
-  // step must be a real transition until the stack is exhausted. The undo
-  // reply names what it undid; the bottom of history carries no name.
+  // Memory keeps a 1000-entry window; the spill lives on disk. Undo must
+  // walk the WHOLE depth — 1250 exact steps, never an underflow, every step
+  // a real transition. The undo reply names what it undid; the bottom
+  // carries no name.
+  const state = await command(request, "state");
+  expect(state.historyDepth).toBe(1250);
+  expect(state.historyOverflow).toBe(250);
   let steps = 0;
   for (let i = 0; i < 1300; i++) {
     const reply = await command(request, "undo");
     if (reply.lastUndone === undefined) break;
     steps++;
   }
-  expect(steps).toBe(1000);
+  expect(steps).toBe(1250);
   const last = (await command(request, "state")).project;
   // Undoing past the bottom is a silent no-op that keeps the document stable.
   await command(request, "undo");
   expect((await command(request, "state")).project).toEqual(last);
+  // And the full ring comes back home through the redo journal.
+  let redone = 0;
+  for (let i = 0; i < 1300; i++) {
+    const reply = await command(request, "redo");
+    if (reply.lastRedone === undefined) break;
+    redone++;
+  }
+  expect(redone).toBe(1250);
 });
 
 test("malformed commands are rejected with errors and never poison the session", async ({

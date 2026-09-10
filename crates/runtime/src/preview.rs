@@ -3,8 +3,7 @@
 use crate::{DecodedImages, RenderRequest};
 use bonaparte_effects::EffectRegistry;
 use bonaparte_engine::preview::{
-    prepare_scene_with_transform, render_scene_cpu, Resolution, Scene, Source, SourceCache,
-    SourceStats,
+    prepare_scene_with_transform, Resolution, Scene, Source, SourceCache, SourceStats,
 };
 use bonaparte_engine::Frame;
 use bonaparte_model::{CompId, Project, Time};
@@ -344,10 +343,11 @@ impl PreviewRenderer {
         scene: &Scene,
         registry: &EffectRegistry,
         requested: Backend,
+        comp: CompId,
     ) -> Result<(Frame, String, Option<String>, Option<String>), String> {
         if requested == Backend::Cpu {
             self.cpu_frames.fetch_add(1, Ordering::Relaxed);
-            return render_scene_cpu(scene, registry)
+            return bonaparte_engine::prefix::render_global(comp, scene, registry)
                 .map(|f| (f, "cpu".into(), None, None))
                 .map_err(|e| e.to_string());
         }
@@ -404,7 +404,7 @@ impl PreviewRenderer {
             self.fallbacks.fetch_add(1, Ordering::Relaxed);
         }
         self.cpu_frames.fetch_add(1, Ordering::Relaxed);
-        render_scene_cpu(scene, registry)
+        bonaparte_engine::prefix::render_global(comp, scene, registry)
             .map(|f| (f, "cpu".into(), status.name, reason))
             .map_err(|e| e.to_string())
     }
@@ -476,7 +476,7 @@ impl PreviewJob {
         }
         let executed = bonaparte_engine::cancel::scope(&token, || {
             self.renderer
-                .execute(&scene, &self.registry, self.key.backend)
+                .execute(&scene, &self.registry, self.key.backend, self.key.comp)
         });
         let (frame, backend, adapter, fallback_reason) = executed?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
